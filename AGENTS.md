@@ -9,6 +9,6 @@ Run `python3 -m unittest -v`, plus offline `validate-config` for affected batche
 There is one engine (`runner.py`) and one configuration model (README "Configuration layers").
 Keep policy in `registry/`, keep private hosts/workspaces/projects/batches out of this repository,
 and keep every tracked file free of private identifiers; `test_public_tree.py` enforces this (UUIDs, absolute home/user paths, lab or host names, Linear document URLs, and values from the local private home when one exists). Batches start with
-`python3 runner.py launch` (see [prompts/launch-batch.md](prompts/launch-batch.md)), which exits after startup
+`python3 runner.py launch --batch <file>` (README "Running a batch"), which exits after startup
 confirmation; recoveries use the named `recover` commands, never ad hoc scripts or state edits;
 workers continue their dispatched issue.

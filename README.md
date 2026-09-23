@@ -25,7 +25,7 @@ before unattended use.
 | `launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` backends |
 | `supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
 | `recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
-| `rules.py` | Decision rules written in issue descriptions (DRAFT format) |
+| `rules.py` | One-line decision rules written in issue descriptions |
 | `delivery.py` | Generic, config-driven delivery integrity step |
 | `config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning |
 | `linear_client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint |
@@ -33,7 +33,7 @@ before unattended use.
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
-| `prompts/` | Generic worker guidance; `launch-batch.md` points to `runner.py launch` |
+| `prompts/` | Generic worker guidance |
 | `test_*.py` | Offline tests; `test_public_tree.py` fails on private identifiers in any tracked file |
 
 ## Configuration layers
@@ -63,14 +63,14 @@ model does not allow) are errors.
 
 | Layer | Fields |
 | --- | --- |
-| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher` (DRAFT) |
+| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames |
-| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` (DRAFT) |
-| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision` (DRAFT) |
+| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` |
+| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision` |
 
-Fields marked DRAFT are a phase-1 proposal and may still change:
+Supervisor, launcher and delivery-integrity fields:
 
-| Layer.field (DRAFT) | Key | Default | Meaning |
+| Layer.field | Key | Default | Meaning |
 | --- | --- | --- | --- |
 | site `launcher` | `backend` | `systemd-user` | `systemd-user` or `foreground` (in-process; tests and debugging) |
 | | `python` | the interpreter running `launch` | Interpreter for the supervisor unit; `${name}` allowed |
@@ -80,7 +80,7 @@ Fields marked DRAFT are a phase-1 proposal and may still change:
 | | `startup_timeout_seconds` | 30 | How long `launch` waits to confirm the supervisor started |
 | | `stop_on_exit` | `true` | Write the STOP marker when the supervisor exits (also via `ExecStopPost`) |
 | batch `supervision` | `stop_after` | `[]` | Planned checkpoints: stop after these issues are accepted |
-| | `on_block` | `stop` | `continue_independent`: defer an issue-level block and continue with independent issues |
+| | `on_block` | `continue_independent` | Defer an issue-level block and continue with independent issues; `stop` pauses the batch instead |
 | | `report_issues` | `[]` | Extra issues that receive each lifecycle read-back |
 | | `decision_rules` | `honor` | `ignore` disables rule blocks in issue descriptions |
 | | `baseline_checks` | `false` | Run the default-tier checks on the clean baseline during launch preflight |
@@ -122,7 +122,11 @@ it is checked out: paths under the runner checkout are normalized to `${runner_r
 before hashing. Moving or re-cloning the runner at the same commit therefore resumes
 normally, while a different runner commit, uncommitted runner edits or any configuration
 change is refused. The dirty flag is a boolean, so further edits to an already dirty
-checkout are not distinguished; run batches from a clean commit.
+checkout are not distinguished; run batches from a clean commit. The site `launcher` block
+is the one exception: it only chooses how the supervisor process starts, so it is left out
+of the fingerprint and changing it never blocks resuming. Each launch record
+(`<state dir>/launches/<launch id>.json`) stores the launcher settings actually used, and
+`status` shows those of the latest launch.
 
 ## Running a batch
 
@@ -258,8 +262,8 @@ A batch-level failure (gates, ownership, Linear errors, changed configuration, l
 read-back) pauses the batch as before. An issue-level block (worker or repair blocked,
 repair limit, delivery failure, rejected review, soft budget) is recorded in
 `state.blocks`; then the first matching decision rule decides, otherwise
-`supervision.on_block`: `stop` pauses, `continue_independent` defers the issue and
-continues. Deferring parks uncommitted work in `refs/linear-runner/parked/<batch>/<issue>/<id>`
+`supervision.on_block`: `continue_independent` (the default) defers the issue and
+continues, `stop` pauses the batch. Deferring parks uncommitted work in `refs/linear-runner/parked/<batch>/<issue>/<id>`
 (plus the manifest's patch/tar snapshot) before restoring a clean worktree; an issue that
 already has an unaccepted controller commit is never deferred automatically. Dependents
 of a deferred issue keep waiting because their Linear prerequisite is not Done.
@@ -273,29 +277,49 @@ python3 runner.py stop --batch $B        # stop between issues (durable STOP mar
 systemctl --user stop <unit>             # immediate: child process group terminated, state preserved, blocked report
 ```
 
-Continue after a planned checkpoint, STOP or `partial` outcome (nothing is paused):
+The supervisor writes a STOP marker whenever it exits (and systemd's `ExecStopPost`
+writes one if the unit is killed), so nothing restarts by itself. What the next launch
+needs depends on whether a recovery is pending:
 
-```bash
-python3 runner.py launch --batch $B --clear-stop [--stop-after ISSUE]
-```
+* **Bare continuation** (after a planned checkpoint, `stop`, a `partial` outcome or a
+  completed queue; nothing is paused and no recovery is pending): inspect `status`, then
+  clear the marker explicitly:
 
-A paused batch or an unfinished issue needs a recorded recovery first, then the same
-launch command. Every recovery requires `--reason` and `--authorized-by`, runs offline
-except `--repin-contract`, and is written to `state.json` and the append-only,
-hash-chained `<state dir>/recovery-log.jsonl`. None accepts work or resets history,
-usage, repairs or escalation. `--then stop` (the default) stops after the recovered
-issue; `--then continue` continues the queue.
+  ```bash
+  python3 runner.py launch --batch $B --clear-stop [--stop-after ISSUE]
+  ```
 
-| Situation | Command (then `launch --batch $B --clear-stop`) |
+* **After a recovery**: record it, then launch without `--clear-stop`:
+
+  ```bash
+  python3 runner.py recover <kind> --batch $B ... --reason R --authorized-by A
+  python3 runner.py launch --batch $B
+  ```
+
+  The recovery records the SHA-256 of the STOP marker present when it was recorded, and
+  the launch that carries it out removes exactly that marker (the launch record says
+  `cleared by pending recovery R-...`). If STOP was absent then, or has changed since (for
+  example an operator ran `stop` after recording the recovery), the launch refuses until
+  `--clear-stop` is given. Clearing STOP alone never resumes a paused batch or an
+  unfinished issue; those always need a recorded recovery.
+
+Every recovery requires `--reason` and `--authorized-by`, runs offline except
+`--repin-contract`, and is written to `state.json` and the append-only, hash-chained
+`<state dir>/recovery-log.jsonl`. None accepts work or resets history, usage, repairs or
+escalation. `--then continue` (the default) lets the supervisor continue the batch after
+the recovered issue finishes, just as a fresh launch would; `--then stop` stops after it
+(writing STOP again, so a later bare continuation needs `--clear-stop`).
+
+| Situation | Command (then `launch --batch $B`) |
 | --- | --- |
-| Resume the active issue from its saved step (for example a blocked worker) | `recover resume --batch $B --reason R --authorized-by A [--note-file F] [--then continue]` |
+| Resume the active issue from its saved step (for example a blocked worker) | `recover resume --batch $B --reason R --authorized-by A [--note-file F] [--then stop]` |
 | Re-run only the independent review of the frozen commit | `recover review --batch $B --reason R --authorized-by A [--redeliver] [--repin-contract] [--note-file F]` |
 | Soft-budget checkpoint | `recover budget --batch $B --phase P --input-tokens N --output-tokens N --tool-calls N --reason R --authorized-by A` |
 | Publication or its read-back failed after acceptance | `recover publish --batch $B --reason R --authorized-by A` |
 | Set an issue aside and continue with the others | `recover defer --batch $B --issue ISSUE [--restore-worktree] [--keep-commit] --reason R --authorized-by A` |
 | Restore a deferred, parked issue | `recover resume --batch $B --issue ISSUE --reason R --authorized-by A` |
 | Withdraw a recovery that was not launched | `recover cancel --batch $B --reason R --authorized-by A` |
-| A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A --then continue` |
+| A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A` |
 
 Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
 and appended to later model prompts; it does not change acceptance criteria.
@@ -317,37 +341,51 @@ State written by an earlier runner version has a different configuration fingerp
 is refused; finish or reconcile it with the runner version that created it rather than
 editing state.
 
-## Decision rules (DRAFT)
+## Decision rules
 
-An issue description may pre-authorize what the supervisor does when that issue blocks
-repeatedly. Put exactly one fenced block with the info string `linear-runner-rules` and
-one JSON object in the description:
+An issue description may pre-authorize what the supervisor does when that issue blocks.
+Put one fenced block with the info string `linear-runner-rules` in the description, with
+one rule per line:
 
 ````markdown
 ```linear-runner-rules
-{"version": 1,
- "rules": [
-   {"id": "defer-after-two-worker-blocks",
-    "when": {"event": "worker_blocked", "min_count": 2, "same_criterion": true},
-    "then": {"action": "defer_issue"}}
- ]}
+# defer the viewer issue instead of stopping everything
+defer issue when worker blocked 2 times on the same criterion
+stop batch when review blocked 1 time
 ```
 ````
 
-| Field | Values |
-| --- | --- |
-| `when.event` | `worker_blocked` (implementation or repair returned blocked), `review_blocked` (independent review rejected) |
-| `when.min_count` | integer ≥ 1: the latest this-many blocks of that event are examined |
-| `when.same_criterion` | optional `true`: those blocks share at least one unsatisfied criterion |
-| `when.criterion` | optional exact text of one unchecked criterion that each of those blocks left unsatisfied |
-| `then.action` | `defer_issue` (park and continue with independent issues) or `stop` |
+Grammar:
 
-Rules are read from the issue as pinned at intake, parsed strictly (an invalid block fails
-preflight and the issue is not dispatched), evaluated in order, and applied only on an
-exact match. Each application is recorded in `state.rule_applications` and the recovery
-log with the rule, the blocks it matched and the matched criteria. Rules cannot accept
-work, drop a criterion or change scope; set `supervision.decision_rules` to `ignore` to
-disable them for a batch.
+```text
+<action> when <event> <N> time|times [on the same criterion | on "<exact criterion text>"]
+
+action  defer issue | stop batch
+event   worker blocked   (implementation or repair returned blocked)
+        review blocked   (the independent review was rejected)
+N       a whole number, at least 1: "1 time", "2 times", ...
+```
+
+* The latest `N` blocks of that event are examined. `on the same criterion` also requires
+  them to share at least one unsatisfied criterion; `on "<text>"` requires each of them to
+  leave that criterion unsatisfied, and the text must match an unchecked criterion of the
+  issue exactly (including case and markup).
+* Keywords are case-insensitive and may be separated by any spaces. Blank lines and lines
+  starting with `#` are ignored.
+* Any other line fails launch preflight, and the issue is not dispatched, with a message
+  naming the line, for example
+  `linear-runner-rules line 2: 'defer issue when worker blocked 2 time': write '1 time' or '2 times'`.
+* Rules are read from the issue as pinned at intake; a later edit needs
+  `--repin-contract`. The first rule whose condition matches exactly applies; otherwise
+  `supervision.on_block` decides. With the default `on_block: continue_independent`, every
+  issue-level block is already deferred, so `stop batch` rules are how an issue that must
+  not be skipped pauses the batch instead; `defer issue` rules matter in batches that set
+  `on_block: stop`.
+* Each rule has a stable id derived from its normalized text (`rule-<12 hex>`). Every
+  application is recorded in `state.rule_applications` and the recovery log with the id,
+  the normalized text, the blocks it matched and the matched criteria.
+* Rules cannot accept work, drop a criterion or change scope. `supervision.decision_rules:
+  "ignore"` disables them for a batch.
 
 Parallel workers, distributed leasing, automatic restart and scientific acceptance are
 not implemented. Tests use temporary Git repositories with fake Codex, Linear and launcher
