@@ -31,7 +31,7 @@ META_KEYS = ("_sources", "_layers")
 UNFINGERPRINTED = ("launcher",)
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
 # Defaults for the supervisor (batch layer) and launcher (site layer).
-SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "continue_independent", "report_issues": [], "decision_rules": "honor",
+SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
                         "baseline_checks": False}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
                      "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}

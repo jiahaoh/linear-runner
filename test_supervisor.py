@@ -289,8 +289,7 @@ class SystemdBackendTests(Harness):
         self.assertIn("stopped before", record["error"])
 
 
-class RecoveryScenarioTests(Harness):
-    BATCH = {"supervision": {"on_block": "stop"}}
+class RecoveryScenarioTests(Harness):  # on_block defaults to stop
 
     def test_review_only_recovery_with_redelivery(self):
         self.hooks[("DEV-1", "review")] = self.blocked(times=1)
@@ -361,8 +360,7 @@ class RecoveryScenarioTests(Harness):
         registry = copy.deepcopy(TEST_REGISTRY)
         registry["phases"]["phases"]["implement"]["budget"]["input_tokens"] = 50
         self.home, self.batch = make_home(self.root, self.repo, registry=registry,
-                                          batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3",
-                                                 "supervision": {"on_block": "stop"}})
+                                          batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"})
         self.launch()
         active = self.state()["active"]
         self.assertEqual(active["budget_exceeded"]["observed"]["input_tokens"], 100)
@@ -523,9 +521,20 @@ class RecoveryScenarioTests(Harness):
 
 
 class OnBlockPolicyTests(Harness):
-    BATCH = {"supervision": {"report_issues": ["TRACK-1"]}}  # on_block defaults to continue_independent
+    BATCH = {"supervision": {"on_block": "continue_independent", "report_issues": ["TRACK-1"]}}
 
-    def test_block_defers_and_independent_issues_continue(self):
+    def test_default_stop_without_a_rule_pauses_the_batch(self):
+        home, batch = make_home(self.root, self.repo, batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"})
+        self.batch = batch
+        self.assertEqual(self.make_runner().config["supervision"]["on_block"], "stop")
+        self.hooks[("DEV-1", "implement")] = self.blocked()
+        self.assertEqual(self.launch()["started"]["exit_code"], 1)
+        state = self.state()
+        self.assertEqual((state["phase"], state["active"]["issue_id"], self.done()), ("paused", "DEV-1", []))
+        self.assertNotIn("deferred", state)
+        self.assertEqual(self.calls, [("DEV-1", "implement")])
+
+    def test_explicit_continue_independent_defers_and_independent_issues_continue(self):
         self.linear.others["DEV-3"]["relations"] = {"blockedBy": [{"id": "DEV-1"}]}
         self.hooks[("DEV-1", "implement")] = self.blocked()
         entry = self.launch()
@@ -547,10 +556,9 @@ class OnBlockPolicyTests(Harness):
         self.assertEqual(self.state()["phase"], "paused")
 
 
-class DecisionRuleTests(Harness):
-    BATCH = {"supervision": {"on_block": "stop"}}
+class DecisionRuleTests(Harness):  # on_block defaults to stop
 
-    def test_rule_defers_after_repeated_block_on_same_criterion(self):
+    def test_default_stop_with_matching_defer_rule_defers(self):
         self.linear.data["description"] += rule_block()
         self.hooks[("DEV-1", "implement")] = self.blocked()
         self.launch()
@@ -574,8 +582,9 @@ class DecisionRuleTests(Harness):
     def test_stop_batch_rule_overrides_the_continue_default(self):
         self.linear.data["description"] += rule_block("stop batch when worker blocked 1 time")
         self.hooks[("DEV-1", "implement")] = self.blocked()
-        home, batch = make_home(self.root, self.repo, batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"})
-        self.batch = batch  # default on_block (continue_independent) would otherwise defer DEV-1
+        home, batch = make_home(self.root, self.repo, batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3",
+                                                              "supervision": {"on_block": "continue_independent"}})
+        self.batch = batch  # the policy alone would defer DEV-1
         self.assertEqual(self.launch()["started"]["exit_code"], 1)
         self.assertEqual((self.state()["phase"], self.done()), ("paused", []))
         self.assertEqual(self.state()["rule_applications"][0]["rule"]["text"], "stop batch when worker blocked 1 time")

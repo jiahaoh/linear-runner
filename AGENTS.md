@@ -10,5 +10,7 @@ There is one engine (`runner.py`) and one configuration model (README "Configura
 Keep policy in `registry/`, keep private hosts/workspaces/projects/batches out of this repository,
 and keep every tracked file free of private identifiers; `test_public_tree.py` enforces this (UUIDs, absolute home/user paths, lab or host names, Linear document URLs, and values from the local private home when one exists). Batches start with
 `python3 runner.py launch --batch <file>` (README "Running a batch"), which exits after startup
-confirmation; recoveries use the named `recover` commands, never ad hoc scripts or state edits;
+confirmation; an issue-level block pauses the batch unless the batch sets `supervision.on_block:
+"continue_independent"` or a `defer issue when ...` rule in the issue matches; recoveries use the named
+`recover` commands, never ad hoc scripts or state edits;
 workers continue their dispatched issue.

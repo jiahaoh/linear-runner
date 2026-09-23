@@ -8,7 +8,7 @@
   "required_done": [],
   "supervision": {
     "stop_after": [],
-    "on_block": "continue_independent",
+    "on_block": "stop",
     "report_issues": [],
     "decision_rules": "honor",
     "baseline_checks": false

@@ -80,7 +80,7 @@ Supervisor, launcher and delivery-integrity fields:
 | | `startup_timeout_seconds` | 30 | How long `launch` waits to confirm the supervisor started |
 | | `stop_on_exit` | `true` | Write the STOP marker when the supervisor exits (also via `ExecStopPost`) |
 | batch `supervision` | `stop_after` | `[]` | Planned checkpoints: stop after these issues are accepted |
-| | `on_block` | `continue_independent` | Defer an issue-level block and continue with independent issues; `stop` pauses the batch instead |
+| | `on_block` | `stop` | Pause the batch on an issue-level block; `continue_independent` opts in to deferring the issue and continuing with independent issues |
 | | `report_issues` | `[]` | Extra issues that receive each lifecycle read-back |
 | | `decision_rules` | `honor` | `ignore` disables rule blocks in issue descriptions |
 | | `baseline_checks` | `false` | Run the default-tier checks on the clean baseline during launch preflight |
@@ -262,8 +262,20 @@ A batch-level failure (gates, ownership, Linear errors, changed configuration, l
 read-back) pauses the batch as before. An issue-level block (worker or repair blocked,
 repair limit, delivery failure, rejected review, soft budget) is recorded in
 `state.blocks`; then the first matching decision rule decides, otherwise
-`supervision.on_block`: `continue_independent` (the default) defers the issue and
-continues, `stop` pauses the batch. Deferring parks uncommitted work in `refs/linear-runner/parked/<batch>/<issue>/<id>`
+`supervision.on_block`: `stop` (the default) pauses the batch, `continue_independent`
+(opt-in) defers the issue and continues. Deferral therefore happens only when the batch
+opts in or a matching `defer issue when ...` rule asks for it:
+
+| `on_block` | Rule that matches the block | Result |
+| --- | --- | --- |
+| `stop` (default) | none | batch pauses |
+| `stop` (default) | `defer issue when ...` | issue deferred, batch continues with independent issues |
+| `stop` (default) | `stop batch when ...` | batch pauses |
+| `continue_independent` | none | issue deferred, batch continues with independent issues |
+| `continue_independent` | `defer issue when ...` | issue deferred, batch continues with independent issues |
+| `continue_independent` | `stop batch when ...` | batch pauses |
+
+Deferring parks uncommitted work in `refs/linear-runner/parked/<batch>/<issue>/<id>`
 (plus the manifest's patch/tar snapshot) before restoring a clean worktree; an issue that
 already has an unaccepted controller commit is never deferred automatically. Dependents
 of a deferred issue keep waiting because their Linear prerequisite is not Done.
@@ -377,10 +389,10 @@ N       a whole number, at least 1: "1 time", "2 times", ...
   `linear-runner-rules line 2: 'defer issue when worker blocked 2 time': write '1 time' or '2 times'`.
 * Rules are read from the issue as pinned at intake; a later edit needs
   `--repin-contract`. The first rule whose condition matches exactly applies; otherwise
-  `supervision.on_block` decides. With the default `on_block: continue_independent`, every
-  issue-level block is already deferred, so `stop batch` rules are how an issue that must
-  not be skipped pauses the batch instead; `defer issue` rules matter in batches that set
-  `on_block: stop`.
+  `supervision.on_block` decides (see the table under "Supervisor"). Under the default
+  `on_block: stop`, a `defer issue` rule is how an issue opts in to being set aside; in a
+  batch that sets `continue_independent`, a `stop batch` rule keeps an issue that must not
+  be skipped from being deferred.
 * Each rule has a stable id derived from its normalized text (`rule-<12 hex>`). Every
   application is recorded in `state.rule_applications` and the recovery log with the id,
   the normalized text, the blocks it matched and the matched criteria.

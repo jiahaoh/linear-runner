@@ -20,7 +20,7 @@
       "additionalProperties": false,
       "properties": {
         "stop_after": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
-        "on_block": {"enum": ["stop", "continue_independent"]},
+        "on_block": {"description": "Issue-level block without a matching rule: stop (default) pauses the batch; continue_independent defers the issue and continues with independent issues.", "enum": ["stop", "continue_independent"]},
         "report_issues": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
         "decision_rules": {"enum": ["honor", "ignore"]},
         "baseline_checks": {"type": "boolean"}

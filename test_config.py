@@ -193,7 +193,7 @@ class LayeredConfigTests(unittest.TestCase):
 
     def test_supervision_launcher_and_integrity_fields(self):
         loaded = self.load()
-        self.assertEqual(loaded["supervision"], {"stop_after": [], "on_block": "continue_independent", "report_issues": [],
+        self.assertEqual(loaded["supervision"], {"stop_after": [], "on_block": "stop", "report_issues": [],
                                                  "decision_rules": "honor", "baseline_checks": False})
         self.assertEqual(loaded["launcher"]["backend"], "systemd-user")
         self.assertTrue(loaded["launcher"]["stop_on_exit"])
