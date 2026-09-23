@@ -21,6 +21,12 @@ the dry-run selection (or, for a saved active issue, the resume-specific checks)
 Backends are pluggable: ``systemd-user`` (a transient ``systemd-run --user`` unit with
 Restart=no, KillMode=control-group and a STOP marker written by ExecStopPost) and
 ``foreground`` (runs the supervisor in this process, for tests and debugging).
+
+The ``systemd-user`` backend also starts a transient user timer,
+``<prefix>-<batch>-<launch id>-watchdog.timer``, that runs ``runner.py watchdog`` every
+``attention.watchdog.interval_minutes`` (10). The watchdog stops its own timer once the
+supervisor has reached an outcome and any alert is posted; a later launch stops earlier
+timers. The foreground backend starts no timer.
 """
 from __future__ import annotations
 
@@ -35,7 +41,7 @@ import subprocess
 import sys
 import time
 
-from config import RUNNER_ROOT, config_fingerprint, read_json, write_json
+from config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
 from recovery import expected_state
 from runner import (PHASES, Runner, fingerprint, git, issue_contract, now, project_lock, published_contract_matches,
                     resolve_profile, run_id)
@@ -234,6 +240,12 @@ class ForegroundBackend:
             raise LaunchError(f"Supervisor did not start: {started.get('error')}")
         return {"supervisor": status}
 
+    def start_watchdog(self, spec):
+        return None  # tests and debugging: run `runner.py watchdog` by hand if needed
+
+    def stop_watchdog(self, timer):
+        return None
+
 
 class SystemdUserBackend:
     """A transient ``systemd-run --user`` service; no automatic restart."""
@@ -253,6 +265,30 @@ class SystemdUserBackend:
         # Credential variables are inherited by name; their values never enter argv or records.
         argv += [f"--setenv={k}" for k in spec["inherit"]]
         return argv + spec["command"]
+
+    def watchdog_argv(self, spec):
+        watch = spec["watchdog"]
+        minutes = watch["interval_minutes"]
+        argv = ["systemd-run", "--user", f"--unit={watch['unit']}", f"--on-active={minutes}min",
+                f"--on-unit-active={minutes}min", "--timer-property=AccuracySec=30s",
+                f"--property=WorkingDirectory={spec['workdir']}", f"--property=StandardOutput=append:{watch['log']}",
+                f"--property=StandardError=append:{watch['log']}"]
+        argv += [f"--setenv={k}={v}" for k, v in sorted(spec["environment"].items())]
+        argv += [f"--setenv={k}" for k in spec["inherit"]]
+        return argv + watch["command"]
+
+    def start_watchdog(self, spec):
+        argv = self.watchdog_argv(spec)
+        process = self.run(argv, capture_output=True, text=True)
+        if process.returncode:
+            raise LaunchError(f"Watchdog timer did not start ({process.returncode}): {process.stderr.strip()}")
+        watch = spec["watchdog"]
+        return {"unit": watch["unit"], "timer": watch["timer"], "interval_minutes": watch["interval_minutes"],
+                "argv": argv, "log": watch["log"], "started_at": now()}
+
+    def stop_watchdog(self, timer):
+        process = self.run(["systemctl", "--user", "stop", timer], capture_output=True, text=True)
+        return {"exit_code": process.returncode, "stderr": (process.stderr or "").strip()}
 
     def show(self, unit):
         output = self.run(["systemctl", "--user", "show", unit, "-p", "MainPID", "-p", "ActiveState", "-p", "SubState",
@@ -302,6 +338,24 @@ def unit_name(config, launch_id):
     return re.sub(r"[^A-Za-z0-9:_.-]", "-", base) + ".service"
 
 
+def watchdog_unit(config, launch_id):
+    """Base name of the watchdog timer/service pair, next to the supervisor unit's name."""
+    return unit_name(config, launch_id).removesuffix(".service") + "-watchdog"
+
+
+def stop_earlier_timers(root, backend, current):
+    """Stop watchdog timers of earlier launches that were not stopped yet (recorded)."""
+    import watchdog
+    stopped = []
+    for path in sorted((Path(root) / "launches").glob("*.json")):
+        record = read_json(path)
+        timer = (record.get("watchdog_timer") or {}).get("timer")
+        if timer and record["launch_id"] != current and not watchdog.timer_stopped(root, timer):
+            watchdog.record_timer_stop(root, timer, f"superseded by launch {current}", backend.stop_watchdog(timer))
+            stopped.append(timer)
+    return stopped
+
+
 def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=False, force_preflight=False,
            runner=None, out=print):
     root = Path(config["state_dir"])
@@ -349,7 +403,13 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
         command += ["--stop-after", issue]
     if launcher["cpu_list"]:
         command = [shutil.which("taskset") or "taskset", "-c", launcher["cpu_list"], *command]
+    watch_unit = watchdog_unit(config, launch_id)
+    watch_command = [python, str(RUNNER_ROOT / "runner.py"), "watchdog", "--batch", batch_argument(config), "--home",
+                     config["variables"]["home"], "--launch-id", launch_id, "--timer", watch_unit + ".timer"]
     spec = {"launch_id": launch_id, "unit": unit_name(config, launch_id), "command": command,
+            "watchdog": {"unit": watch_unit, "timer": watch_unit + ".timer", "command": watch_command,
+                         "interval_minutes": config["attention"]["watchdog"]["interval_minutes"],
+                         "log": str(root / "watchdog.log")},
             "workdir": str(RUNNER_ROOT), "log": str(root / "supervisor.log"), "state_dir": str(root),
             "environment": dict(launcher["environment"]), "inherit": [config["linear"]["token_env"]]
             if config["linear"].get("token_env") else [], "stop_marker": str(root / "STOP")
@@ -364,12 +424,20 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
     path = root / "launches" / f"{launch_id}.json"
     write_json(path, entry)
     try:
+        entry["stopped_earlier_timers"] = stop_earlier_timers(root, backend, launch_id)
+        # The timer starts first: a launch that cannot be watched does not start.
+        entry["watchdog_timer"] = backend.start_watchdog(spec)
+        write_json(path, entry)
         entry["started"] = backend.start(spec)
         entry["confirmation"] = backend.confirm(spec, entry["started"])
         if entry["confirmation"]["supervisor"].get("status") == "refused":
             raise LaunchError(f"Supervisor refused to start: {entry['confirmation']['supervisor'].get('error')}")
     except Exception as error:
         entry["error"] = str(error)
+        if entry.get("watchdog_timer"):
+            import watchdog
+            watchdog.record_timer_stop(root, entry["watchdog_timer"]["timer"], f"launch failed: {error}",
+                                       backend.stop_watchdog(entry["watchdog_timer"]["timer"]))
         write_json(path, entry)
         if not stop.exists():
             stop.write_text(f"Launch {launch_id} failed: {error}\n")
@@ -381,6 +449,7 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
                     "supervisor_status": supervisor.get("status"), "outcome": supervisor.get("outcome"),
                     "state_dir": str(root), "log": spec["log"], "launch_record": str(path),
                     "terminal_report": str(root / "terminal-report.html"),
+                    "watchdog_timer": (entry.get("watchdog_timer") or {}).get("timer"),
                     "preflight": {n: ("reused" if s.get("reused") else "ran") + f" ({s['reason']})"
                                   for n, s in record["steps"].items()}}, indent=2))
     return entry

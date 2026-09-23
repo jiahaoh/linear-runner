@@ -1,8 +1,7 @@
 ---
 kind: deferred
 author: runner
-status: DRAFT
-headline.default: {issue} was set aside after it blocked and the batch continues with independent issues; {owner} can restore it later.
+headline.default: {issue} was set aside after it blocked and the batch continues with independent issues; you can restore it later.
 ---
 {headline}
 

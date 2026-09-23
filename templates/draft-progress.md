@@ -1,7 +1,6 @@
 ---
 kind: progress
 author: worker
-status: DRAFT
 required: What changed
 posted: as soon as the runner sees it, while the session is still running
 ---

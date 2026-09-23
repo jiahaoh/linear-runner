@@ -1,7 +1,6 @@
 ---
 kind: ready
 author: runner
-status: DRAFT
 headline.default: The worker reports {issue} ready for validation; no action is needed.
 ---
 {headline}
@@ -11,6 +10,9 @@ headline.default: The worker reports {issue} ready for validation; no action is 
 
 **Criteria**
 {criteria}
+
+**Deliverables to review**
+{deliverables}
 
 **Limitations**
 {limitations}

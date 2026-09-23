@@ -15,24 +15,32 @@ AUTH = '--reason "<why>" --authorized-by "<your name>"'
 
 def context(config):
     """Values every message needs, from a resolved configuration."""
-    from config import DEFAULT_HOME, find_home
-    batch_file = next((v for k, v in config.get("_layers", {}).items() if k.startswith("batch ")), "<batch file>")
+    from config import DEFAULT_HOME, batch_argument, find_home
     home = config.get("variables", {}).get("home")
     attention = config.get("attention", {})
-    return {"batch": config["batch_id"], "batch_file": batch_file,
+    return {"batch": config["batch_id"], "batch_arg": batch_argument(config),
             "home": home if home and str(find_home(DEFAULT_HOME)) != home else None,
-            "python": (config.get("launcher") or {}).get("python") or "python3",
-            "runner": str(__import__("pathlib").Path(__file__).resolve().parent / "runner.py"),
-            "owner": attention.get("owner_mention") or "the owner", "branch": config.get("branch", ""),
+            "prefix": attention.get("command_prefix") or "python3 runner.py",
+            "mention": attention.get("owner_mention") or "", "branch": config.get("branch", ""),
             "max_repairs": config.get("policy", {}).get("phases", {}).get("max_repairs", 2)}
 
 
 def command(ctx, *args, auth=False):
-    parts = [ctx["python"], ctx["runner"], *args, "--batch", ctx["batch_file"]]
+    """One runner command line, e.g. ``python3 .../runner.py launch --batch my-batch``."""
+    parts = [*args, "--batch", ctx["batch_arg"]]
     if ctx.get("home"):
         parts += ["--home", ctx["home"]]
-    text = " ".join(shlex.quote(str(p)) if not str(p).startswith("<") else str(p) for p in parts)
-    return "`" + text + (" " + AUTH if auth else "") + "`"
+    text = " ".join(str(p) if str(p).startswith("<") else shlex.quote(str(p)) for p in parts)
+    return f"{ctx['prefix']} {text}" + (" " + AUTH if auth else "")
+
+
+def block(sentence, line):
+    """A plain sentence saying what a command does, then the command in its own bash block."""
+    return f"{sentence}\n\n```bash\n{line}\n```"
+
+
+def blocks(*items):
+    return "\n\n".join(block(s, c) for s, c in items)
 
 
 def plural(count, noun, suffix="s"):
@@ -44,6 +52,15 @@ def listing(items):
     if len(items) <= 2:
         return " and ".join(items)
     return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def deliverable_lines(items):
+    """One line per deliverable: the path, then a short description when known."""
+    lines = []
+    for item in items or []:
+        description = plain(item.get("description") or "", 160).rstrip(".")
+        lines.append(f"- {item['path']}" + (f" — {description}" if description else ""))
+    return "\n".join(lines)
 
 
 def evidence(*paths):
@@ -78,7 +95,7 @@ def claim(ctx, *, issue, selection, check_count, criteria_count, run_dir):
                             "criteria_count": criteria_phrase(criteria_count), "evidence": evidence(run_dir)})
 
 
-def ready(ctx, *, issue, result, attempt, draft_problem=None):
+def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), missing=()):
     entries = result.get("acceptance", [])
     met = sum(e.get("satisfied") is True for e in entries if isinstance(e, dict))
     noun = "criterion" if len(entries) == 1 else "criteria"
@@ -86,7 +103,10 @@ def ready(ctx, *, issue, result, attempt, draft_problem=None):
     if draft_problem:
         criteria += f" The worker's own ready note was not posted because {draft_problem}."
     limits = [plain(item, 200) for item in result.get("limitations", []) if str(item).strip()]
+    if missing:
+        criteria += f" Listed deliverables that were not found: {listing(missing)}."
     return render("ready", {"issue": issue, "summary": quote(result.get("summary")), "criteria": criteria,
+                            "deliverables": deliverable_lines(deliverables),
                             "limitations": " ".join(l if l.endswith(".") else l + "." for l in limits),
                             "evidence": evidence(attempt)})
 
@@ -113,11 +133,12 @@ def review(ctx, *, issue, result, attempt, draft_problem=None):
                              "evidence": evidence(attempt)}, headline="accepted")
 
 
-def done(ctx, *, issue, commit, criteria_count, repairs, run_dir):
+def done(ctx, *, issue, commit, criteria_count, repairs, run_dir, deliverables=()):
     note = "" if not repairs else f"It needed {plural(repairs, 'repair')} before the checks passed."
     return render("done", {"issue": issue, "criteria": criteria_phrase(criteria_count), "commit": commit[:12],
-                           "branch": ctx["branch"], "repairs": note,
-                           "evidence": evidence(run_dir, f"{run_dir}/final-result.json")})
+                           "branch": ctx["branch"], "repairs": note, "deliverables": deliverable_lines(deliverables),
+                           "evidence": evidence(run_dir, f"{run_dir}/final-result.json")},
+                  headline="deliverables" if deliverables else "default")
 
 
 def own_words(*, who, result=None, draft=None, draft_problem=None, draft_path=None):
@@ -139,37 +160,36 @@ def own_words(*, who, result=None, draft=None, draft_problem=None, draft_path=No
 
 
 def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classification=None):
-    """The exact commands to continue after a stop, one per line."""
-    launch = f"- Then start it: {command(ctx, 'launch')}"
+    """The exact commands to continue after a stop, each in its own bash block."""
+    launch = ("Then start the batch again:", command(ctx, "launch"))
     if issue is None:
-        return f"- Record the recovery: {command(ctx, 'recover', 'resume', auth=True)}\n{launch}"
-    hint = ""
+        return blocks(("Record the recovery:", command(ctx, "recover", "resume", auth=True)), launch)
     if event == "budget_exceeded":
-        primary = command(ctx, "recover", "budget", "--phase", phase or "<phase>", "--input-tokens", "<N>",
-                          "--output-tokens", "<N>", "--tool-calls", "<N>", auth=True)
+        primary = ("Record the new budget allowance for the phase:",
+                   command(ctx, "recover", "budget", "--phase", phase or "<phase>", "--input-tokens", "<N>",
+                           "--output-tokens", "<N>", "--tool-calls", "<N>", auth=True))
     elif event == "review_blocked" or step == "review":
-        primary = command(ctx, "recover", "review", auth=True)
-        hint = " (add `--note-file <file>` to give the reviewer a note, or `--repin-contract` after clarifying a criterion)"
+        primary = ("Record a review-only recovery (you can add --note-file with a note for the reviewer, or "
+                   "--repin-contract after clarifying a criterion):", command(ctx, "recover", "review", auth=True))
     elif step in ("publish", "done"):
-        primary = command(ctx, "recover", "publish", auth=True)
+        primary = ("Record a publish-only recovery (no model runs):", command(ctx, "recover", "publish", auth=True))
     elif step == "repair":
         primary = None
     else:
-        primary = command(ctx, "recover", "resume", auth=True)
-        hint = " (add `--note-file <file>` to give the worker a note)"
+        primary = ("Record the recovery (you can add --note-file with a note for the worker):",
+                   command(ctx, "recover", "resume", auth=True))
     defer = command(ctx, "recover", "defer", "--issue", issue, "--restore-worktree", auth=True)
     if primary is None:
-        return f"- An interrupted repair cannot be resumed; set the issue aside: {defer}\n{launch}"
-    steps = f"- Record the recovery: {primary}{hint}\n{launch}"
+        return blocks(("An interrupted repair cannot be resumed, so set the issue aside:", defer), launch)
     if classification in ("environment", "runner-defect"):
-        return steps
-    return steps + f"\n- Or set the issue aside instead: {defer}"
+        return blocks(primary, launch)
+    return blocks(primary, launch, ("Or set the issue aside instead and let the batch continue:", defer))
 
 
 def blocked(ctx, *, issue, classification, event=None, error="", step=None, phase=None, result=None, who="worker",
             draft=None, draft_problem=None, draft_path=None, evidence_paths=()):
     subject = issue or f"Batch {ctx['batch']}"
-    values = {"subject": subject, "owner": ctx["owner"], "phase": phase or step or "model", "step": step or "current",
+    values = {"subject": subject, "phase": phase or step or "model", "step": step or "current",
               "error": short_cause(error, 300)}
     known = event in ("worker_blocked", "review_blocked", "checks_failed", "delivery_failed", "budget_exceeded")
     cause = variant("blocked", "cause", event, values) if known else short_cause(error)
@@ -179,7 +199,7 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
     needed = variant("blocked", "needed", event if known else classification, values)
     words = own_words(who=who, result=result, draft=draft, draft_problem=draft_problem, draft_path=draft_path) \
         if event in ("worker_blocked", "review_blocked", "checks_failed", "budget_exceeded") else ""
-    return render("blocked", {"subject": subject, "owner": ctx["owner"], "cause": cause, "what_happened": happened,
+    return render("blocked", {"subject": subject, "mention": ctx["mention"], "cause": cause, "what_happened": happened,
                               "own_words": words, "needed": needed,
                               "continue_steps": recovery_steps(ctx, issue=issue, event=event, step=step, phase=phase,
                                                                classification=classification),
@@ -192,10 +212,10 @@ def deferred(ctx, *, issue, cause, block, result=None, who="worker", draft=None,
     else:
         why = f"The batch policy {cause.get('policy', 'on_block')} applies to block {block['id']}."
     why += f" It blocked at the {block.get('step', 'current')} step: {short_cause(block.get('error'), 240)}."
-    restore = (f"It is not accepted and keeps its Linear state. Once the batch has stopped:\n"
-               f"- Record the restore: {command(ctx, 'recover', 'resume', '--issue', issue, auth=True)}\n"
-               f"- Then start it: {command(ctx, 'launch')}")
-    return render("deferred", {"issue": issue, "owner": ctx["owner"], "why": why, "restore": restore,
+    restore = ("It is not accepted and keeps its Linear state.\n\n" + blocks(
+        ("Once the batch has stopped, record the restore:", command(ctx, "recover", "resume", "--issue", issue, auth=True)),
+        ("Then start the batch again:", command(ctx, "launch"))))
+    return render("deferred", {"issue": issue, "why": why, "restore": restore,
                                "own_words": own_words(who=who, result=result, draft=draft),
                                "evidence": evidence(*evidence_paths)})
 
@@ -247,30 +267,31 @@ def usage_prose(usage):
 
 def batch_finished(ctx, *, outcome, done, total, issues, usage=None, checkpoint=None, deferred=(), evidence_paths=()):
     if outcome == "partial" and deferred:
-        steps = (f"- Restore a set-aside issue: {command(ctx, 'recover', 'resume', '--issue', '<issue>', auth=True)}\n"
-                 f"- Then start it: {command(ctx, 'launch')}")
+        steps = blocks(("Restore a set-aside issue:", command(ctx, "recover", "resume", "--issue", "<issue>", auth=True)),
+                       ("Then start the batch again:", command(ctx, "launch")))
     elif outcome in ("checkpoint", "stopped", "partial"):
-        steps = f"- After reviewing the state, relaunch: {command(ctx, 'launch', '--clear-stop')}"
+        steps = block("After reviewing the state, relaunch the batch:", command(ctx, "launch", "--clear-stop"))
     else:
         steps = ""
-    return render("batch-finished", {"batch": ctx["batch"], "owner": ctx["owner"], "total": total,
+    return render("batch-finished", {"batch": ctx["batch"], "total": total,
+                                     "mention": ctx["mention"] if outcome != "complete" else "",
                                      "done_count": len(done), "checkpoint": checkpoint or "", "issues": issues,
                                      "usage": usage_prose(usage), "continue_steps": steps,
                                      "evidence": evidence(*evidence_paths)}, headline=outcome)
 
 
 def batch_paused(ctx, *, subject, where, issues, evidence_paths=()):
-    return render("batch-paused", {"batch": ctx["batch"], "owner": ctx["owner"], "subject": subject, "where": where,
+    return render("batch-paused", {"batch": ctx["batch"], "mention": ctx["mention"], "subject": subject, "where": where,
                                    "issues": issues,
                                    "continue_steps": f"Follow the steps in the comment on {where}.",
                                    "evidence": evidence(*evidence_paths)})
 
 
 def watchdog(ctx, *, condition, subject, minutes=None, observed="", last_update="", evidence_paths=()):
-    steps = (f"- Check the state and the supervisor log: {command(ctx, 'status')}\n"
-             f"- If nothing is running, record a recovery: {command(ctx, 'recover', 'resume', auth=True)}\n"
-             f"- Then start it: {command(ctx, 'launch')}")
-    return render("watchdog", {"batch": ctx["batch"], "owner": ctx["owner"], "subject": subject, "minutes": minutes,
+    steps = blocks(("Check the saved state and the supervisor:", command(ctx, "status")),
+                   ("If nothing is running, record a recovery:", command(ctx, "recover", "resume", auth=True)),
+                   ("Then start the batch again:", command(ctx, "launch")))
+    return render("watchdog", {"batch": ctx["batch"], "mention": ctx["mention"], "subject": subject, "minutes": minutes,
                                "observed": observed, "last_update": quote(last_update) if last_update else "",
                                "continue_steps": steps, "evidence": evidence(*evidence_paths)}, headline=condition)
 

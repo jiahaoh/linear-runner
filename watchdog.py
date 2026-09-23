@@ -8,12 +8,18 @@ active, plus one notifier call) when:
   host problem);
 * ``stalled``: the supervisor process exists but neither ``state.json``,
   ``supervisor.json`` nor the active issue's run directory has changed for
-  ``attention.watchdog.stall_minutes`` (DRAFT default 120).
+  ``attention.watchdog.stall_minutes`` (120).
+
+``launch`` (systemd backend) starts a user timer that runs this every
+``attention.watchdog.interval_minutes`` (10) with ``--launch-id`` and ``--timer``. The
+watchdog then stops its own timer once that launch's supervisor has an outcome (or has
+vanished) and any alert is posted, or when a newer launch took over.
 
 Each condition alerts once. Alerts are recorded in ``<state dir>/watchdog.json`` (a stall
 is keyed by the time of the last progress, so a new stall after progress alerts again).
 The watchdog never takes the project lock, never writes ``state.json`` and never starts
-a model. For ``gone`` it also applies the needs-input mechanism; the next recovery clears it.
+a model. It applies the needs-input mechanism to the issue it alerts on; the next
+successful launch removes it.
 """
 from __future__ import annotations
 
@@ -46,6 +52,33 @@ def _iso(epoch):
     return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _load(root):
+    path = Path(root) / LEDGER_NAME
+    return read_json(path) if path.exists() else {"alerts": {}}
+
+
+def timer_stopped(root, timer):
+    return bool(_load(root).get("timers", {}).get(timer, {}).get("stopped_at"))
+
+
+def _note_stop(record, timer, reason, result):
+    record.setdefault("timers", {})[timer] = {"stopped_at": _iso(time.time()), "reason": reason, "result": result}
+
+
+def record_timer_stop(root, timer, reason, result):
+    record = _load(root)
+    _note_stop(record, timer, reason, result)
+    write_json(Path(root) / LEDGER_NAME, record)
+
+
+def systemctl_stop(timer, run=subprocess.run):
+    try:
+        process = run(["systemctl", "--user", "stop", timer], capture_output=True, text=True)
+        return {"exit_code": process.returncode, "stderr": (process.stderr or "").strip()}
+    except OSError as error:
+        return {"error": str(error)}
+
+
 def last_progress(root, state, status):
     """Latest recorded progress: state, supervisor status, or a file in the active run directory."""
     times = [t for t in (_epoch(state.get("updated_at")), _epoch(status.get("updated_at"))) if t]
@@ -71,7 +104,9 @@ def last_update(state, issue):
     return updates.first_sentence(summary) if summary else ""
 
 
-def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, notify_run=subprocess.run, log=print):
+def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, notify_run=subprocess.run, log=print,
+          launch_id=None, timer=None, systemctl=subprocess.run):
+    """One watchdog pass. ``launch_id``/``timer`` are given by the launch-started timer."""
     root = Path(config["state_dir"])
     status_path = root / "supervisor.json"
     if not status_path.exists():
@@ -89,8 +124,20 @@ def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, no
         ledger.reconcile()  # an alert whose post failed earlier is retried, never duplicated
     except Exception as error:
         log(f"Watchdog: earlier alert still not posted: {error}")
+    def stop_own_timer(reason):
+        if timer and not record.get("timers", {}).get(timer, {}).get("stopped_at"):
+            _note_stop(record, timer, reason, systemctl_stop(timer, systemctl))
+            save()
+            return True
+        return False
+
+    if launch_id and status.get("launch_id") != launch_id:
+        stopped = stop_own_timer(f"launch {status.get('launch_id')} replaced launch {launch_id}")
+        return {"status": "superseded", "timer_stopped": stopped}
     if status.get("status") != "running":
-        return {"status": "ok", "reason": f"supervisor {status.get('launch_id')} is {status.get('status')}"}
+        reason = f"supervisor {status.get('launch_id')} is {status.get('status')}"
+        stopped = False if ledger.pending() else stop_own_timer(reason + " and every alert is posted")
+        return {"status": "ok", "reason": reason, "timer_stopped": stopped}
     if status.get("host") and status["host"] != (hostname or os.uname().nodename):
         return {"status": "skipped", "reason": f"the supervisor runs on {status['host']}; run the watchdog there"}
     state = read_json(root / "state.json") if (root / "state.json").exists() else {}
@@ -130,12 +177,13 @@ def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, no
         alert["comment"] = ledger.emit(target, "watchdog", body, dedupe=key, now=_iso(now))["key"]
     except Exception as error:
         alert["post_error"] = str(error)
-    if condition == "gone" and issue:
-        try:
-            mark = attention.mark_needs_input(linear, issue, config["attention"]["needs_input"])
-            record.setdefault("needs_input", {})[issue] = mark
-        except Exception as error:
-            alert["needs_input_error"] = str(error)
+    try:  # removed again when the next launch starts successfully
+        mark = attention.mark_needs_input(linear, target, config["attention"]["needs_input"])
+        record.setdefault("needs_input", {})[target] = mark
+    except Exception as error:
+        alert["needs_input_error"] = str(error)
     save()
+    stopped = condition == "gone" and bool(alert["comment"]) and stop_own_timer(
+        "the supervisor is gone and the alert is posted; the next launch starts a new timer")
     return {"status": "alerted", "key": key, "condition": condition, "issue": target,
-            "posted": bool(alert["comment"]), "notified": alert["notified"].get("sent")}
+            "posted": bool(alert["comment"]), "notified": alert["notified"].get("sent"), "timer_stopped": stopped}

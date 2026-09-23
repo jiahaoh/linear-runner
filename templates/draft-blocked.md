@@ -1,7 +1,6 @@
 ---
 kind: blocked
 author: worker
-status: DRAFT
 required: What is blocking, What is needed
 posted: quoted in the runner's blocked comment when the session ends with status blocked
 ---

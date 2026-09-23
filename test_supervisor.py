@@ -142,6 +142,8 @@ class LaunchAndSupervisorTests(Harness):
         status = json.loads((self.state_dir / "supervisor.json").read_text())
         self.assertEqual((status["launch_id"], status["status"], status["outcome"]), (entry["launch_id"], "exited", "complete"))
         self.assertTrue((self.state_dir / "launches" / f"{entry['launch_id']}.json").is_file())
+        launch_record = json.loads((self.state_dir / "launches" / f"{entry['launch_id']}.json").read_text())
+        self.assertIsNone(launch_record["watchdog_timer"])  # the foreground backend starts no timer
         self.assertTrue(json.loads((self.state_dir / "preflight.json").read_text())["passed"])
         summary = json.loads(self.output[0])
         self.assertEqual(summary["state_dir"], str(self.state_dir))
@@ -231,7 +233,7 @@ class SystemdBackendTests(Harness):
         def run(argv, **kwargs):
             calls.append(argv)
             if argv[0] == "systemd-run":
-                if start_supervisor:
+                if start_supervisor and "supervise" in argv:
                     launch_id = argv[argv.index("--launch-id") + 1]
                     write_json(self.state_dir / "supervisor.json", {"launch_id": launch_id, "pid": 4242, "status": "running"})
                 return subprocess.CompletedProcess(argv, 0, "", "Running as unit: fixture.service\n")
@@ -246,7 +248,7 @@ class SystemdBackendTests(Harness):
         with patch.dict(os.environ, {"TEST_LINEAR_TOKEN": "secret-token-value"}):
             entry = launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None,
                            stop_after=["DEV-1"])
-        argv = calls[0]
+        argv = next(c for c in calls if "supervise" in c)
         self.assertEqual(argv[:2], ["systemd-run", "--user"])
         unit = argv[2].split("=", 1)[1]
         self.assertTrue(unit.startswith("linear-runner-fixture-L-") and unit.endswith(".service"))
@@ -260,17 +262,62 @@ class SystemdBackendTests(Harness):
         self.assertTrue(command[0].endswith("taskset")); self.assertEqual(command[1:3], ["-c", "0"])
         self.assertEqual(command[3:6], [sys.executable, str(Path(runner_module.__file__).parent / "runner.py"), "supervise"])
         self.assertEqual(command[-2:], ["--stop-after", "DEV-1"])
-        self.assertEqual(calls[1][:3], ["systemctl", "--user", "show"])
+        self.assertEqual(calls[2][:3], ["systemctl", "--user", "show"])
         self.assertEqual(entry["confirmation"]["supervisor"]["pid"], 4242)
         record = (self.state_dir / "launches" / f"{entry['launch_id']}.json").read_text()
         self.assertNotIn("secret-token-value", record)
         self.assertFalse(self.calls)  # nothing was dispatched by the launcher itself
 
+    def test_launch_starts_a_watchdog_timer_first_and_records_it(self):
+        backend, calls = self.fake()
+        runner = self.make_runner()
+        entry = launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None)
+        timer_argv = calls[0]
+        unit = f"linear-runner-fixture-{entry['launch_id']}-watchdog"
+        self.assertEqual(timer_argv[:7], ["systemd-run", "--user", f"--unit={unit}", "--on-active=10min",
+                                          "--on-unit-active=10min", "--timer-property=AccuracySec=30s",
+                                          f"--property=WorkingDirectory={Path(runner_module.__file__).parent}"])
+        self.assertIn("--setenv=PATH=/usr/bin:/bin", timer_argv)
+        command = timer_argv[timer_argv.index(sys.executable):]
+        self.assertEqual(command, [sys.executable, str(Path(runner_module.__file__).parent / "runner.py"), "watchdog",
+                                   "--batch", "fixture", "--home", str(self.home), "--launch-id", entry["launch_id"],
+                                   "--timer", unit + ".timer"])
+        self.assertIn("supervise", calls[1])  # the supervisor starts only after the timer
+        record = json.loads((self.state_dir / "launches" / f"{entry['launch_id']}.json").read_text())
+        self.assertEqual((record["watchdog_timer"]["timer"], record["watchdog_timer"]["interval_minutes"]),
+                         (unit + ".timer", 10))
+        with patch("sys.stdout") as stdout:
+            main(["status", "--batch", "fixture", "--home", str(self.home)])
+        report = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
+        self.assertEqual((report["watchdog"]["timer"], report["watchdog"]["stopped"]), (unit + ".timer", None))
+        self.assertEqual(report["launch"]["watchdog_timer"]["unit"], unit)
+        # A later launch stops the earlier timer and records it.
+        write_json(self.state_dir / "supervisor.json", dict(json.loads((self.state_dir / "supervisor.json").read_text()),
+                                                            status="exited", outcome="stopped"))
+        second, calls2 = self.fake()
+        entry2 = launch(runner.config, self.linear, backend=second, runner=self.make_runner(), out=lambda text: None)
+        self.assertEqual(calls2[0], ["systemctl", "--user", "stop", unit + ".timer"])
+        self.assertEqual(entry2["stopped_earlier_timers"], [unit + ".timer"])
+        ledger = json.loads((self.state_dir / "watchdog.json").read_text())
+        self.assertIn("superseded by launch", ledger["timers"][unit + ".timer"]["reason"])
+
+    def test_failed_timer_start_starts_no_supervisor(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "no user bus")
+        runner = self.make_runner()
+        with self.assertRaisesRegex(LaunchError, "Watchdog timer did not start"):
+            launch(runner.config, self.linear, backend=SystemdUserBackend(run=run, sleep=lambda s: None),
+                   runner=runner, out=lambda text: None)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(any("supervise" in c for c in calls))
+
     def test_supervisor_refusal_after_startup_fails_the_launch(self):
         calls = []
         def run(argv, **kwargs):
             calls.append(argv)
-            if argv[0] == "systemd-run":
+            if argv[0] == "systemd-run" and "supervise" in argv:
                 launch_id = argv[argv.index("--launch-id") + 1]
                 write_json(self.state_dir / "supervisor.json", {"launch_id": launch_id, "pid": 4242, "status": "refused",
                                                                 "error": "STOP marker present"})
@@ -282,13 +329,16 @@ class SystemdBackendTests(Harness):
                    runner=runner, out=lambda text: None)
 
     def test_failed_unit_is_reported_and_holds_the_batch(self):
-        backend, _ = self.fake(unit_state="failed", start_supervisor=False)
+        backend, calls = self.fake(unit_state="failed", start_supervisor=False)
         runner = self.make_runner()
         with self.assertRaisesRegex(LaunchError, "stopped before the supervisor started"):
             launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None)
         self.assertIn("failed", (self.state_dir / "STOP").read_text())
         record = json.loads(next((self.state_dir / "launches").glob("*.json")).read_text())
         self.assertIn("stopped before", record["error"])
+        timer = record["watchdog_timer"]["timer"]  # a failed launch stops its timer at once
+        self.assertIn(["systemctl", "--user", "stop", timer], calls)
+        self.assertIn("launch failed", json.loads((self.state_dir / "watchdog.json").read_text())["timers"][timer]["reason"])
 
 
 class RecoveryScenarioTests(Harness):  # on_block defaults to stop
@@ -684,6 +734,9 @@ class DeliveryIntegrityTests(Harness):
         self.assertIn("delivery/integrity.json", readback["files_sha256"])
         context = json.loads((run / "delivery" / "context.json").read_text())
         self.assertEqual(context["issue_run_dir"], str(run))
+        done = self.linear.last("DEV-1", "done")
+        self.assertIn(f"**Deliverables to review**\n- {run / 'delivery' / 'packet' / 'review.html'} — file from the "
+                      "delivery packet", done)
 
     def test_wrong_revision_blocks_before_review(self):
         with patch.dict(os.environ, {"FIXTURE_REVISION": "wrong"}):

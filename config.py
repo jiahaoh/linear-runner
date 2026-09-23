@@ -37,20 +37,21 @@ SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
                      "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}
 
-# DRAFT (awaiting the owner's choice): how a person is told about progress and stops.
-# Workspace ``attention``: owner_mention, needs_input. Site ``attention``: notifier,
-# watchdog, lint, outbox. Every value below is a DRAFT default.
+# How a person is told about progress and stops. Workspace ``attention``: owner_mention,
+# needs_input. Site ``attention``: command_prefix, notifier, watchdog, lint, outbox.
 ATTENTION_DEFAULTS = {
-    "owner_mention": "",                      # DRAFT: text put where the owner is addressed, e.g. "@handle"
-    "needs_input": {"mechanism": "mention",   # DRAFT: label | state | mention
-                    "label": "Needs input",   # DRAFT: label added on a stop, removed when a recovery runs
-                    "state": "Blocked"},      # DRAFT: workflow state used by the "state" mechanism
-    "notifier": {"backend": "none",           # DRAFT: none | command | linear-mention-only
-                 "command": [],               # DRAFT: argv; the message is on stdin, {subject} is replaced
+    "owner_mention": "",                      # optional text addressed in action comments, e.g. "@handle"
+    "needs_input": {"mechanism": "mention",   # label | state | mention
+                    "label": "Needs input",   # label added on a stop, removed when a recovery runs
+                    "state": "Blocked"},      # workflow state used by the "state" mechanism
+    "command_prefix": "python3 ${runner_root}/runner.py",  # how commands in comments start
+    "notifier": {"backend": "none",           # none | command | linear-mention-only
+                 "command": [],               # argv; the message is on stdin, {subject} is replaced
                  "timeout_seconds": 30},
-    "watchdog": {"stall_minutes": 120},       # DRAFT: alert after this long without recorded progress
-    "lint": {"max_chars": 1500, "max_lines": 30, "max_first_sentence_chars": 240},  # DRAFT draft limits
-    "outbox": {"poll_seconds": 15, "settle_seconds": 3},  # DRAFT: poll interval; ignore files newer than this
+    "watchdog": {"stall_minutes": 120,        # alert after this long without recorded progress
+                 "interval_minutes": 10},     # how often the launch-started timer runs the watchdog
+    "lint": {"max_chars": 1500, "max_lines": 30, "max_first_sentence_chars": 240},  # draft limits
+    "outbox": {"poll_seconds": 15, "settle_seconds": 3},  # poll interval; files newer than this wait
 }
 
 
@@ -269,15 +270,49 @@ def _read_text(path, where):
     return path.read_text()
 
 
+def resolve_batch(value, home):
+    """``--batch`` is a file path, or a bare batch id meaning ``<home>/batches/<id>.json``.
+
+    A value with a path separator or a ``.json`` suffix is a path; anything else is an id.
+    """
+    text = str(value)
+    if os.sep in text or text.endswith(".json") or (os.altsep and os.altsep in text):
+        return Path(text).expanduser().resolve()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", text):
+        raise ConfigError(f"--batch {text!r} is neither a batch file path nor a batch id")
+    path = Path(home) / "batches" / f"{text}.json"
+    if not path.is_file():
+        raise ConfigError(f"Unknown batch id {text!r}: {path} does not exist (pass the batch file path instead)")
+    return path.resolve()
+
+
+def batch_argument(config):
+    """What to pass as ``--batch``: the id when it resolves to this batch's file, else the path."""
+    path = next((v for k, v in config.get("_layers", {}).items() if k.startswith("batch ")), None)
+    home = config.get("variables", {}).get("home")
+    if path and home:
+        candidate = Path(home) / "batches" / f"{config['batch_id']}.json"
+        if candidate.is_file() and candidate.resolve() == Path(path).resolve():
+            return config["batch_id"]
+    return path or config["batch_id"]
+
+
 def load_config(batch_path, home=None):
-    """Validate and merge every layer offline; Linear IDs remain unresolved (None)."""
+    """Validate and merge every layer offline; Linear IDs remain unresolved (None).
+
+    ``batch_path`` may be a file path or a bare batch id (see ``resolve_batch``).
+    """
     home = find_home(home)
-    batch_path = Path(batch_path).expanduser().resolve()
+    requested = str(batch_path)
+    batch_path = resolve_batch(batch_path, home)
     policy, sources, layers = load_registry(home)
 
     site_path = home / "site.json"
     site = read_layer(site_path, "site", "site")
     batch = read_layer(batch_path, "batch", "batch")
+    if batch_path.parent == (home / "batches").resolve() and requested == batch_path.stem and batch["id"] != requested:
+        raise ConfigError(f"--batch {requested!r}: {batch_path} has id {batch['id']!r}; pass that file's path or "
+                          "rename it to <id>.json")
     project_path = home / "projects" / f"{batch['project']}.json"
     project = read_layer(project_path, "project", f"project {batch['project']}")
     workspace_path = home / "workspaces" / f"{project['workspace']}.json"
@@ -445,11 +480,12 @@ def load_config(batch_path, home=None):
                 attention[key] = copy.deepcopy(value)
             _record(sources, f"attention.{key}", value, label)
     for key in ATTENTION_DEFAULTS:
-        sources.setdefault(f"attention.{key}", "built-in DRAFT default")
+        sources.setdefault(f"attention.{key}", "built-in default")
     notifier = attention["notifier"]
     if notifier["backend"] == "command" and not notifier["command"]:
         raise ConfigError("site.attention.notifier: the command backend needs a non-empty command argv")
     notifier["command"] = [substitute(arg, variables, "site.attention.notifier.command") for arg in notifier["command"]]
+    attention["command_prefix"] = substitute(attention["command_prefix"], variables, "site.attention.command_prefix")
     config["attention"] = attention
     for name in BUILTIN_VARIABLES:
         sources[f"variables.{name}"] = "built-in"

@@ -1,7 +1,6 @@
 ---
 kind: claim
 author: runner
-status: DRAFT
 headline.default: Work on {issue} has started; no action is needed.
 ---
 {headline}

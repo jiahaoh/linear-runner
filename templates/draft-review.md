@@ -1,7 +1,6 @@
 ---
 kind: review
 author: reviewer
-status: DRAFT
 required: Assessment
 posted: as the review result when the review is accepted; quoted in the blocked comment when it is not
 ---

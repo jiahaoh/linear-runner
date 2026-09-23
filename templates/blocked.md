@@ -1,11 +1,10 @@
 ---
 kind: blocked
 author: runner
-status: DRAFT
-headline.needs-decision: {subject} is paused because {cause}; {owner} needs to decide how to continue.
-headline.technical-block: {subject} is paused because {cause}; {owner} needs to choose a recovery.
-headline.environment: {subject} is paused by a host or service problem ({cause}); {owner} needs to fix it and relaunch.
-headline.runner-defect: {subject} is paused by a runner error ({cause}); {owner} needs to check the runner before relaunching.
+headline.needs-decision: {subject} is paused because {cause}, and it needs your decision to continue.
+headline.technical-block: {subject} is paused because {cause}, and it needs you to choose a recovery.
+headline.environment: {subject} is paused by a host or service problem ({cause}), and it needs you to fix it and relaunch.
+headline.runner-defect: {subject} is paused by a runner error ({cause}), and it needs you to check the runner before relaunching.
 cause.worker_blocked: the worker reported that it cannot finish
 cause.review_blocked: the independent review did not accept it
 cause.checks_failed: checks still fail after the allowed repairs
@@ -28,6 +27,8 @@ needed.environment: Fix the host or service problem (for example refresh the Lin
 needed.runner-defect: This looks like a runner bug rather than a problem with the issue. Check the supervisor log before resuming.
 ---
 {headline}
+
+{mention}
 
 **What happened**
 {what_happened}

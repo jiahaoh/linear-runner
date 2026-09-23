@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import attention
 from config import load_config, pin_resolution
@@ -94,6 +95,14 @@ class LintTests(unittest.TestCase):
             self.assertIn("not allowed in the review phase", updates.lint_draft(outbox / "001-progress.md", "review", LIMITS)[2][0])
             self.assertIn("is not NNN-<kind>.md", updates.lint_draft(outbox / "notes.md", "implement", LIMITS)[2][0])
 
+    def test_command_blocks_are_allowed_only_in_runner_comments(self):
+        body = "TEAM-1 is paused.\n\n**To continue**\nStart it:\n\n```bash\npython3 runner.py launch --batch b\n```\n"
+        self.assertEqual(updates.lint(body, kind="runner", limits=LIMITS, allow_commands=True), [])
+        self.assertIn("line 6: code blocks are not allowed", updates.lint(body, kind="runner", limits=LIMITS))
+        two = body.replace("launch --batch b", "launch --batch b\npython3 runner.py status --batch b")
+        self.assertIn("line 6: a command block must hold exactly one command line",
+                      updates.lint(two, kind="runner", limits=LIMITS, allow_commands=True))
+
     def test_render_drops_empty_optional_sections(self):
         body = updates.render("ready", {"issue": "TEAM-1", "summary": "> done", "criteria": "", "limitations": "",
                                         "evidence": ""})
@@ -101,7 +110,7 @@ class LintTests(unittest.TestCase):
                                "**Worker summary**\n> done\n")
 
     def test_every_sample_passes_lint_and_the_samples_file_is_current(self):
-        runner_limits = dict(LIMITS, max_chars=3500, max_lines=40)
+        runner_limits = dict(LIMITS, max_chars=3500, max_lines=60)
         for title, template, author, _, body in render_samples.samples():
             with self.subTest(sample=title):
                 text = body.rsplit("\n\n<!-- linear-runner ", 1)[0]
@@ -113,9 +122,10 @@ class LintTests(unittest.TestCase):
                     draft = text.rsplit("\n\n_Written by", 1)[0]
                     self.assertEqual(TestDraftLint.lint(kind, draft), [])
                 else:
-                    self.assertEqual(updates.lint(text, kind="runner", limits=runner_limits), [])
-        for name in ("draft-progress", "draft-ready", "draft-blocked", "draft-review"):
-            self.assertEqual(updates.load_template(name)["meta"]["status"], "DRAFT")
+                    self.assertEqual(updates.lint(text, kind="runner", limits=runner_limits, allow_commands=True), [])
+                    self.assertNotIn("- `", text)  # commands are never inline code in bullets
+        for path in updates.TEMPLATE_DIR.glob("*.md"):
+            self.assertNotIn("DRAFT", path.read_text())
         self.assertEqual(render_samples.main(["--check"]), 0, "run python3 render_samples.py")
 
 
@@ -271,7 +281,7 @@ print(json.dumps({{'type': 'turn.completed', 'usage': {{'input_tokens': 1, 'outp
 # --- Batch scenarios: the three silent-stop cases, fallback, needs-input ------------------------
 
 class AttentionHarness(Harness):
-    ATTENTION = {"owner_mention": OWNER}
+    ATTENTION = {}
     SITE_ATTENTION = {"notifier": {"backend": "command", "command": ["/usr/bin/notify-send", "{subject}"]},
                       "outbox": {"poll_seconds": 0, "settle_seconds": 0}}
 
@@ -316,11 +326,12 @@ class SilentStopTests(AttentionHarness):
         self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "review", "done"])
         self.assertEqual(self.linear.kinds("DEV-2"), ["claim", "blocked"])
         body = self.linear.last("DEV-2", "blocked")
-        self.assertEqual(first_line(body), "DEV-2 is paused because the worker reported that it cannot finish; "
-                                           f"{OWNER} needs to decide how to continue.")
+        self.assertEqual(first_line(body), "DEV-2 is paused because the worker reported that it cannot finish, "
+                                           "and it needs your decision to continue.")
         self.assertIn("> " + WORKER_EXPLANATION, body)
-        self.assertIn("recover resume --batch", body)
-        self.assertNotIn("```", body); self.assertNotIn('{"', body)
+        self.assertIn("Record the recovery (you can add --note-file with a note for the worker):\n\n```bash\n"
+                      f"python3 {Path(__file__).parent / 'runner.py'} recover resume --batch fixture --home ", body)
+        self.assertNotIn('{"', body)
         # The success comments on DEV-1 were not touched; the batch summary is a new comment.
         self.assertEqual(self.linear.bodies("DEV-1"), done_comments)
         self.assertEqual(self.linear.kinds("DEV-3"), ["batch-paused"])
@@ -339,8 +350,8 @@ class SilentStopTests(AttentionHarness):
         self.hooks[("DEV-1", "review")] = hook
         self.launch()
         body = self.linear.last("DEV-1", "blocked")
-        self.assertEqual(first_line(body), "DEV-1 is paused because the independent review did not accept it; "
-                                           f"{OWNER} needs to decide how to continue.")
+        self.assertEqual(first_line(body), "DEV-1 is paused because the independent review did not accept it, "
+                                           "and it needs your decision to continue.")
         self.assertIn("The reviewer wrote:\n\n> " + reviewer, body)
         self.assertIn("recover review --batch", body)
         self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "blocked"])
@@ -362,7 +373,7 @@ class SilentStopTests(AttentionHarness):
         self.assertEqual((result["status"], result["condition"], result["issue"]), ("alerted", "gone", "DEV-2"))
         body = self.linear.last("DEV-2", "watchdog")
         self.assertEqual(first_line(body), "The supervisor for batch fixture stopped without reporting an outcome while "
-                                           f"working on DEV-2; {OWNER} needs to check the host and relaunch.")
+                                           "working on DEV-2, and it needs you to check the host and relaunch.")
         self.assertIn("From the progress comment: The QC report now renders for all tiles", body)
         again = watchdog.check(config, self.linear, alive=lambda pid: False, notify_run=self.notifier, log=lambda m: None)
         self.assertEqual(again["status"], "already-alerted")
@@ -487,16 +498,19 @@ class NeedsInputTests(AttentionHarness):
         self.setUp()
         issue = self.block_then_recover()
         self.assertEqual(issue["status"], "Blocked")
-        self.assertIn("the owner needs to decide", first_line(self.linear.last("DEV-1", "blocked")))
+        self.assertIn("it needs your decision", first_line(self.linear.last("DEV-1", "blocked")))
         self.finish()  # launch preflight accepts the runner's own needs-input state
         # Restored by the recovery, then re-confirmed by the resumed implement step.
         self.assertEqual(self.linear.writes, ["In Progress", "Blocked", "In Progress", "In Progress", "In Review", "Done"])
 
     def test_mention_only_changes_nothing_on_the_issue(self):
+        self.ATTENTION = {"owner_mention": OWNER}
+        self.setUp()
         issue = self.block_then_recover()
         self.assertEqual(self.linear.label_writes, [])
         self.assertEqual(issue["status"], "In Progress")
-        self.assertIn(OWNER, first_line(self.linear.last("DEV-1", "blocked")))
+        blocked = self.linear.last("DEV-1", "blocked")
+        self.assertEqual(blocked.split("\n\n")[1], OWNER)  # an optional mention is its own paragraph
         self.assertEqual(self.state()["needs_input"]["DEV-1"], {"mechanism": "mention", "issue": "DEV-1", "applied": False})
         self.finish()
 
@@ -511,14 +525,15 @@ class NeedsInputTests(AttentionHarness):
 
 
 class MessageTests(unittest.TestCase):
-    def test_commands_and_owner_fallback(self):
-        ctx = dict(render_samples.CTX, owner="the owner", home="/absolute/path/to/home with space")
+    def test_commands_are_short_blocks(self):
+        ctx = dict(render_samples.CTX, home="/absolute/path/to/home with space")
         body = messages.blocked(ctx, issue="TEAM-1", classification="technical-block", event="checks_failed",
                                 error="Repeated unchanged failure or repair limit exhausted; failing: regression",
                                 step="validate", result={"summary": "Fixed the parser.", "acceptance": []})
-        self.assertEqual(first_line(body), "TEAM-1 is paused because checks still fail after the allowed repairs; the owner "
-                                           "needs to choose a recovery.")
-        self.assertIn("--home '/absolute/path/to/home with space'", body)
+        self.assertEqual(first_line(body), "TEAM-1 is paused because checks still fail after the allowed repairs, and it "
+                                           "needs you to choose a recovery.")
+        self.assertIn("Then start the batch again:\n\n```bash\npython3 /absolute/path/to/linear-runner/runner.py launch "
+                      "--batch demo-batch --home '/absolute/path/to/home with space'\n```", body)
         self.assertIn("failing: regression", body)
         repair = messages.recovery_steps(ctx, issue="TEAM-1", step="repair")
         self.assertIn("An interrupted repair cannot be resumed", repair)
@@ -528,3 +543,178 @@ class MessageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BatchIdTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
+        self.home, self.batch = make_home(self.root, self.repo)
+
+    def test_bare_id_resolves_in_the_home_and_unknown_id_is_an_error(self):
+        from config import ConfigError, batch_argument, resolve_batch
+        by_id = load_config("fixture", self.home)
+        self.assertEqual(by_id["batch_id"], "fixture")
+        self.assertEqual(by_id["_layers"]["batch fixture"], str(self.batch.resolve()))
+        self.assertEqual(load_config(str(self.batch), self.home)["_layers"], by_id["_layers"])
+        self.assertEqual(batch_argument(by_id), "fixture")
+        with self.assertRaisesRegex(ConfigError, "Unknown batch id 'nope': .*batches/nope.json does not exist"):
+            load_config("nope", self.home)
+        with self.assertRaisesRegex(ConfigError, "neither a batch file path nor a batch id"):
+            resolve_batch("bad id", self.home)
+        (self.home / "batches" / "renamed.json").write_text(self.batch.read_text())  # its id is still "fixture"
+        with self.assertRaisesRegex(ConfigError, "has id 'fixture'"):
+            load_config("renamed", self.home)
+        # A batch file outside <home>/batches is named by its path in comments.
+        outside = self.root / "elsewhere" / "fixture.json"
+        outside.parent.mkdir(); outside.write_text(self.batch.read_text())
+        self.assertEqual(batch_argument(load_config(str(outside), self.home)), str(outside.resolve()))
+
+    def test_cli_accepts_an_id_and_rejects_an_unknown_one(self):
+        from runner import main
+        with unittest.mock.patch("sys.stdout") as stdout:
+            main(["validate-config", "--batch", "fixture", "--home", str(self.home)])
+        self.assertEqual(json.loads("".join(c.args[0] for c in stdout.write.call_args_list))["batch"], "fixture")
+        with unittest.mock.patch("sys.stderr") as stderr, self.assertRaises(SystemExit) as raised:
+            main(["status", "--batch", "missing-batch", "--home", str(self.home)])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("Unknown batch id 'missing-batch'", "".join(c.args[0] for c in stderr.write.call_args_list))
+
+    def test_command_prefix_is_a_resolved_site_setting(self):
+        self.assertEqual(load_config("fixture", self.home)["attention"]["command_prefix"],
+                         f"python3 {Path(__file__).resolve().parent}/runner.py")
+        make_home(self.root, self.repo, site={"attention": {"command_prefix": "${python} -m runner"}})
+        config = load_config("fixture", self.home)
+        self.assertEqual(messages.command(messages.context(config), "launch"),
+                         f"{sys.executable} -m runner launch --batch fixture --home {self.home}")
+
+
+class DeliverablesTests(AttentionHarness):
+    def test_listed_deliverables_are_validated_shown_to_the_reviewer_and_listed_at_done(self):
+        (self.root / "outside.html").write_text("not in the worktree")
+        def listing(result):
+            result["deliverables"] = [{"path": "DEV-1.txt", "description": "The rendered DEV-1 output"},
+                                      {"path": "reports/missing.html", "description": "never written"},
+                                      {"path": str(self.root / "outside.html"), "description": "outside"}]
+        self.hooks[("DEV-1", "implement")] = listing
+        self.launch(stop_after=["DEV-1"])
+        path = self.repo / "DEV-1.txt"
+        ready = self.linear.last("DEV-1", "ready")
+        self.assertIn(f"**Deliverables to review**\n- {path} — The rendered DEV-1 output", ready)
+        self.assertIn(f"Listed deliverables that were not found: reports/missing.html and {self.root / 'outside.html'}.", ready)
+        review_prompt = self.prompts[1]
+        self.assertIn(f"open and assess them as part of the review: {path} (The rendered DEV-1 output)", review_prompt)
+        done = self.linear.last("DEV-1", "done")
+        self.assertIn("the deliverables below are ready for your review.", first_line(done))
+        self.assertIn(f"**Deliverables to review**\n- {path} — The rendered DEV-1 output\n\n**Delivered**", done)
+        self.assertNotIn("missing.html", done)
+        # Nothing listed: no section, and the headline says no action is needed.
+        self.assertNotIn("Deliverables", self.linear.last("DEV-1", "claim"))
+
+    def test_schemas_carry_deliverables_for_the_worker_only(self):
+        from runner import RESULT_SCHEMA, review_schema
+        self.assertIn("deliverables", RESULT_SCHEMA["required"])
+        self.assertEqual(RESULT_SCHEMA["properties"]["deliverables"]["items"]["required"], ["path", "description"])
+        schema = review_schema(self.linear.data, "sha")
+        self.assertNotIn("deliverables", schema["properties"]); self.assertNotIn("deliverables", schema["required"])
+        self.assertIn("deliverables", RESULT_SCHEMA["properties"])  # the copy did not change the worker schema
+        self.launch(stop_after=["DEV-2"])
+        done = self.linear.last("DEV-2", "done")
+        self.assertTrue(first_line(done).endswith("so no action is needed."))
+        self.assertNotIn("Deliverables", done)
+
+
+class LabelTests(unittest.TestCase):
+    def test_label_writes_preserve_other_labels_and_read_back(self):
+        linear = FakeLinear()
+        linear.data["labels"] = [{"name": "Implementation"}, {"name": "Standard"}, "Bug"]
+        settings = {"mechanism": "label", "label": "Needs input"}
+        mark = attention.mark_needs_input(linear, "DEV-1", settings)
+        self.assertEqual(linear.label_writes, [("DEV-1", ["Implementation", "Standard", "Bug", "Needs input"])])
+        attention.mark_needs_input(linear, "DEV-1", settings)  # already set: no second write
+        self.assertEqual(len(linear.label_writes), 1)
+        attention.clear_needs_input(linear, mark)
+        self.assertEqual(linear.label_writes[-1], ("DEV-1", ["Implementation", "Standard", "Bug"]))
+        original = linear.call
+        linear.call = lambda name, **args: copy.deepcopy(linear.data)  # write acknowledged but not applied
+        with self.assertRaisesRegex(RuntimeError, "read-back does not show the 'Needs input' label"):
+            attention.mark_needs_input(linear, "DEV-1", settings)
+        linear.call = original
+
+
+class WatchdogLabelAndTimerTests(AttentionHarness):
+    ATTENTION = {"needs_input": {"mechanism": "label", "label": "Needs input"}}
+
+    def running(self, **fields):
+        path = self.state_dir / "supervisor.json"
+        write_json(path, dict(json.loads(path.read_text()), **dict({"status": "running"}, **fields)))
+
+    def test_alert_labels_the_target_and_the_next_launch_removes_it(self):
+        self.launch(stop_after=["DEV-1"])
+        config = self.make_runner().config
+        self.running()
+        later = os.path.getmtime(self.state_dir / "state.json") + 3 * 3600
+        result = watchdog.check(config, self.linear, clock=lambda: later, alive=lambda pid: True,
+                                notify_run=self.notifier, log=lambda m: None)
+        self.assertEqual((result["condition"], result["issue"]), ("stalled", "DEV-3"))
+        self.assertIn("Needs input", self.linear.others["DEV-3"]["labels"])
+        self.running(status="exited")
+        self.launch(stop_after=["DEV-2"], clear_stop=True)
+        self.assertNotIn("Needs input", self.linear.others["DEV-3"]["labels"])
+        self.assertEqual(json.loads((self.state_dir / "watchdog.json").read_text())["needs_input"], {})
+
+    def test_the_watchdog_stops_its_own_timer_only_when_done(self):
+        entry = self.launch(stop_after=["DEV-1"])
+        config = self.make_runner().config
+        calls = []
+        def systemctl(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        timer = "linear-runner-fixture-x-watchdog.timer"
+        check = lambda **kw: watchdog.check(config, self.linear, notify_run=self.notifier, log=lambda m: None,
+                                            launch_id=entry["launch_id"], timer=timer, systemctl=systemctl, **kw)
+        self.running()
+        self.assertEqual(check(alive=lambda pid: True)["status"], "ok")
+        self.assertEqual(calls, [])  # still watching a running supervisor
+        # The supervisor finished, but an alert is still unposted: keep the timer to retry.
+        self.running(status="exited")
+        record = json.loads((self.state_dir / "watchdog.json").read_text()) if (self.state_dir / "watchdog.json").exists() else {}
+        record.setdefault("events", {})["DEV-3/watchdog/9"] = {"key": "DEV-3/watchdog/9", "issue": "DEV-3", "kind": "watchdog",
+                                                               "status": "pending", "attempts": 0, "body": "x", "seq": 9}
+        write_json(self.state_dir / "watchdog.json", record)
+        self.linear.fail_posts = True
+        self.assertFalse(check(alive=lambda pid: False)["timer_stopped"])
+        self.linear.fail_posts = False
+        self.assertTrue(check(alive=lambda pid: False)["timer_stopped"])
+        self.assertEqual(calls, [["systemctl", "--user", "stop", timer]])
+        self.assertFalse(check(alive=lambda pid: False)["timer_stopped"])  # recorded once
+        # A timer whose launch was replaced stops itself.
+        other = watchdog.check(config, self.linear, log=lambda m: None, launch_id="L-older", timer="old.timer",
+                               systemctl=systemctl)
+        self.assertEqual((other["status"], calls[-1]), ("superseded", ["systemctl", "--user", "stop", "old.timer"]))
+
+    def test_gone_alert_stops_the_timer_after_posting(self):
+        entry = self.launch(stop_after=["DEV-1"])
+        config = self.make_runner().config
+        self.running()
+        calls = []
+        result = watchdog.check(config, self.linear, alive=lambda pid: False, notify_run=self.notifier, log=lambda m: None,
+                                launch_id=entry["launch_id"], timer="t.timer",
+                                systemctl=lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0))
+        self.assertEqual((result["condition"], result["posted"], result["timer_stopped"]), ("gone", True, True))
+        self.assertEqual(calls, [["systemctl", "--user", "stop", "t.timer"]])
+
+    def test_stop_command_stops_the_timer_unless_a_supervisor_is_running(self):
+        from runner import stop_watchdog_timer
+        entry = self.launch(stop_after=["DEV-1"])
+        record_path = self.state_dir / "launches" / f"{entry['launch_id']}.json"
+        write_json(record_path, dict(json.loads(record_path.read_text()), watchdog_timer={"timer": "w.timer"}))
+        calls = []
+        run = lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
+        self.running(pid=os.getpid())
+        self.assertEqual(stop_watchdog_timer(self.state_dir, run)["state"],
+                         "left running until the supervisor exits between issues")
+        self.running(status="exited")
+        self.assertEqual(stop_watchdog_timer(self.state_dir, run)["state"], "stopped")
+        self.assertEqual(calls, [["systemctl", "--user", "stop", "w.timer"]])
+        self.assertEqual(stop_watchdog_timer(self.state_dir, run)["state"], "already stopped")

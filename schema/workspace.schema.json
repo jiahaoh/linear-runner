@@ -51,7 +51,7 @@
       }
     },
     "attention": {
-      "description": "DRAFT: how the owner is addressed and how an issue that needs input is marked; outside the configuration fingerprint.",
+      "description": "How the owner is addressed and how an issue that needs input is marked; outside the configuration fingerprint.",
       "type": "object",
       "additionalProperties": false,
       "properties": {

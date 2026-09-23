@@ -1,10 +1,11 @@
-# Human-review templates (DRAFT wording)
+# Human-review templates
 
 Linear comments that a person reads. Each file has a short front matter block (between
 `---` lines) that is never posted, then the comment body.
 
 * `author: runner` templates are filled from saved state. `{name}` fields are replaced;
-  a paragraph whose fields are all empty is left out. `headline.<variant>`, and other
+  a paragraph whose fields are all empty is left out. Commands appear in their own
+  fenced `bash` blocks, each after one plain sentence saying what it does. `headline.<variant>`, and other
   `<group>.<variant>` entries, hold the wording the runner chooses between.
 * `author: worker` and `author: reviewer` templates (`draft-*.md`) show the model the
   shape of the draft it writes into its outbox. `<...>` lines are guidance to replace.

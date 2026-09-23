@@ -8,7 +8,8 @@ and at most one ``Evidence:`` line of host paths. No JSON, code blocks, tables o
 
 Workers and reviewers write drafts (``NNN-<kind>.md``) into their attempt's outbox; the
 runner lints each draft against its template and posts valid ones as new comments.
-Lint limits and the outbox timing are DRAFT settings (site ``attention`` block).
+Lint limits and the outbox timing are site ``attention`` settings. Runner comments put each
+command in its own fenced ``bash`` block after a plain sentence; drafts may not use code blocks.
 """
 from __future__ import annotations
 
@@ -98,10 +99,12 @@ def draft_template(kind):
     return load_template("draft-" + kind)
 
 
-def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None):
+def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None, allow_commands=False):
     """Return a list of problems (empty when the text may be posted).
 
     ``sections`` limits headings to a template's headings; ``required`` must be present.
+    ``allow_commands`` (runner comments only) permits fenced ``bash`` blocks of exactly one
+    command line each.
     """
     problems = []
     if allowed_kinds is not None and kind not in allowed_kinds:
@@ -123,7 +126,22 @@ def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None):
         problems.append(f"the first sentence is {len(first)} characters (limit {limits['max_first_sentence_chars']})")
     found = []
     evidence = [i for i, line in enumerate(lines) if line.strip().startswith("Evidence:")]
+    commands = set()
+    if allow_commands:
+        index = 0
+        while index < len(lines):
+            if lines[index].strip() == "```bash":
+                end = index + 1
+                while end < len(lines) and lines[end].strip() != "```":
+                    end += 1
+                if end == len(lines) or end - index != 2 or not lines[index + 1].strip():
+                    problems.append(f"line {index + 1}: a command block must hold exactly one command line")
+                commands.update(range(index, min(end, len(lines) - 1) + 1))
+                index = end
+            index += 1
     for index, line in enumerate(lines):
+        if index in commands:
+            continue
         stripped = line.strip()
         name = section_name(line)
         if name:

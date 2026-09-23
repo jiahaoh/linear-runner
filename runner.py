@@ -122,8 +122,15 @@ RESULT_SCHEMA = {
             "properties": {"criterion": {"type": "string"}, "satisfied": {"type": "boolean"}, "evidence": {"type": "string"}},
             "required": ["criterion", "satisfied", "evidence"]}},
         "limitations": {"type": "array", "items": {"type": "string"}},
+        # Files the owner should review (for example a rendered report); [] when there are none.
+        "deliverables": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"path": {"type": "string"}, "description": {"type": "string"}},
+            "required": ["path", "description"]}},
     },
-    "required": ["issue_id", "status", "summary", "commit", "acceptance", "limitations"],
+    # Strict structured output needs every property listed; an empty deliverables list is
+    # how a worker says "none". A result without the field is treated as [].
+    "required": ["issue_id", "status", "summary", "commit", "acceptance", "limitations", "deliverables"],
 }
 
 
@@ -198,6 +205,9 @@ def review_criteria(issue):
 def review_schema(issue, commit):
     """Constrain generation as well as validating the returned decision independently."""
     schema = copy.deepcopy(RESULT_SCHEMA)
+    # The reviewer assesses the worker's deliverables; it does not list its own.
+    del schema["properties"]["deliverables"]
+    schema["required"].remove("deliverables")
     schema["properties"]["issue_id"]["enum"] = [issue["id"]]
     schema["properties"]["commit"]["enum"] = [commit]
     acceptance = schema["properties"]["acceptance"]
@@ -602,6 +612,43 @@ class Runner:
             self.state["drafts"][held["path"]]["status"] = status
             self.save()
 
+    def check_deliverables(self, active, items):
+        """Keep deliverables whose file exists inside the worktree or the issue's run directory."""
+        kept, missing = [], []
+        bases = [self.repo.resolve(), Path(active["run_dir"]).resolve()]
+        for item in items or []:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"].strip():
+                continue
+            raw = Path(item["path"]).expanduser()
+            path = (raw if raw.is_absolute() else self.repo / raw).resolve()
+            if path.is_file() and any(path.is_relative_to(base) for base in bases):
+                if str(path) not in [k["path"] for k in kept]:
+                    kept.append({"path": str(path), "description": str(item.get("description") or "").strip()})
+            else:
+                missing.append(item["path"])
+        return kept, missing
+
+    def record_deliverables(self, active, result):
+        """Validate the ready result's deliverables (a repair's non-empty list replaces them)."""
+        items = result.get("deliverables") or []
+        if items or "deliverables" not in active:
+            active["deliverables"], active["deliverables_missing"] = self.check_deliverables(active, items)
+        self.save(active=active)
+
+    def deliverables_prompt(self, active):
+        items = active.get("deliverables") or []
+        if not items:
+            return ""
+        return ("The worker lists these deliverables for the owner; open and assess them as part of the review: "
+                + "; ".join(f"{d['path']} ({d['description']})" if d["description"] else d["path"] for d in items)
+                + ". ")
+
+    def final_deliverables(self, active):
+        """Worker-listed deliverables plus delivery-packet outputs, re-checked at Done."""
+        items = list(active.get("deliverables") or []) + list(active.get("delivery_deliverables") or [])
+        kept, _ = self.check_deliverables(active, items)
+        return kept
+
     def post_ready(self, active, result):
         drafts = active.get("drafts") or {}
         held = drafts.get("held", {}).get("ready")
@@ -612,7 +659,9 @@ class Runner:
             return
         problem = drafts.get("rejected", {}).get("ready", {}).get("problem")
         self.emit(active["issue_id"], "ready", messages.ready(self.ctx, issue=active["issue_id"], result=result,
-                                                              attempt=drafts.get("attempt"), draft_problem=problem),
+                                                              attempt=drafts.get("attempt"), draft_problem=problem,
+                                                              deliverables=active.get("deliverables", []),
+                                                              missing=active.get("deliverables_missing", [])),
                   dedupe="ready:" + str(drafts.get("attempt")))
 
     def post_review(self, active, result):
@@ -683,13 +732,18 @@ class Runner:
                                                        run=self.notify_run), at=now())
             self.save()
 
-    def clear_needs_input(self):
-        """Remove needs-input marks (label or state) once a recovery is carried out."""
+    def clear_stop_marks(self, issue=None):
+        """Remove the needs-input mark of a stop once a recovery for that issue (or, with no
+        issue, for the paused batch) is carried out; labels are read, rewritten and read back."""
         marks = self.state.get("needs_input") or {}
-        for issue, mark in list(marks.items()):
-            attention.clear_needs_input(self.linear, mark)
-            del marks[issue]
-            self.save()
+        for marked, mark in list(marks.items()):
+            if issue is None or marked == issue:
+                attention.clear_needs_input(self.linear, mark)
+                del marks[marked]
+                self.save()
+
+    def clear_watchdog_marks(self):
+        """Remove needs-input marks the watchdog set; called when a launch starts successfully."""
         path = self.root / "watchdog.json"
         if path.exists():
             record = read_json(path)
@@ -829,6 +883,8 @@ class Runner:
                 "Use only relevant source files and read further references when needed. "
                 "The controller owns Linear, full checks, Git commits and final publication; you report through the outbox below. "
                 "Do focused validation; return the readiness schema with evidence for every criterion. "
+                "In `deliverables`, list each file the owner should review (for example a rendered report) with a "
+                "short description; paths inside the worktree or the artifacts directory, or [] when there are none. "
                 "Leave source uncommitted. No Linear mutations, commits, push, merge or nested dispatch. "
                 f"Artifacts: {active['run_dir']}. Report an empty commit field and any unmet criterion honestly.")
 
@@ -872,6 +928,7 @@ class Runner:
                 raise IssueBlocked("Worker reported blocked: " + messages.short_cause(result.get("summary") or
                                                                                    "no summary given", 300),
                                    "worker_blocked")
+            self.record_deliverables(active, result)
             active["step"] = "validate"; self.save(active=active)
             self.post_ready(active, result)
         if active["step"] == "repair":
@@ -909,6 +966,7 @@ class Runner:
                 raise IssueBlocked("Repair did not report ready: " + messages.short_cause(result.get("summary") or
                                                                                         "no summary given", 300),
                                    "worker_blocked")
+            self.record_deliverables(active, result)
             active["step"] = "validate"; self.save(active=active)
             self.post_ready(active, result)
         if active["step"] == "commit":
@@ -941,7 +999,7 @@ class Runner:
                 "Assess every original acceptance criterion and relevant source; do not rely only on the worker's claims. "
                 "Return the readiness schema with criterion-level evidence and the current full commit. Copy each original unchecked checklist item verbatim into criterion. "
                 "No mutations of files, Git or Linear. Unmet/uncertain criteria mean blocked. "
-                "Do not approve human or scientific gates. " +
+                "Do not approve human or scientific gates. " + self.deliverables_prompt(active) +
                 f"The final JSON must identify issue_id={issue!r} and commit={active['commit']!r}. "
                 "Return one acceptance entry per required criterion, including unsatisfied items when blocked. "
                 "An empty acceptance array or a summary alone is not a review. "
@@ -976,7 +1034,8 @@ class Runner:
         if active["step"] == "done":
             self.emit(issue, "done", messages.done(self.ctx, issue=issue, commit=active["commit"],
                                                    criteria_count=len(active["accepted_result"]["acceptance"]),
-                                                   repairs=active.get("repairs", 0), run_dir=active["run_dir"]),
+                                                   repairs=active.get("repairs", 0), run_dir=active["run_dir"],
+                                                   deliverables=self.final_deliverables(active)),
                       dedupe="done:" + active["run_dir"])
             result = active["accepted_result"]
             write_json(Path(active["run_dir"]) / "final-result.json", result)
@@ -1006,6 +1065,11 @@ class Runner:
                 write_json(directory / "integrity.json", {"passed": False, "error": str(error), "at": now()})
                 raise IssueBlocked(f"Delivery integrity failed: {error}", "delivery_failed") from None
             write_json(directory / "integrity.json", dict(evidence, passed=True, at=now()))
+            manifest = Path(evidence["manifest"])
+            outputs = [{"path": str((manifest.parent / relative).resolve()), "description": "file from the delivery packet"}
+                       for relative in spec.get("file_hashes", {}).values()]
+            active["delivery_deliverables"] = outputs or [{"path": str(manifest), "description": "delivery manifest"}]
+            self.save(active=active)
 
     def redeliver(self, active):
         """Re-run delivery for frozen source; the previous packet is kept, never overwritten."""
@@ -1018,7 +1082,10 @@ class Runner:
     def verify_live_state(self, live, step):
         """Only this execution's own workflow states are acceptable at each step."""
         states = self.config["states"]
-        mark = (self.state.get("needs_input") or {}).get(live.get("id")) or {}
+        mark = (self.state.get("needs_input") or {}).get(live.get("id"))
+        if not mark and (self.root / "watchdog.json").exists():
+            mark = (read_json(self.root / "watchdog.json").get("needs_input") or {}).get(live.get("id"))
+        mark = mark or {}
         if mark.get("mechanism") == "state" and mark.get("applied") and live.get("status") == mark.get("state"):
             return  # this runner's own needs-input state; restored when the recovery runs
         if step == "implement":
@@ -1134,7 +1201,8 @@ class Runner:
             return
         self.reconcile_events()
         if resume:
-            self.clear_needs_input()
+            self.clear_stop_marks()
+            self.clear_watchdog_marks()
         if self.state.get("active"):
             if not resume:
                 raise RuntimeError("An unfinished issue is saved. Inspect it, then use run --resume")
@@ -1188,12 +1256,16 @@ def build_parser():
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
                        ("status", "print saved state, supervisor status and pending recovery"),
                        ("stop", "write the STOP marker (stops between issues)"),
-                       ("watchdog", "model-free check for a vanished or stalled supervisor (run by a host timer)"),
+
                        ("clear-stop", "remove the STOP marker")):
         commands.add_parser(name, parents=[common], help=text)
     run = commands.add_parser("run", parents=[common], help="run in this process (no supervisor)")
     run.add_argument("--max-issues", type=int, default=1)
     run.add_argument("--resume", action="store_true")
+    watch = commands.add_parser("watchdog", parents=[common],
+                                help="model-free check for a vanished or stalled supervisor (run by the launch timer)")
+    watch.add_argument("--launch-id", help="the launch whose timer runs this check (set by launch)")
+    watch.add_argument("--timer", help="the timer unit to stop once that launch has an outcome (set by launch)")
     launch = commands.add_parser("launch", parents=[common], help="model-free preflight, start the supervisor, confirm, exit")
     launch.add_argument("--backend", choices=["systemd-user", "foreground"], help="default: site launcher.backend")
     launch.add_argument("--clear-stop", action="store_true",
@@ -1247,9 +1319,31 @@ def status_report(config):
     if supervisor and (root / "launches" / f"{supervisor['launch_id']}.json").exists():
         record = read_json(root / "launches" / f"{supervisor['launch_id']}.json")
         launch = {"launch_id": record["launch_id"], "backend": record["backend"], "unit": record["spec"]["unit"],
-                  "launcher": record.get("launcher"), "cleared_stop": record.get("cleared_stop")}
-    return dict(state, supervisor=supervisor, launch=launch,
+                  "launcher": record.get("launcher"), "cleared_stop": record.get("cleared_stop"),
+                  "watchdog_timer": record.get("watchdog_timer")}
+    watch = read_json(root / "watchdog.json") if (root / "watchdog.json").exists() else {}
+    timer = ((launch or {}).get("watchdog_timer") or {}).get("timer")
+    watchdog_status = {"timer": timer, "stopped": (watch.get("timers") or {}).get(timer) if timer else None,
+                       "alerts": sorted(watch.get("alerts", {})), "needs_input": sorted(watch.get("needs_input") or {})}
+    return dict(state, supervisor=supervisor, launch=launch, watchdog=watchdog_status,
                 stop_marker=(root / "STOP").read_text().strip() if (root / "STOP").exists() else None)
+
+
+def stop_watchdog_timer(root, run=subprocess.run):
+    """``stop``: stop the latest launch's watchdog timer now if no supervisor is running;
+    otherwise leave it watching until the supervisor exits (it then stops itself)."""
+    import watchdog
+    status = read_json(root / "supervisor.json") if (root / "supervisor.json").exists() else None
+    record_path = root / "launches" / f"{(status or {}).get('launch_id')}.json"
+    timer = (read_json(record_path).get("watchdog_timer") or {}).get("timer") if status and record_path.exists() else None
+    if not timer:
+        return None
+    if watchdog.timer_stopped(root, timer):
+        return {"timer": timer, "state": "already stopped"}
+    if status.get("status") == "running" and watchdog.pid_alive(status.get("pid")):
+        return {"timer": timer, "state": "left running until the supervisor exits between issues"}
+    watchdog.record_timer_stop(root, timer, "runner.py stop", watchdog.systemctl_stop(timer, run))
+    return {"timer": timer, "state": "stopped"}
 
 
 def recover(args, runner):
@@ -1296,12 +1390,15 @@ def main(argv=None):
             config, _ = pin_resolution(config, None)
         except (ConfigError, RuntimeError, OSError) as error:
             parser.error(str(error))
-        print(json.dumps(watchdog.check(config, LinearClient(config["linear"])), indent=2))
+        print(json.dumps(watchdog.check(config, LinearClient(config["linear"]), launch_id=args.launch_id,
+                                        timer=args.timer), indent=2))
         return
     if args.command in ("stop", "clear-stop"):
         root.mkdir(parents=True, exist_ok=True)
         marker = root / "STOP"
         marker.touch() if args.command == "stop" else marker.unlink(missing_ok=True)
+        if args.command == "stop":
+            print(json.dumps({"stop_marker": str(marker), "watchdog_timer": stop_watchdog_timer(root)}, indent=2))
         return
     if args.command == "run" and (args.max_issues < 1 or args.max_issues > len(config["issues"]) + 1):
         parser.error("max-issues must be between 1 and the issue count plus one completion check")

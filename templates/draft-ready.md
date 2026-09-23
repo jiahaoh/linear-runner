@@ -1,7 +1,6 @@
 ---
 kind: ready
 author: worker
-status: DRAFT
 required: What was done, How it was checked
 posted: when the session ends with status ready
 ---

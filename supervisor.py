@@ -105,6 +105,10 @@ class Supervisor:
             raise SupervisorRefused("An unfinished issue is saved; record a recovery (runner.py recover resume) first")
         return pending
 
+    def recovered_issue(self, pending):
+        record = next(r for r in self.state.get("recoveries", []) if r["id"] == pending["id"])
+        return record.get("details", {}).get("issue") or (self.state.get("active") or {}).get("issue_id")
+
     def announce_recovery(self, pending):
         """NEW comment on the owning issue saying which recorded recovery is being carried out."""
         record = next(r for r in self.state.get("recoveries", []) if r["id"] == pending["id"])
@@ -315,7 +319,8 @@ class Supervisor:
             r.reconcile_events()
             if pending:
                 self.announce_recovery(pending)
-                r.clear_needs_input()
+                r.clear_stop_marks(self.recovered_issue(pending))
+            r.clear_watchdog_marks()
             self.reconcile_lifecycle()
             finished_active = False
             if self.state.get("active"):

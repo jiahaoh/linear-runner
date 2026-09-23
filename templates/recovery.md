@@ -1,7 +1,6 @@
 ---
 kind: recovery
 author: runner
-status: DRAFT
 headline.default: A {kind} recovery for {subject} recorded by {authorized_by} is being carried out now; no action is needed.
 kind.resume: The runner resumes {subject} from its saved step ({step}).
 kind.review: The runner re-runs only the independent review of the committed work.
