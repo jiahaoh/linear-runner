@@ -29,11 +29,11 @@ before unattended use.
 | `delivery.py` | Generic, config-driven delivery integrity step |
 | `config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning |
 | `linear_client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint; append-only comments with read-back |
-| `templates/` | Human-review Linear comment templates (DRAFT wording) and the worker/reviewer draft templates |
+| `templates/` | Human-review Linear comment templates and the worker/reviewer draft templates |
 | `updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
 | `messages.py` | Builds each human-review comment from saved state |
 | `attention.py` | Stop classification, needs-input mechanisms and the out-of-band notifier |
-| `watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`) |
+| `watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`, run by a launch-started timer) |
 | `render_samples.py` | Writes `docs/template-samples.md`, one sample comment per template |
 | `report.py` | Standalone terminal HTML/JSON report |
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
@@ -90,14 +90,16 @@ Supervisor, launcher and delivery-integrity fields:
 | | `report_issues` | `[]` | Extra issues that receive the batch-finished and batch-paused comments |
 | | `decision_rules` | `honor` | `ignore` disables rule blocks in issue descriptions |
 | | `baseline_checks` | `false` | Run the default-tier checks on the clean baseline during launch preflight |
-| workspace `attention` (DRAFT) | `owner_mention` | `""` (comments say "the owner") | Text put where the owner is addressed, for example `@handle` |
+| workspace `attention` | `owner_mention` | `""` | Optional text (for example `@handle`) put as its own paragraph under the first sentence of comments that need action |
 | | `needs_input.mechanism` | `mention` | How a stopped issue is marked: `label`, `state` or `mention` (see "Stops") |
 | | `needs_input.label` | `Needs input` | Label added on a stop and removed when a recovery runs (must exist in the team) |
 | | `needs_input.state` | `Blocked` | Workflow state for the `state` mechanism (must exist in the team) |
-| site `attention` (DRAFT) | `notifier.backend` | `none` | `none`, `command` or `linear-mention-only` |
+| site `attention` | `command_prefix` | `python3 ${runner_root}/runner.py` | How commands in comments start; `${name}` allowed |
+| | `notifier.backend` | `none` | `none`, `command` or `linear-mention-only` |
 | | `notifier.command` | `[]` | argv run once per stop and watchdog alert; message on stdin, `{subject}` replaced |
 | | `notifier.timeout_seconds` | 30 | Notifier command timeout |
 | | `watchdog.stall_minutes` | 120 | Watchdog alert after this long without recorded progress |
+| | `watchdog.interval_minutes` | 10 | How often the launch-started timer runs the watchdog |
 | | `lint.max_chars` / `max_lines` / `max_first_sentence_chars` | 1500 / 30 / 240 | Limits for worker and reviewer drafts |
 | | `outbox.poll_seconds` / `settle_seconds` | 15 / 3 | Outbox poll interval while Codex runs; drafts younger than this are left for the next poll |
 | project `delivery_integrity` | `manifest` | required | Renderer manifest, relative to the issue's `delivery/` directory |
@@ -156,8 +158,12 @@ left out of the fingerprint and changing them never blocks resuming. Each launch
 4. Validate offline, run the tests, then launch. Inspect one completed issue before
    continuing with a newly introduced profile or host (a planned checkpoint does this).
 
+`--batch` takes the batch file's path or, for a file at `<home>/batches/<id>.json` in the
+active private home, just its `id`; an unknown id is an error. Comments show `--batch <id>`
+when the id resolves to the batch's own file, and the full path otherwise.
+
 ```bash
-B=~/.config/linear-runner/batches/my-batch.json
+B=my-batch                                   # or a path: ~/.config/linear-runner/batches/my-batch.json
 python3 runner.py validate-config --batch $B
 python3 -m unittest -v
 python3 runner.py launch --batch $B                          # preflight, start unit, confirm, exit
@@ -171,8 +177,10 @@ python3 runner.py status --batch $B                          # state, supervisor
 `ExecStopPost` that writes STOP), waits until the supervisor reports itself running and
 prints the unit, PID, state directory, log, launch record and terminal-report path. It
 then exits; no model or operator session stays attached. A credential named by
-`token_env` is passed to the unit by name (`--setenv=NAME`), never by value.
-`--backend foreground` runs the supervisor in the launching process instead.
+`token_env` is passed to the unit by name (`--setenv=NAME`), never by value. Before the
+supervisor it starts the watchdog timer (see "Watchdog"); if the timer cannot start, nothing
+is launched. `--backend foreground` runs the supervisor in the launching process instead and
+starts no timer.
 
 Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.json`):
 
@@ -254,9 +262,19 @@ People read only plain language in Linear; machine records stay in artifacts. Tw
 template are kept apart: the agent-review contracts (the structured result and review JSON
 schemas) and the human-review templates in `templates/`. Every comment opens with one plain
 sentence saying what happened and what, if anything, the owner needs to do, then a few short
-optional sections, and at most one `Evidence:` line of host paths. No JSON, code blocks,
-tables or long hashes. `python3 render_samples.py` writes one sample of each to
-[`docs/template-samples.md`](docs/template-samples.md); the wording is DRAFT.
+optional sections, and at most one `Evidence:` line of host paths. No JSON, tables or long
+hashes. The one exception to "no code blocks": each command the owner may run is in its own
+fenced `bash` block, after one plain sentence saying what it does. Commands start with
+`attention.command_prefix` and use `--batch <id>`. `python3 render_samples.py` writes one
+sample of each to [`docs/template-samples.md`](docs/template-samples.md).
+
+**Deliverables.** The worker's readiness result has a `deliverables` list: each file the
+owner should review (for example a rendered report) as `{path, description}`, or `[]`. A
+path must exist inside the worktree or the issue's run directory; others are dropped and
+named in the ready comment. The reviewer is told the listed deliverables. When the project
+has `delivery_integrity`, the delivery packet's `file_hashes` files (or the manifest when
+there are none) are added. The `done` comment lists them under "Deliverables to review",
+one per line, and leaves the section out when there are none.
 
 Every lifecycle event is a NEW comment on the issue it concerns; nothing is edited:
 
@@ -356,16 +374,19 @@ Every pause is recorded in `state.stops` with a class. The rule is in
 | `runner-defect` | any other exception type (a bug in the runner) |
 
 On a pause the runner posts a NEW `blocked` comment on the issue that stopped (the terminal
-issue if none was active). Its first sentence says what stopped and addresses the owner
-(`attention.owner_mention`); it quotes the worker's or reviewer's own words (a valid
+issue if none was active). Its first sentence says what stopped and that it needs your
+decision or action (an optional `attention.owner_mention` follows as its own paragraph); it
+quotes the worker's or reviewer's own words (a valid
 `blocked` or `review` draft, else the result's summary and unmet criteria), says what
 decision or action is needed and gives the exact `recover` and `launch` commands. A
 `batch-paused` comment goes to the terminal issue and `report_issues` (except the issue that
-already got the blocked comment). Then the issue is marked as needing input with the DRAFT
+already got the blocked comment). Then the issue is marked as needing input with
 `needs_input.mechanism`:
 
 * `label`: add `needs_input.label` (for example "Needs input") and remove it when a recovery
-  runs. The label must already exist in the team.
+  for that issue is carried out. The label must already exist in the team. Each write reads
+  the issue's labels, writes the full set with the label added or removed, and reads it back,
+  so other labels are kept.
 * `state`: move the issue to `needs_input.state` and move it back to its previous state when
   a recovery runs; launch preflight accepts that state for the saved issue. The state must
   already exist.
@@ -374,39 +395,52 @@ already got the blocked comment). Then the issue is marked as needing input with
 Finally the notifier runs once for the stop (`notifier.backend`): `none`, `command` (runs
 `notifier.command` with the comment on stdin and `{subject}` replaced by its first sentence,
 for example `["mail", "-s", "{subject}", "you@example.org"]` or
-`["notify-send", "{subject}"]`; no shell), or `linear-mention-only`. Comments posted with
-your own Linear credential may not notify you about your own mention, so an out-of-band
-notifier is the dependable signal.
+`["notify-send", "{subject}"]`; no shell), or `linear-mention-only`. The default is `none`.
+Comments posted with your own Linear credential do not notify you, so without a notifier the
+Linear comments, the label and the watchdog are what make a stop visible.
 
 ## Watchdog
 
-`runner.py watchdog --batch B` is model-free and meant for a host timer. It alerts once,
-with a new comment on the owning issue plus the notifier, when `supervisor.json` still says
-`running` but that process is gone (killed, out of memory; no terminal outcome was written),
-or when the supervisor runs but nothing in `state.json`, `supervisor.json` or the active run
-directory has changed for `watchdog.stall_minutes` (DRAFT 120). Alerts are recorded in
-`<state dir>/watchdog.json`, so the same condition never alerts twice; a new stall after
-progress alerts again. It never takes the project lock or writes `state.json`. For a
-vanished supervisor it also applies the needs-input mechanism, cleared by the next recovery.
+`runner.py watchdog --batch B` is model-free. It alerts once, with a new comment plus the
+notifier, when `supervisor.json` still says `running` but that process is gone (killed, out
+of memory; no terminal outcome was written), or when the supervisor runs but nothing in
+`state.json`, `supervisor.json` or the active run directory has changed for
+`watchdog.stall_minutes` (120). The comment goes to the active issue, or the terminal issue
+when none is active, and that issue gets the needs-input mark, removed when the next launch
+starts. Alerts are recorded in `<state dir>/watchdog.json`, so the same condition never
+alerts twice; a new stall after progress alerts again. It never takes the project lock or
+writes `state.json`.
 
-Example timer (not created by the runner; pass the Linear credential variable by name if the
-workspace uses `token_env`):
+`launch` (systemd backend) starts it automatically: before the supervisor unit it starts a
+transient user timer `<prefix>-<batch>-<launch id>-watchdog.timer` (with a matching
+`.service`) that runs `runner.py watchdog --batch <id> --launch-id <id> --timer <timer>`
+every `watchdog.interval_minutes` (10), logging to `<state dir>/watchdog.log`. The timer is
+recorded in the launch record and shown by `status`. It stops:
+
+* by itself, once that launch's supervisor has exited (any outcome) and every alert is
+  posted, once it has posted a "gone" alert, or when a newer launch replaced its launch;
+* when the next `launch` starts (earlier timers are stopped and recorded);
+* on `runner.py stop`: at once if no supervisor is running; if one is, the timer keeps
+  watching until the supervisor exits between issues and then stops itself.
+
+Stopped timers are recorded under `timers` in `watchdog.json`. Manual fallback, for example
+after a reboot or with the foreground backend (pass the Linear credential variable by name
+if the workspace uses `token_env`):
 
 ```bash
-systemd-run --user --unit=linear-runner-watchdog-my-batch --on-calendar='*:0/15' \
-  --property=WorkingDirectory=/absolute/path/to/linear-runner --setenv=LINEAR_MCP_TOKEN \
-  /usr/bin/python3 /absolute/path/to/linear-runner/runner.py watchdog \
-  --batch /absolute/path/to/batches/my-batch.json
-systemctl --user list-timers 'linear-runner-watchdog-*'    # inspect
-systemctl --user stop linear-runner-watchdog-my-batch.timer # remove after the batch
+systemd-run --user --unit=linear-runner-my-batch-manual-watchdog --on-active=10min \
+  --on-unit-active=10min --property=WorkingDirectory=/absolute/path/to/linear-runner \
+  /usr/bin/python3 /absolute/path/to/linear-runner/runner.py watchdog --batch my-batch
+systemctl --user list-timers 'linear-runner-*'                      # inspect
+systemctl --user stop linear-runner-my-batch-manual-watchdog.timer   # remove after the batch
 ```
 
 ## Stop, recovery and continuation
 
 ```bash
-B=<batch file>
-python3 runner.py status --batch $B      # phase, active issue/step, blocks, deferred, pending recovery, supervisor.json, STOP
-python3 runner.py stop --batch $B        # stop between issues (durable STOP marker)
+B=<batch id or file>
+python3 runner.py status --batch $B      # phase, active issue/step, blocks, deferred, pending recovery, supervisor.json, STOP, watchdog timer
+python3 runner.py stop --batch $B        # stop between issues (durable STOP marker); see "Watchdog" for its timer
 systemctl --user stop <unit>             # immediate: child process group terminated, state preserved, blocked report
 ```
 

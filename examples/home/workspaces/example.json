@@ -6,7 +6,7 @@
   "assignee": "me",
   "states": {},
   "attention": {
-    "owner_mention": "@REPLACE_HANDLE",
+    "owner_mention": "",
     "needs_input": {
       "mechanism": "mention",
       "label": "Needs input",

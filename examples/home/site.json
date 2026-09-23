@@ -22,13 +22,15 @@
     "stop_on_exit": true
   },
   "attention": {
+    "command_prefix": "python3 ${runner_root}/runner.py",
     "notifier": {
       "backend": "none",
       "command": [],
       "timeout_seconds": 30
     },
     "watchdog": {
-      "stall_minutes": 120
+      "stall_minutes": 120,
+      "interval_minutes": 10
     },
     "lint": {
       "max_chars": 1500,
