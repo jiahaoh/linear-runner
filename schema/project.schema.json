@@ -21,7 +21,8 @@
       "additionalProperties": {"type": "string"}
     },
     "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}},
-    "delivery_checks": {"type": "array", "items": {"$ref": "#/$defs/delivery"}}
+    "delivery_checks": {"type": "array", "items": {"$ref": "#/$defs/delivery"}},
+    "delivery_integrity": {"$ref": "#/$defs/integrity"}
   },
   "$defs": {
     "text": {"type": "string", "minLength": 1},
@@ -37,6 +38,28 @@
         "inputs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
         "cwd": {"$ref": "#/$defs/text"},
         "command": {"$ref": "#/$defs/argv"}
+      }
+    },
+    "relpath": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+$"},
+    "integrity": {
+      "description": "DRAFT: generic post-delivery integrity step (no model). manifest is relative to the issue's delivery directory; file_hashes values and true_fields files are relative to the manifest's directory.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "revision_field"],
+      "properties": {
+        "required_checks": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+        "manifest": {"$ref": "#/$defs/relpath"},
+        "revision_field": {"$ref": "#/$defs/text"},
+        "file_hashes": {"type": "object", "additionalProperties": {"$ref": "#/$defs/relpath"}},
+        "true_fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "field"],
+            "properties": {"file": {"$ref": "#/$defs/relpath"}, "field": {"$ref": "#/$defs/text"}}
+          }
+        }
       }
     },
     "delivery": {

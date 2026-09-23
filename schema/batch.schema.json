@@ -14,6 +14,18 @@
     "worktree": {"$ref": "#/$defs/text"},
     "guidance_files": {"type": "array", "items": {"$ref": "#/$defs/text"}},
     "required_done": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
+    "supervision": {
+      "description": "DRAFT: generic supervisor behavior for this queue.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stop_after": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
+        "on_block": {"enum": ["stop", "continue_independent"]},
+        "report_issues": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
+        "decision_rules": {"enum": ["honor", "ignore"]},
+        "baseline_checks": {"type": "boolean"}
+      }
+    },
     "human_gates": {
       "type": "array",
       "items": {

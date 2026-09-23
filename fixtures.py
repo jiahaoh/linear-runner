@@ -57,7 +57,7 @@ class FakeLinear:
                      "status": "Todo", "statusType": "unstarted", "description": "- [ ] Produce validated output", "labels": ["Implementation", "Standard"],
                      "relations": {"blockedBy": []}}
         self.others = {}
-        self.summaries = {}; self.reads = 0; self.fail_summary = False
+        self.summaries = {}; self.reads = 0; self.fail_summary = False; self.posts = []
         self.resolutions = []
         self.writes = []
 
@@ -69,18 +69,28 @@ class FakeLinear:
         return []
 
     def call(self, name, **args):
+        target = self.others.get(args.get("id"), self.data) if name == "save_issue" else self.data
         if name == "save_issue":
             self.writes.append(args.get("state"))
-            self.data["status"] = args.get("state", self.data["status"])
-            self.data["statusType"] = {"In Progress": "started", "In Review": "started", "Done": "completed"}.get(args.get("state"), "started")
+            target["status"] = args.get("state", target["status"])
+            target["statusType"] = {"In Progress": "started", "In Review": "started", "Done": "completed"}.get(args.get("state"), "started")
             if "description" in args:
-                self.data["description"] = args["description"]
-        return copy.deepcopy(self.data)
+                target["description"] = args["description"]
+        return copy.deepcopy(target)
 
     def summary(self, issue, marker, body):
         if self.fail_summary:
             raise RuntimeError("offline")
         self.summaries[marker] = body
+        self.posts.append((issue, marker, body))
+
+    def add_issue(self, identifier, **fields):
+        """A second dispatchable issue with the same ownership as DEV-1."""
+        issue = dict(copy.deepcopy(self.data), id=identifier, status="Todo", statusType="unstarted",
+                     description=f"- [ ] Produce {identifier} output", relations={"blockedBy": []})
+        issue.update(fields)
+        self.others[identifier] = issue
+        return issue
 
     def resolve_project(self, name):
         self.resolutions.append(("project", name))

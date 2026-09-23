@@ -27,6 +27,11 @@ BUILTIN_VARIABLES = ("home", "runner_root", "batch", "worktree")
 # Bookkeeping keys that are not configuration and never enter the fingerprint.
 META_KEYS = ("_sources", "_layers")
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
+# DRAFT defaults for the supervisor (batch layer) and launcher (site layer).
+SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
+                        "baseline_checks": False}
+LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
+                     "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}
 
 
 class ConfigError(ValueError):
@@ -290,6 +295,13 @@ def load_config(batch_path, home=None):
     for identity in config["required_done"]:
         if identity in config["issues"]:
             raise ConfigError(f"{batch_label}: required_done issue {identity} cannot also be an implementation issue")
+    # DRAFT: supervisor behavior (planned checkpoints, blocking policy, reporting, rules).
+    # report_issues may name issues outside the allowlist (for example a tracking issue).
+    supervision = dict(copy.deepcopy(SUPERVISION_DEFAULTS), **copy.deepcopy(batch.get("supervision", {})))
+    outside = [i for i in supervision["stop_after"] if i not in config["issues"]]
+    if outside:
+        raise ConfigError(f"{batch_label}.supervision.stop_after: {outside} not in the issue allowlist")
+    put("supervision", supervision, batch_label)
     if "worktree" in batch:
         put("worktree", str(_path(batch["worktree"], batch_path.parent, variables, f"{batch_label}.worktree")), batch_label)
     else:
@@ -349,6 +361,12 @@ def load_config(batch_path, home=None):
         delivery.append({"cwd": inside(substitute(spec["cwd"], variables, where), where),
                          "command": [substitute(arg, variables, where) for arg in spec["command"]]})
     put("delivery_checks", delivery, project_label)
+    integrity = copy.deepcopy(project.get("delivery_integrity"))
+    if integrity:
+        unknown = sorted(set(integrity.get("required_checks", [])) - {c["name"] for c in checks})
+        if unknown:
+            raise ConfigError(f"{project_label}.delivery_integrity.required_checks: unknown check(s) {unknown}")
+    put("delivery_integrity", integrity, project_label)
     identities = []
     for index, value in enumerate(project.get("identity_files", [])):
         path = _path(value, project_path.parent, variables, f"{project_label}.identity_files[{index}]")
@@ -389,6 +407,15 @@ def load_config(batch_path, home=None):
     state_root = _path(site["state_root"], site_path.parent, builtins, "site.state_root")
     put("state_dir", str(state_root / batch["id"]), f"{site_label} + {batch_label}")
     put("variables", variables, site_label)
+    launcher = dict(copy.deepcopy(LAUNCHER_DEFAULTS), **copy.deepcopy(site.get("launcher", {})))
+    for key in ("python", "cpu_list"):
+        if launcher.get(key) is not None:
+            launcher[key] = substitute(launcher[key], variables, f"site.launcher.{key}")
+    if launcher.get("cpu_list") is not None and not re.fullmatch(r"[0-9]+([,-][0-9]+)*", launcher["cpu_list"]):
+        raise ConfigError(f"site.launcher.cpu_list: invalid CPU list {launcher['cpu_list']!r}")
+    launcher["environment"] = {name: substitute(value, variables, f"site.launcher.environment.{name}")
+                               for name, value in launcher["environment"].items()}
+    put("launcher", launcher, site_label)
     for name in BUILTIN_VARIABLES:
         sources[f"variables.{name}"] = "built-in"
     for key in ("state_dir", "artifact_root"):

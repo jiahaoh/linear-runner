@@ -191,6 +191,37 @@ class LayeredConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "must not be empty"):
             self.load(project={"guidance_files": ["empty.md"]})
 
+    def test_draft_supervision_launcher_and_integrity_fields(self):
+        loaded = self.load()
+        self.assertEqual(loaded["supervision"], {"stop_after": [], "on_block": "stop", "report_issues": [],
+                                                 "decision_rules": "honor", "baseline_checks": False})
+        self.assertEqual(loaded["launcher"]["backend"], "systemd-user")
+        self.assertTrue(loaded["launcher"]["stop_on_exit"])
+        self.assertIsNone(loaded["delivery_integrity"])
+        loaded = self.load(site={"variables": {"cpus": "0-3"},
+                                 "launcher": {"python": "${python}", "cpu_list": "${cpus}", "environment": {"PATH": "${home}/bin"}}},
+                           batch={"supervision": {"stop_after": ["DEV-1"], "report_issues": ["TRACK-9"]}},
+                           project={"delivery_integrity": {"manifest": "packet/manifest.json", "revision_field": "code_commit",
+                                                           "required_checks": ["output"]}})
+        self.assertEqual(loaded["launcher"]["cpu_list"], "0-3")
+        self.assertEqual(loaded["launcher"]["python"], sys.executable)
+        self.assertEqual(loaded["launcher"]["environment"]["PATH"], str(self.root / "home") + "/bin")
+        self.assertEqual(loaded["_sources"]["supervision.stop_after"], "batch fixture")
+        self.assertEqual(loaded["_sources"]["launcher.cpu_list"], "site")
+        integrity = {"manifest": "m.json", "revision_field": "commit"}
+        cases = [({"batch": {"supervision": {"stop_after": ["DEV-9"]}}}, "not in the issue allowlist"),
+                 ({"batch": {"supervision": {"on_block": "retry"}}}, "must be one of"),
+                 ({"batch": {"supervision": {"typo": 1}}}, "unknown key"),
+                 ({"site": {"launcher": {"cpu_list": "all"}}}, "invalid CPU list"),
+                 ({"site": {"launcher": {"backend": "cron"}}}, "must be one of"),
+                 ({"project": {"delivery_integrity": dict(integrity, required_checks=["docs"])}}, "unknown check"),
+                 ({"project": {"delivery_integrity": dict(integrity, manifest="../m.json")}}, "invalid value"),
+                 ({"project": {"delivery_integrity": dict(integrity, file_hashes={"sha": "/abs"})}}, "invalid value"),
+                 ({"project": {"delivery_integrity": {"manifest": "m.json"}}}, "missing required")]
+        for layers, error in cases:
+            with self.subTest(layers=layers), self.assertRaisesRegex(ConfigError, error):
+                self.load(**layers)
+
     def test_home_discovery_order(self):
         with patch.dict(os.environ, {config.HOME_ENV: str(self.root / "env-home")}):
             self.assertEqual(find_home(str(self.root / "flag-home")), self.root / "flag-home")

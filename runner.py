@@ -30,6 +30,18 @@ from config import (PHASES, ConfigError, config_fingerprint, load_config, pin_re
 from linear_client import LinearClient
 
 
+class IssueBlocked(RuntimeError):
+    """An issue-level stop (the work itself is blocked), as opposed to a batch-level failure.
+
+    ``event`` names the kind of block the supervisor records: worker_blocked,
+    review_blocked, checks_failed, delivery_failed or budget_exceeded.
+    """
+
+    def __init__(self, message, event):
+        super().__init__(message)
+        self.event = event
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -232,6 +244,8 @@ class Runner:
         self.state["identity"] = identity
         self.child = None
         self.linear = linear or LinearClient(config["linear"])
+        # A recovery may restrict which model phases this process can start (None: all).
+        self.allowed_phases = None
 
     # --- State, locks and process control ------------------------------------
 
@@ -444,14 +458,14 @@ class Runner:
                     or gate["approval_text"] not in found[0].get("body", "")):
                 raise RuntimeError(f"Human approval evidence is not confirmed for {gate['issue_id']}")
 
-    def verify_issue(self, issue, *, completed=False):
+    def verify_issue(self, issue, *, completed=False, dependencies=True):
         if issue.get("projectId") != self.config["project_id"] or issue.get("assigneeId") != self.config["assignee_id"]:
             raise RuntimeError("Issue project/assignee differs from authorized intake")
         if self.config["require_milestone"] and not issue.get("projectMilestone"):
             raise RuntimeError("Issue requires a project milestone")
         if completed and issue.get("statusType") != "completed":
             raise RuntimeError("Linear acceptance read-back is not Done")
-        for predecessor in issue.get("relations", {}).get("blockedBy", []):
+        for predecessor in issue.get("relations", {}).get("blockedBy", []) if dependencies else []:
             if self.linear.issue(predecessor["id"]).get("statusType") != "completed":
                 raise RuntimeError(f"Incomplete prerequisite {predecessor['id']}")
 
@@ -508,6 +522,9 @@ class Runner:
     # --- Model phases and checks ------------------------------------------------
 
     def model_phase(self, active, phase, prompt, *, resume=None, writable=True, result_schema=None):
+        if self.allowed_phases is not None and phase not in self.allowed_phases:
+            raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
+        prompt += operator_notes(active)
         selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"))
         self.verify_model(selection)
         previous = active.get("selection")
@@ -543,10 +560,15 @@ class Runner:
                          {"mcp_tool_call", "command_execution"} for e in events)
         delta["tool_calls"] = tool_calls
         write_json(attempt / "phase-usage.json", delta)
-        if any(delta.get(k) is None or delta[k] > v for k, v in self.policy["phases"]["phases"][phase]["budget"].items()):
-            active["budget_exceeded"] = {"phase": phase, "observed": delta}
+        # An explicitly reconciled allowance (recover budget) replaces the registry budget
+        # for this issue's phase; it is recorded in state and never reset by resume.
+        allowance = active.get("budget_allowances", {}).get(phase)
+        budget = allowance["limits"] if allowance else self.policy["phases"]["phases"][phase]["budget"]
+        if any(delta.get(k) is None or delta[k] > v for k, v in budget.items()):
+            active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget}
             self.save(active=active)
-            raise RuntimeError("Phase soft budget exceeded or telemetry unavailable; reconcile before resume")
+            raise IssueBlocked("Phase soft budget exceeded or telemetry unavailable; reconcile before resume",
+                               "budget_exceeded")
         return result
 
     def run_checks(self, active):
@@ -612,7 +634,9 @@ class Runner:
     def worker_packet(self, active):
         packet = {"issue": active["issue"], "starting_commit": active["starting_commit"],
                   "constraints": self.config["_worker_instructions"], "references": self.config["_context"],
-                  "checks": self.config["checks"], "selection": resolve_profile(self.config, active["issue"], "implement")}
+                  "checks": self.config["checks"], "selection": resolve_profile(self.config, active["issue"], "implement"),
+                  "operator_notes": [{k: n[k] for k in ("id", "authorized_by", "reason", "text")}
+                                     for n in active.get("operator_notes", [])]}
         path = Path(active["run_dir"]) / "intake.json"
         write_json(path, packet)
         return (f"Implement ONLY {active['issue_id']}. Read the authoritative intake packet {path}. "
@@ -657,7 +681,7 @@ class Runner:
             self.verify_issue(self.linear.issue(issue))
             result = self.model_phase(active, "implement", self.worker_packet(active), resume=active.get("session_id"))
             if result.get("status") != "ready" or result.get("issue_id") != issue:
-                raise RuntimeError("Worker is blocked; see readiness evidence")
+                raise IssueBlocked("Worker is blocked; see readiness evidence", "worker_blocked")
             active["step"] = "validate"; self.save(active=active)
         if active["step"] == "repair":
             # An interrupted dispatched repair consumes its slot; never silently reset it.
@@ -670,7 +694,7 @@ class Runner:
             failures = [c for c in read_json(Path(active["validation_dir"]) / "checks.json") if c["exit_code"]]
             failure_key = hashlib.sha256(json.dumps([(c["name"], c["key"], c["exit_code"]) for c in failures]).encode()).hexdigest()
             if active.get("failure_key") == failure_key or active["repairs"] >= self.policy["phases"]["max_repairs"]:
-                raise RuntimeError("Repeated unchanged failure or repair limit exhausted")
+                raise IssueBlocked("Repeated unchanged failure or repair limit exhausted", "checks_failed")
             active["failure_key"] = failure_key
             selected = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
             if active["repairs"] and selected["profile"] != escalation_profile and not active.get("escalation"):
@@ -681,7 +705,7 @@ class Runner:
                                       "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
                                       "Return readiness with evidence, or blocked. Preserve scientific contracts.", resume=active.get("session_id"))
             if result.get("status") != "ready" or result.get("issue_id") != issue:
-                raise RuntimeError("Repair did not report ready")
+                raise IssueBlocked("Repair did not report ready", "worker_blocked")
             active["step"] = "validate"; self.save(active=active)
         if active["step"] == "commit":
             current = git(self.repo, "rev-parse", "HEAD")
@@ -701,13 +725,7 @@ class Runner:
             active["commit"] = git(self.repo, "rev-parse", "HEAD")
             active["step"] = "delivery"; self.save(active=active, phase="delivery")
         if active["step"] == "delivery":
-            directory = Path(active["run_dir"]) / "delivery"; directory.mkdir(exist_ok=True)
-            write_json(directory / "context.json", {"commit": active["commit"], "checks": read_json(Path(active["validation_dir"]) / "checks.json"),
-                                                    "issue": issue, "status": "validated"})
-            checks = self.config["delivery_checks"]
-            if checks and not self.validate(directory, checks, dict(self.config["check_environment"],
-                                                                    RUNNER_DELIVERY_CONTEXT=str(directory / "context.json"))):
-                raise RuntimeError("Delivery checks failed; preserve packet and inspect")
+            self.deliver(active)
             active["step"] = "review"; self.save(active=active)
         if active["step"] == "review":
             self.verify_frozen(active)
@@ -720,14 +738,17 @@ class Runner:
                 "Assess every original acceptance criterion and relevant source; do not rely only on the worker's claims. "
                 "Return the readiness schema with criterion-level evidence and the current full commit. Copy each original unchecked checklist item verbatim into criterion. "
                 "No mutations of files, Git or Linear. Unmet/uncertain criteria mean blocked. "
-                "Do not approve human or scientific gates. "
+                "Do not approve human or scientific gates. " +
                 f"The final JSON must identify issue_id={issue!r} and commit={active['commit']!r}. "
                 "Return one acceptance entry per required criterion, including unsatisfied items when blocked. "
                 "An empty acceptance array or a summary alone is not a review. "
                 f"Exact required criteria: {json.dumps(expected)}", writable=False,
                 result_schema=review_schema(active["issue"], active["commit"]))
             self.verify_frozen(active)
-            validate_review_result(result, active["issue"], active["commit"])
+            try:
+                validate_review_result(result, active["issue"], active["commit"])
+            except RuntimeError as error:
+                raise IssueBlocked(str(error), "review_blocked") from None
             active["accepted_result"] = result; active["step"] = "publish"; self.save(active=active)
         if active["step"] == "publish":
             self.check_gates(); self.verify_frozen(active)
@@ -758,6 +779,35 @@ class Runner:
                 self.state["history"].append({"issue_id": issue, "commit": active["commit"], "run_dir": active["run_dir"], "completed_at": now()})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
+
+    def deliver(self, active):
+        """Project delivery checks, then the optional generic integrity step (no model)."""
+        directory = Path(active["run_dir"]) / "delivery"; directory.mkdir(exist_ok=True)
+        records = read_json(Path(active["validation_dir"]) / "checks.json")
+        write_json(directory / "context.json", {"commit": active["commit"], "checks": records, "issue": active["issue_id"],
+                                                "status": "validated", "issue_run_dir": active["run_dir"],
+                                                "delivery_dir": str(directory)})
+        checks = self.config["delivery_checks"]
+        if checks and not self.validate(directory, checks, dict(self.config["check_environment"],
+                                                                RUNNER_DELIVERY_CONTEXT=str(directory / "context.json"))):
+            raise IssueBlocked("Delivery checks failed; preserve packet and inspect", "delivery_failed")
+        spec = self.config.get("delivery_integrity")
+        if spec:
+            from delivery import DeliveryError, verify_delivery
+            try:
+                evidence = verify_delivery(spec, directory, active["commit"], records)
+            except DeliveryError as error:
+                write_json(directory / "integrity.json", {"passed": False, "error": str(error), "at": now()})
+                raise IssueBlocked(f"Delivery integrity failed: {error}", "delivery_failed") from None
+            write_json(directory / "integrity.json", dict(evidence, passed=True, at=now()))
+
+    def redeliver(self, active):
+        """Re-run delivery for frozen source; the previous packet is kept, never overwritten."""
+        self.verify_frozen(active)
+        directory = Path(active["run_dir"]) / "delivery"
+        if directory.exists():
+            directory.rename(directory.with_name("delivery-superseded-" + run_id()))
+        self.deliver(active)
 
     def verify_live_state(self, live, step):
         """Only this execution's own workflow states are acceptable at each step."""
@@ -794,7 +844,7 @@ class Runner:
 
     # --- Terminal reporting -----------------------------------------------------
 
-    def terminal(self, outcome, error=None):
+    def terminal(self, outcome, error=None, extra=None):
         records = []
         for history in self.state["history"]:
             records.extend(read_json(p) for p in Path(history["run_dir"]).glob("*/session.json"))
@@ -803,6 +853,7 @@ class Runner:
             records.extend(read_json(p) for p in Path(active["run_dir"]).glob("*/session.json"))
         summary = {"outcome": outcome, "error": error, "at": now(), "history": self.state["history"],
                    "usage": usage_totals(records), "scope": "Authorized queue only; no project or human gate closure"}
+        summary.update(extra or {})
         write_json(self.root / "terminal-report.json", summary)
         from report import render_report
         delivery = render_report(self.root / "terminal-report.html", summary, records)
@@ -863,6 +914,16 @@ class Runner:
         self.log("Configured issue limit reached; code and state checkpointed")
 
 
+def operator_notes(active):
+    """Recorded recovery notes (owner authorization text) appended to model prompts."""
+    notes = active.get("operator_notes") or []
+    if not notes:
+        return ""
+    return ("\n\nOperator recovery notes (recorded with reason and authorizer; they do not change the "
+            "acceptance criteria):\n" + "\n".join(f"- [{n['id']}, authorized by {n['authorized_by']}] {n['text']}"
+                                                  for n in notes))
+
+
 def summarize(config):
     """Offline validation report: no state, credentials, Linear or Codex access."""
     return {"valid": True, "batch": config["batch_id"], "project": config["project_name"],
@@ -871,13 +932,95 @@ def summarize(config):
             "runner": config["runner"], "layers": config["_layers"]}
 
 
-def main(argv=None):
+def build_parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--batch", required=True, help="batch file (issue allowlist, gates, project name)")
+    common.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["validate-config", "dry-run", "run", "status", "stop", "clear-stop"])
-    parser.add_argument("--batch", required=True, help="batch file (issue allowlist, gates, project name)")
-    parser.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
-    parser.add_argument("--max-issues", type=int, default=1)
-    parser.add_argument("--resume", action="store_true")
+    commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    for name, text in (("validate-config", "offline validation; no state, Linear or Codex"),
+                       ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
+                       ("status", "print saved state, supervisor status and pending recovery"),
+                       ("stop", "write the STOP marker (stops between issues)"),
+                       ("clear-stop", "remove the STOP marker")):
+        commands.add_parser(name, parents=[common], help=text)
+    run = commands.add_parser("run", parents=[common], help="run in this process (no supervisor)")
+    run.add_argument("--max-issues", type=int, default=1)
+    run.add_argument("--resume", action="store_true")
+    launch = commands.add_parser("launch", parents=[common], help="model-free preflight, start the supervisor, confirm, exit")
+    launch.add_argument("--backend", choices=["systemd-user", "foreground"], help="default: site launcher.backend")
+    launch.add_argument("--clear-stop", action="store_true", help="remove an inspected STOP marker after preflight passes")
+    launch.add_argument("--rerun-preflight", action="store_true", help="do not reuse earlier preflight results")
+    supervise = commands.add_parser("supervise", parents=[common], help="the supervisor a launched unit runs")
+    supervise.add_argument("--launch-id", required=True)
+    for sub in (launch, supervise):
+        sub.add_argument("--stop-after", action="append", default=[], metavar="ISSUE",
+                         help="planned checkpoint: stop after this issue is accepted (repeatable)")
+        sub.add_argument("--scope", choices=["queue", "active"], default="queue",
+                         help="active: finish only the saved active issue, then stop")
+    recover = commands.add_parser("recover", help="record an authorized recovery for the next launch")
+    kinds = recover.add_subparsers(dest="kind", required=True, metavar="kind")
+    authority = argparse.ArgumentParser(add_help=False)
+    authority.add_argument("--reason", required=True, help="why this recovery is needed (recorded)")
+    authority.add_argument("--authorized-by", required=True, help="who authorized it (recorded)")
+    then = argparse.ArgumentParser(add_help=False)
+    then.add_argument("--then", choices=["stop", "continue"], default="stop",
+                      help="after the recovered issue: stop (default) or continue the queue")
+    note = argparse.ArgumentParser(add_help=False)
+    note.add_argument("--note-file", help="owner note appended to later model prompts (recorded with its hash)")
+    resume = kinds.add_parser("resume", parents=[common, authority, then, note], help="continue the active issue from its saved step")
+    resume.add_argument("--repin-contract", action="store_true", help="adopt the edited live issue (before acceptance only)")
+    resume.add_argument("--issue", help="restore this deferred, parked issue as the active issue")
+    review = kinds.add_parser("review", parents=[common, authority, then, note], help="re-run only the independent review")
+    review.add_argument("--repin-contract", action="store_true", help="adopt the edited live issue before reviewing")
+    review.add_argument("--redeliver", action="store_true", help="re-run delivery first; the previous packet is kept")
+    budget = kinds.add_parser("budget", parents=[common, authority, then, note], help="reconcile a soft-budget checkpoint")
+    budget.add_argument("--phase", required=True, choices=list(PHASES))
+    budget.add_argument("--input-tokens", type=int, required=True)
+    budget.add_argument("--output-tokens", type=int, required=True)
+    budget.add_argument("--tool-calls", type=int, required=True)
+    kinds.add_parser("publish", parents=[common, authority, then], help="reconcile publication of an accepted review; no model")
+    kinds.add_parser("cancel", parents=[common, authority], help="withdraw a pending recovery that was not launched")
+    defer_issue = kinds.add_parser("defer", parents=[common, authority], help="defer an issue; the queue continues without it")
+    defer_issue.add_argument("--issue", required=True)
+    defer_issue.add_argument("--restore-worktree", action="store_true",
+                             help="park uncommitted work in a Git ref and restore a clean worktree")
+    defer_issue.add_argument("--keep-commit", action="store_true",
+                             help="continue on top of the deferred issue's unaccepted controller commit")
+    return parser
+
+
+def status_report(config):
+    root = Path(config["state_dir"])
+    state = read_json(root / "state.json") if (root / "state.json").exists() else {"phase": "not started"}
+    supervisor = root / "supervisor.json"
+    return dict(state, supervisor=read_json(supervisor) if supervisor.exists() else None,
+                stop_marker=(root / "STOP").read_text().strip() if (root / "STOP").exists() else None)
+
+
+def recover(args, runner):
+    import recovery
+    common = {"reason": args.reason, "authorized_by": args.authorized_by}
+    if args.kind == "resume":
+        return recovery.recover_resume(runner, then=args.then, note_file=args.note_file, repin=args.repin_contract,
+                                       issue=args.issue, **common)
+    if args.kind == "review":
+        return recovery.recover_review(runner, then=args.then, note_file=args.note_file, repin=args.repin_contract,
+                                       redeliver=args.redeliver, **common)
+    if args.kind == "budget":
+        limits = {"input_tokens": args.input_tokens, "output_tokens": args.output_tokens, "tool_calls": args.tool_calls}
+        return recovery.recover_budget(runner, phase=args.phase, limits=limits, then=args.then,
+                                       note_file=args.note_file, **common)
+    if args.kind == "publish":
+        return recovery.recover_publish(runner, then=args.then, **common)
+    if args.kind == "cancel":
+        return recovery.recover_cancel(runner, **common)
+    return recovery.recover_defer(runner, issue=args.issue, restore_worktree=args.restore_worktree,
+                                  keep_commit=args.keep_commit, **common)
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
         config = load_config(args.batch, args.home)
@@ -888,18 +1031,19 @@ def main(argv=None):
         return
     root = Path(config["state_dir"])
     if args.command == "status":
-        state = root / "state.json"
-        print(json.dumps(read_json(state) if state.exists() else {"phase": "not started"}, indent=2))
+        print(json.dumps(status_report(config), indent=2))
         return
     if args.command in ("stop", "clear-stop"):
         root.mkdir(parents=True, exist_ok=True)
         marker = root / "STOP"
         marker.touch() if args.command == "stop" else marker.unlink(missing_ok=True)
         return
-    if args.max_issues < 1 or args.max_issues > len(config["issues"]) + 1:
+    if args.command == "run" and (args.max_issues < 1 or args.max_issues > len(config["issues"]) + 1):
         parser.error("max-issues must be between 1 and the issue count plus one completion check")
     root.mkdir(parents=True, exist_ok=True)
     linear = LinearClient(config["linear"])
+    if args.command in ("launch", "supervise", "recover"):
+        return supervised_command(parser, args, config, linear)
     with project_lock(root / "controller.lock"):
         # Resolution/configuration/legacy-state errors must not rewrite state or notify Linear.
         try:
@@ -916,7 +1060,8 @@ def main(argv=None):
             raise KeyboardInterrupt(f"Signal {signum}")
         signal.signal(signal.SIGTERM, interrupted)
         try:
-            runner.execute(dry_run=args.command == "dry-run", limit=args.max_issues, resume=args.resume)
+            runner.execute(dry_run=args.command == "dry-run", limit=args.max_issues if args.command == "run" else 1,
+                           resume=getattr(args, "resume", False))
         except (Exception, KeyboardInterrupt) as error:
             runner.stop_child()
             runner.log(f"Paused: {error}")
@@ -925,5 +1070,54 @@ def main(argv=None):
             raise SystemExit(1)
 
 
+def supervised_command(parser, args, config, linear):
+    """launch / supervise / recover. Refusals exit 2 without writing to Linear."""
+    import launcher
+    import recovery
+    import supervisor
+    root = Path(config["state_dir"])
+    try:
+        config, fresh = pin_resolution(config, linear)
+    except (ConfigError, RuntimeError, OSError) as error:
+        parser.error(str(error))
+    if args.command == "recover":
+        if fresh:
+            parser.error("This batch has no pinned state to recover")
+        with project_lock(root / "controller.lock"):
+            try:
+                record = recover(args, Runner(config, linear))
+            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
+                parser.error(str(error))
+        print(json.dumps(record, indent=2))
+        return
+    if args.command == "supervise":
+        if fresh:
+            parser.error("supervise needs the pinned configuration written by launch")
+        try:
+            supervisor.supervise(config, linear, launch_id=args.launch_id, stop_after=args.stop_after,
+                                 scope=args.scope, install_signals=True)
+        except supervisor.SupervisorRefused as error:
+            parser.error(str(error))
+        except (Exception, KeyboardInterrupt):
+            raise SystemExit(1)
+        return
+    if fresh:
+        write_resolved(config)
+    name = args.backend or config["launcher"]["backend"]
+    backend = launcher.backend_for(name, supervise=lambda spec: supervisor.supervise(
+        config, linear, launch_id=spec["launch_id"], stop_after=spec["stop_after"], scope=spec["scope"],
+        install_signals=True))
+    try:
+        entry = launcher.launch(config, linear, backend=backend, stop_after=args.stop_after, scope=args.scope,
+                                clear_stop=args.clear_stop, force_preflight=args.rerun_preflight)
+    except (launcher.LaunchError, ConfigError, RuntimeError, OSError) as error:
+        parser.error(str(error))
+    if entry["started"].get("exit_code"):
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
-    main()
+    # Delegate to the importable module so the supervisor, launcher and recovery modules
+    # (which import ``runner``) share one set of classes with the CLI.
+    import runner as engine
+    engine.main()
