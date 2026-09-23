@@ -2,7 +2,10 @@
 import copy
 import json
 from pathlib import Path
+import re
 import sys
+
+from linear_client import append_comment
 
 
 def write(path, value):
@@ -50,16 +53,27 @@ def make_home(root, repo, *, registry=None, site=None, workspace=None, project=N
 
 
 class FakeLinear:
-    """In-memory Linear boundary: issue reads/writes, marker summaries and name resolution."""
+    """In-memory Linear boundary: issue reads/writes, append-only comments and name resolution.
+
+    Comments go through the real ``append_comment`` (reconcile by marker, read-back).
+    ``fail_posts`` refuses writes; ``lose_responses`` applies the next N writes and then
+    raises, as when a response is lost after Linear accepted the comment.
+    """
 
     def __init__(self):
         self.data = {"id": "DEV-1", "projectId": "p", "assigneeId": "owner", "projectMilestone": {"id": "m"},
                      "status": "Todo", "statusType": "unstarted", "description": "- [ ] Produce validated output", "labels": ["Implementation", "Standard"],
                      "relations": {"blockedBy": []}}
         self.others = {}
-        self.summaries = {}; self.reads = 0; self.fail_summary = False; self.posts = []
+        self.reads = 0
         self.resolutions = []
         self.writes = []
+        self.label_writes = []
+        self.comment_store = {}   # issue -> [{"id", "body"}], append-only
+        self.posts = []           # (issue, body) in creation order
+        self.fail_posts = False
+        self.lose_responses = 0
+        self.on_post = None       # optional hook(issue, body) called after each accepted write
 
     def issue(self, identifier):
         self.reads += 1
@@ -71,18 +85,43 @@ class FakeLinear:
     def call(self, name, **args):
         target = self.others.get(args.get("id"), self.data) if name == "save_issue" else self.data
         if name == "save_issue":
-            self.writes.append(args.get("state"))
-            target["status"] = args.get("state", target["status"])
-            target["statusType"] = {"In Progress": "started", "In Review": "started", "Done": "completed"}.get(args.get("state"), "started")
+            if "state" in args:
+                self.writes.append(args["state"])
+                target["status"] = args["state"]
+                target["statusType"] = {"In Progress": "started", "In Review": "started", "Done": "completed"}.get(args["state"], "started")
+            if "labels" in args:
+                self.label_writes.append((args["id"], list(args["labels"])))
+                target["labels"] = list(args["labels"])
             if "description" in args:
                 target["description"] = args["description"]
         return copy.deepcopy(target)
 
-    def summary(self, issue, marker, body):
-        if self.fail_summary:
-            raise RuntimeError("offline")
-        self.summaries[marker] = body
-        self.posts.append((issue, marker, body))
+    def post_comment(self, issue, body, marker, *, reconcile=False):
+        if self.fail_posts:
+            raise RuntimeError("Linear offline")
+
+        def create(text):
+            comment = {"id": f"comment-{len(self.posts) + 1}", "body": text}
+            self.comment_store.setdefault(issue, []).append(comment)
+            self.posts.append((issue, text))
+            if self.on_post:
+                self.on_post(issue, text)
+            if self.lose_responses:
+                self.lose_responses -= 1
+                raise RuntimeError("response lost after the comment was written")
+            return dict(comment)
+        return append_comment(lambda i: copy.deepcopy(self.comment_store.get(i, [])), create, issue, body, marker,
+                              reconcile=reconcile)
+
+    def bodies(self, issue):
+        return [c["body"] for c in self.comment_store.get(issue, [])]
+
+    def kinds(self, issue):
+        """Event kinds posted on ``issue``, oldest first (from the hidden marker)."""
+        return [re.search(r"<!-- linear-runner [^/]+/[^/]+/([^/]+)/\d+ -->", b).group(1) for b in self.bodies(issue)]
+
+    def last(self, issue, kind):
+        return [b for b, k in zip(self.bodies(issue), self.kinds(issue)) if k == kind][-1]
 
     def add_issue(self, identifier, **fields):
         """A second dispatchable issue with the same ownership as DEV-1."""

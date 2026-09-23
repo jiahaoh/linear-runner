@@ -132,10 +132,12 @@ class LaunchAndSupervisorTests(Harness):
             self.assertEqual(record["live"]["statusType"], "completed")
             self.assertEqual(record["files_sha256"]["final-result.json"],
                              runner_module.hashlib.sha256((run / "final-result.json").read_bytes()).hexdigest())
-            self.assertEqual(record["destinations"], [issue, "DEV-3"] if issue != "DEV-3" else ["DEV-3"])
             self.assertTrue(state["lifecycle"][issue]["synced_at"])
-        posted = [(issue, marker) for issue, marker, _ in self.linear.posts if "lifecycle" in marker]
-        self.assertEqual(len(posted), 5)
+            # One NEW plain-language comment per lifecycle event on the owning issue.
+            expected = ["claim", "ready", "validation", "review", "done"]
+            self.assertEqual(self.linear.kinds(issue), expected + (["batch-finished"] if issue == "DEV-3" else []))
+        self.assertTrue(self.linear.last("DEV-3", "batch-finished").startswith(
+            "Batch fixture finished: all 3 issues are Done, so no action is needed."))
         self.assertTrue((self.state_dir / "STOP").exists())  # durable hold on exit
         status = json.loads((self.state_dir / "supervisor.json").read_text())
         self.assertEqual((status["launch_id"], status["status"], status["outcome"]), (entry["launch_id"], "exited", "complete"))
@@ -479,22 +481,24 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         self.assertEqual(self.launch()["started"]["outcome"], "complete")
         self.assertEqual(self.done(), ["DEV-1", "DEV-2", "DEV-3"])
 
-    def test_interrupted_lifecycle_sync_is_reconciled_without_model_work(self):
-        original = self.linear.summary
-        def flaky(issue, marker, body):
-            if "lifecycle" in marker:
-                raise RuntimeError("Linear offline during lifecycle post")
-            return original(issue, marker, body)
-        self.linear.summary = flaky
+    def test_interrupted_done_post_is_reconciled_without_model_work(self):
+        original = self.linear.post_comment
+        def flaky(issue, body, marker, **kwargs):
+            if "/done/" in marker:
+                raise RuntimeError("Linear offline during the done post")
+            return original(issue, body, marker, **kwargs)
+        self.linear.post_comment = flaky
         self.launch()
         state = self.state()
-        self.assertEqual((self.done(), state["phase"], state["lifecycle"]["DEV-1"]["synced_at"]), (["DEV-1"], "paused", None))
-        self.linear.summary = original
+        self.assertEqual((self.done(), state["phase"], state["active"]["step"]), ([], "paused", "done"))
+        self.assertEqual(state["events"]["DEV-1/done/1"]["status"], "pending")
+        self.linear.post_comment = original
         self.recover("resume", then="continue")
         calls = list(self.calls)
         self.launch(stop_after=["DEV-2"])
         self.assertEqual(self.calls[:len(calls)], calls)
-        self.assertEqual(len(list((self.state_dir / "lifecycle" / "DEV-1").glob("readback-superseded-*.json"))), 1)
+        self.assertEqual(self.calls.count(("DEV-1", "review")), 1)
+        self.assertEqual(self.linear.kinds("DEV-1").count("done"), 1)
         self.assertTrue(self.state()["lifecycle"]["DEV-1"]["synced_at"])
 
     def test_expected_state_mismatch_refuses_the_recovery(self):
@@ -545,8 +549,11 @@ class OnBlockPolicyTests(Harness):
         self.assertTrue(state["deferred"]["DEV-1"]["park"]["parked_ref"].startswith("refs/linear-runner/parked/fixture/DEV-1/"))
         self.assertNotIn("rule_applications", state)
         self.assertEqual([e["event"] for e in verify_log(self.state_dir)], ["deferred"])
-        targets = {issue for issue, marker, _ in self.linear.posts if "lifecycle" in marker}
-        self.assertEqual(targets, {"DEV-2", "DEV-3", "TRACK-1"})
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "deferred"])
+        self.assertTrue(self.linear.last("DEV-1", "deferred").startswith("DEV-1 was set aside after it blocked"))
+        self.assertEqual(self.linear.kinds("TRACK-1"), ["batch-finished"])
+        self.assertEqual(self.linear.kinds("DEV-3")[-1], "batch-finished")
+        self.assertIn("Set aside: DEV-1.", self.linear.last("TRACK-1", "batch-finished"))
 
     def test_batch_level_failures_still_stop(self):
         self.linear.others["DEV-2"]["assigneeId"] = "someone-else"

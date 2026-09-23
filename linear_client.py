@@ -159,19 +159,32 @@ class LinearClient:
         return self._single([u for u in users if isinstance(u, dict) and name in
                              (u.get("name"), u.get("displayName"), u.get("email"))], "user", name)
 
-    def summary(self, issue, marker, body):
-        """Reconcile by stable marker after a crash between remote write and local save."""
-        matches = [c for c in self.comments(issue) if marker in c.get("body", "")]
+    def post_comment(self, issue, body, marker, *, reconcile=False):
+        """Append one NEW comment (never edits); see ``append_comment``."""
+        return append_comment(self.comments, lambda text: self.call("save_comment", issueId=issue, body=text),
+                              issue, body, marker, reconcile=reconcile)
+
+
+def append_comment(list_comments, create, issue, body, marker, *, reconcile=False):
+    """Post ``body`` (which already ends with its hidden ``marker`` line) as a new comment.
+
+    With ``reconcile`` (a previous attempt may have written it before its response or the
+    local save was lost), an existing comment carrying the marker is adopted instead of
+    posting again. Existing comments are never edited. The comment is read back.
+    """
+    identity = None
+    if reconcile:
+        matches = [c for c in list_comments(issue) if marker in (c.get("body") or "")]
         if len(matches) > 1:
-            raise RuntimeError("Duplicate execution-summary marker; reconcile manually")
-        text = body + "\n\n" + marker
+            raise RuntimeError(f"Duplicate event marker on {issue}; reconcile manually")
         if matches:
-            if matches[0]["body"] != text:
-                self.call("save_comment", id=matches[0]["id"], body=text)
             identity = matches[0]["id"]
-        else:
-            identity = self.call("save_comment", issueId=issue, body=text)["id"]
-        confirmed = [c for c in self.comments(issue) if c["id"] == identity]
-        if len(confirmed) != 1 or confirmed[0]["body"] != text:
-            raise RuntimeError("Linear execution summary read-back failed")
-        return identity
+    if identity is None:
+        created = create(body)
+        identity = created.get("id") if isinstance(created, dict) else None
+        if not identity:
+            raise RuntimeError(f"Linear comment on {issue} returned no ID; reconcile before resuming")
+    confirmed = [c for c in list_comments(issue) if c.get("id") == identity]
+    if len(confirmed) != 1 or (confirmed[0].get("body") or "").strip() != body.strip():
+        raise RuntimeError(f"Linear comment read-back failed on {issue}")
+    return identity

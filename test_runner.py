@@ -488,31 +488,44 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.calls, ["implement", "review"])
         self.assertEqual(self.linear.data["statusType"], "completed")
 
-    def test_sync_failure_preserves_pending_record_without_advancing(self):
-        self.linear.fail_summary = True
+    def test_failed_event_post_is_pending_in_state_and_blocks_advancing(self):
+        self.linear.fail_posts = True
         with self.assertRaisesRegex(RuntimeError, "offline"):
             self.runner.execute(limit=1)
         self.assertFalse(self.calls)
-        self.assertTrue(Path(self.runner.state["active"]["run_dir"], "linear-pending.json").exists())
-        self.linear.fail_summary = False
+        pending = [e for e in self.runner.state["events"].values() if e["status"] == "pending"]
+        self.assertEqual([(e["issue"], e["kind"], e["seq"]) for e in pending], [("DEV-1", "claim", 1)])
+        self.linear.fail_posts = False
         self.runner.execute(limit=1, resume=True)
         self.assertEqual(self.linear.data["statusType"], "completed")
-        self.assertFalse(Path(self.runner.state["history"][0]["run_dir"], "linear-pending.json").exists())
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "review", "done", "batch-finished"])
+        self.assertFalse([e for e in self.runner.state["events"].values() if e["status"] == "pending"])
 
-    def test_linear_summary_reconciles_existing_marker_write(self):
+    def test_linear_client_appends_new_comments_and_never_edits(self):
         client = LinearClient({"token_env": "TEST"}); calls = []
-        comments = [{"id": "c1", "body": "old\n\nmarker"}]
+        comments = [{"id": "c1", "body": "older comment\n\n<!-- linear-runner b/DEV-1/done/1 -->"}]
         client.comments = lambda issue: copy.deepcopy(comments)
         def call(name, **args):
-            calls.append(args); comments[0]["body"] = args["body"]; return comments[0]
+            calls.append((name, args))
+            comment = {"id": f"c{len(comments) + 1}", "body": args["body"]}
+            comments.append(comment)
+            return comment
         client.call = call
-        self.assertEqual(client.summary("DEV-1", "marker", "new"), "c1")
-        client.summary("DEV-1", "marker", "new")
+        marker = "<!-- linear-runner b/DEV-1/blocked/1 -->"
+        body = "DEV-1 is paused.\n\n" + marker
+        self.assertEqual(client.post_comment("DEV-1", body, marker), "c2")
+        self.assertEqual(calls, [("save_comment", {"issueId": "DEV-1", "body": body})])  # new comment, no id
+        # A reconciling retry adopts the written comment instead of posting or editing.
+        self.assertEqual(client.post_comment("DEV-1", body, marker, reconcile=True), "c2")
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0]["id"], "c1")
-        comments.append({"id": "c2", "body": "duplicate\n\nmarker"})
+        self.assertEqual(comments[0]["body"], "older comment\n\n<!-- linear-runner b/DEV-1/done/1 -->")
+        comments.append({"id": "c9", "body": "copy\n\n" + marker})
         with self.assertRaisesRegex(RuntimeError, "Duplicate"):
-            client.summary("DEV-1", "marker", "new")
+            client.post_comment("DEV-1", body, marker, reconcile=True)
+        client.call = lambda name, **args: {"id": "lost"}
+        with self.assertRaisesRegex(RuntimeError, "read-back failed"):
+            client.post_comment("DEV-1", "Other.\n\n<!-- linear-runner b/DEV-1/claim/1 -->",
+                                "<!-- linear-runner b/DEV-1/claim/1 -->")
 
     def test_expired_oauth_is_not_silently_refreshed(self):
         p = self.root / "credentials.json"

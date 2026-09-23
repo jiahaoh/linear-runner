@@ -10,13 +10,15 @@ It replaces per-batch supervise scripts. Under the project lock it:
   allowlist issue by issue, skipping deferred issues and issues whose Linear
   ``blockedBy`` prerequisites are not Done, and re-checking gates before each issue;
 * after every accepted issue re-validates the accepted result, reads Linear Done and the
-  checklist back, writes ``lifecycle/<issue>/readback.json`` with hashes and posts it with
-  the existing marker-comment mechanism to the owning issue, the terminal issue and any
-  configured report issues;
+  checklist back and writes ``lifecycle/<issue>/readback.json`` with hashes (the issue's
+  plain-language "done" comment was already posted by the runner);
+* posts a NEW "recovery" comment when it carries out a recorded recovery and removes the
+  needs-input mark of the stop it recovers;
 * stops at planned checkpoints, on STOP, or on a batch-level failure; on an issue-level
   block it applies a matching pre-authorized decision rule or the batch's ``on_block``
   policy (stop, or defer the issue and continue with independent issues);
-* writes a terminal report and, by default, a STOP marker when it exits.
+* writes a terminal report, posts the batch summary as a new comment on the terminal
+  issue and ``report_issues``, and, by default, writes a STOP marker when it exits.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from pathlib import Path
 import signal
 
 from config import config_fingerprint, read_json, write_json
+import messages
 from recovery import append_log, block_record, defer, expected_state, park
 from rules import RuleError, evaluate, parse_rules
 from runner import (IssueBlocked, PHASES, Runner, git, issue_contract, now, project_lock, published_contract_matches,
@@ -103,6 +106,19 @@ class Supervisor:
             raise SupervisorRefused("An unfinished issue is saved; record a recovery (runner.py recover resume) first")
         return pending
 
+    def announce_recovery(self, pending):
+        """NEW comment on the owning issue saying which recorded recovery is being carried out."""
+        record = next(r for r in self.state.get("recoveries", []) if r["id"] == pending["id"])
+        details = record.get("details", {})
+        active = self.state.get("active")
+        issue = details.get("issue") or (active or {}).get("issue_id")
+        note = None
+        if details.get("note") and Path(details["note"]["path"]).is_file():
+            note = Path(details["note"]["path"]).read_text()
+        body = messages.recovery(self.r.ctx, record=record, step=(active or {}).get("step"), note=note,
+                                 evidence_paths=[self.root / "recovery-log.jsonl"])
+        self.r.emit(issue or self.config["terminal_issue"], "recovery", body, dedupe=record["id"])
+
     def consume(self, pending):
         kind = pending["kind"]
         self.r.allowed_phases = {"publish": set(), "review": {"review"}}.get(kind)
@@ -160,14 +176,6 @@ class Supervisor:
 
     # --- Lifecycle read-back ----------------------------------------------------
 
-    def destinations(self, issue):
-        supervision = self.config["supervision"]
-        return list(dict.fromkeys([issue, self.config["terminal_issue"], *supervision["report_issues"]]))
-
-    def marker(self, kind, issue, target):
-        digest = hashlib.sha256(f"{self.root}|{kind}|{issue}|{target}".encode()).hexdigest()
-        return f"<!-- runner-v2-{kind}:{digest} -->"
-
     def lifecycle(self, entry):
         issue = entry["issue_id"]
         run = Path(entry["run_dir"])
@@ -188,7 +196,7 @@ class Supervisor:
                   "live": {"status": live.get("status"), "statusType": live.get("statusType"),
                            "assigneeId": live.get("assigneeId"), "projectMilestone": live.get("projectMilestone"),
                            "contract_sha256": issue_contract(live)},
-                  "files_sha256": files, "destinations": self.destinations(issue),
+                  "files_sha256": files,
                   "scope": "Controller lifecycle evidence only; not human or scientific approval."}
         directory = self.root / LIFECYCLE_DIR / issue
         directory.mkdir(parents=True, exist_ok=True)
@@ -199,14 +207,9 @@ class Supervisor:
         digest = sha256(path)
         self.state.setdefault("lifecycle", {})[issue] = {"path": str(path), "sha256": digest, "synced_at": None}
         self.r.save()
-        body = (f"Lifecycle read-back — {issue}\n\nIndependent acceptance re-validated for {entry['commit']}; live "
-                f"{live.get('status')} and checklist read back. Controller evidence only, not human or scientific "
-                f"approval.\n\nRecord: {path} (sha256 {digest})\n\n```json\n{json.dumps(record, indent=2)}\n```")
-        for target in record["destinations"]:
-            self.r.linear.summary(target, self.marker("lifecycle", issue, target), body)
         self.state["lifecycle"][issue]["synced_at"] = now()
         self.r.save()
-        self.r.log(f"{issue}: lifecycle read-back verified and synchronized")
+        self.r.log(f"{issue}: lifecycle read-back verified and recorded")
 
     def reconcile_lifecycle(self):
         synced = self.state.get("lifecycle", {})
@@ -257,8 +260,13 @@ class Supervisor:
         defer(self.r, issue, cause=dict(cause, park=parked))
         append_log(self.root, {"event": "deferred", "issue": issue, "cause": cause, "park": parked,
                                "launch_id": self.launch_id, "at": now()})
-        self.r.sync(active, f"Deferred after an issue-level block ({block['event']}): {cause}. "
-                            "Independent authorized issues continue; this issue is not accepted.")
+        drafts = active.get("drafts") or {}
+        who = "reviewer" if block["event"] == "review_blocked" else "worker"
+        held = drafts.get("held", {}).get("review" if who == "reviewer" else "blocked")
+        self.r.emit(issue, "deferred", messages.deferred(
+            self.r.ctx, issue=issue, cause=cause, block=block, result=active.get("last_result"), who=who,
+            draft=held["text"] if held else None, evidence_paths=[active["run_dir"], drafts.get("attempt")]),
+            dedupe=block["id"])
         self.r.log(f"{issue}: deferred ({cause}); continuing with independent issues")
 
     # --- Terminal outcomes ------------------------------------------------------
@@ -305,6 +313,10 @@ class Supervisor:
             r.save(phase="supervising", error=None)
         outcome = None
         try:
+            r.reconcile_events()
+            if pending:
+                self.announce_recovery(pending)
+                r.clear_needs_input()
             self.reconcile_lifecycle()
             finished_active = False
             if self.state.get("active"):
@@ -334,7 +346,7 @@ class Supervisor:
         except (Exception, KeyboardInterrupt) as error:
             r.stop_child()
             r.log(f"Paused: {error}")
-            r.report_pause(error)
+            r.report_pause(error, launch_id=self.launch_id, extra=self.extra())
             self.write_status("exited", outcome="blocked", error=str(error))
             raise
 
