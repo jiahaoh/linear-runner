@@ -4,5 +4,13 @@
     "token_env": "LINEAR_MCP_TOKEN"
   },
   "assignee": "me",
-  "states": {}
+  "states": {},
+  "attention": {
+    "owner_mention": "@REPLACE_HANDLE",
+    "needs_input": {
+      "mechanism": "mention",
+      "label": "Needs input",
+      "state": "Blocked"
+    }
+  }
 }

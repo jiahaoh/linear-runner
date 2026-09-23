@@ -20,5 +20,24 @@
     "unit_prefix": "linear-runner",
     "startup_timeout_seconds": 30,
     "stop_on_exit": true
+  },
+  "attention": {
+    "notifier": {
+      "backend": "none",
+      "command": [],
+      "timeout_seconds": 30
+    },
+    "watchdog": {
+      "stall_minutes": 120
+    },
+    "lint": {
+      "max_chars": 1500,
+      "max_lines": 30,
+      "max_first_sentence_chars": 240
+    },
+    "outbox": {
+      "poll_seconds": 15,
+      "settle_seconds": 3
+    }
   }
 }

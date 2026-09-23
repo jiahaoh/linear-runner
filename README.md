@@ -21,14 +21,20 @@ before unattended use.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`) |
+| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`) |
 | `launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` backends |
 | `supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
 | `recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
 | `rules.py` | One-line decision rules written in issue descriptions |
 | `delivery.py` | Generic, config-driven delivery integrity step |
 | `config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning |
-| `linear_client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint |
+| `linear_client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint; append-only comments with read-back |
+| `templates/` | Human-review Linear comment templates (DRAFT wording) and the worker/reviewer draft templates |
+| `updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
+| `messages.py` | Builds each human-review comment from saved state |
+| `attention.py` | Stop classification, needs-input mechanisms and the out-of-band notifier |
+| `watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`) |
+| `render_samples.py` | Writes `docs/template-samples.md`, one sample comment per template |
 | `report.py` | Standalone terminal HTML/JSON report |
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
@@ -63,8 +69,8 @@ model does not allow) are errors.
 
 | Layer | Fields |
 | --- | --- |
-| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher` |
-| Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames |
+| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
+| Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` |
 | Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision` |
 
@@ -81,9 +87,19 @@ Supervisor, launcher and delivery-integrity fields:
 | | `stop_on_exit` | `true` | Write the STOP marker when the supervisor exits (also via `ExecStopPost`) |
 | batch `supervision` | `stop_after` | `[]` | Planned checkpoints: stop after these issues are accepted |
 | | `on_block` | `stop` | Pause the batch on an issue-level block; `continue_independent` opts in to deferring the issue and continuing with independent issues |
-| | `report_issues` | `[]` | Extra issues that receive each lifecycle read-back |
+| | `report_issues` | `[]` | Extra issues that receive the batch-finished and batch-paused comments |
 | | `decision_rules` | `honor` | `ignore` disables rule blocks in issue descriptions |
 | | `baseline_checks` | `false` | Run the default-tier checks on the clean baseline during launch preflight |
+| workspace `attention` (DRAFT) | `owner_mention` | `""` (comments say "the owner") | Text put where the owner is addressed, for example `@handle` |
+| | `needs_input.mechanism` | `mention` | How a stopped issue is marked: `label`, `state` or `mention` (see "Stops") |
+| | `needs_input.label` | `Needs input` | Label added on a stop and removed when a recovery runs (must exist in the team) |
+| | `needs_input.state` | `Blocked` | Workflow state for the `state` mechanism (must exist in the team) |
+| site `attention` (DRAFT) | `notifier.backend` | `none` | `none`, `command` or `linear-mention-only` |
+| | `notifier.command` | `[]` | argv run once per stop and watchdog alert; message on stdin, `{subject}` replaced |
+| | `notifier.timeout_seconds` | 30 | Notifier command timeout |
+| | `watchdog.stall_minutes` | 120 | Watchdog alert after this long without recorded progress |
+| | `lint.max_chars` / `max_lines` / `max_first_sentence_chars` | 1500 / 30 / 240 | Limits for worker and reviewer drafts |
+| | `outbox.poll_seconds` / `settle_seconds` | 15 / 3 | Outbox poll interval while Codex runs; drafts younger than this are left for the next poll |
 | project `delivery_integrity` | `manifest` | required | Renderer manifest, relative to the issue's `delivery/` directory |
 | | `revision_field` | required | Manifest field that must equal the committed revision |
 | | `required_checks` | `[]` | Check names that must be in the validated evidence |
@@ -123,8 +139,9 @@ before hashing. Moving or re-cloning the runner at the same commit therefore res
 normally, while a different runner commit, uncommitted runner edits or any configuration
 change is refused. The dirty flag is a boolean, so further edits to an already dirty
 checkout are not distinguished; run batches from a clean commit. The site `launcher` block
-is the one exception: it only chooses how the supervisor process starts, so it is left out
-of the fingerprint and changing it never blocks resuming. Each launch record
+and the site and workspace `attention` blocks are the exceptions: they only choose how the
+supervisor process starts and how a person is told about progress and stops, so they are
+left out of the fingerprint and changing them never blocks resuming. Each launch record
 (`<state dir>/launches/<launch id>.json`) stores the launcher settings actually used, and
 `status` shows those of the latest launch.
 
@@ -231,10 +248,53 @@ checkpoints the issue for explicit reconciliation (`recover budget`); resume doe
 reset it. Usage is the
 per-session maximum of cumulative counters summed over sessions; it is not billed cost.
 
-One stable execution-summary comment per issue, one lifecycle read-back comment per
-accepted issue and destination, and one terminal-report comment are upserted by marker. Each write first saves a local pending record; a failed write keeps
-the batch from advancing, and resume reconciles the marker comment or an already
-completed publish without rerunning models or rewriting the description.
+## Linear updates
+
+People read only plain language in Linear; machine records stay in artifacts. Two kinds of
+template are kept apart: the agent-review contracts (the structured result and review JSON
+schemas) and the human-review templates in `templates/`. Every comment opens with one plain
+sentence saying what happened and what, if anything, the owner needs to do, then a few short
+optional sections, and at most one `Evidence:` line of host paths. No JSON, code blocks,
+tables or long hashes. `python3 render_samples.py` writes one sample of each to
+[`docs/template-samples.md`](docs/template-samples.md); the wording is DRAFT.
+
+Every lifecycle event is a NEW comment on the issue it concerns; nothing is edited:
+
+| Event | Author | Posted |
+| --- | --- | --- |
+| `claim` | runner | when work starts |
+| `progress` | worker (outbox draft) | as soon as the runner sees it, while Codex still runs |
+| `ready` | worker (outbox draft), runner fallback | when a worker session ends ready |
+| `validation` | runner | after each validation run |
+| `review` | reviewer (its `summary`), runner fallback | when the review is accepted |
+| `done` | runner | after Done is published and read back |
+| `blocked` | runner, quoting the worker or reviewer | when the batch pauses (see "Stops") |
+| `deferred` | runner | when a rule or `on_block` sets the issue aside |
+| `recovery` | runner | when a launch carries out a recorded recovery |
+| `batch-finished` / `batch-paused` | runner | on the terminal issue and `report_issues` |
+| `watchdog` | model-free watchdog | when the supervisor vanished or stalled |
+
+Each event has the idempotency key (issue, kind, sequence). It is saved in `state.json` as
+pending before the write and as posted after the comment is read back. The comment ends with
+one hidden line, `<!-- linear-runner <batch>/<issue>/<kind>/<n> -->`. If a write's response
+or the following save is lost, the next run finds the comment by that line and adopts it, so
+an event is never posted twice. A failed write keeps the batch from advancing; the pending
+event is posted when the batch resumes, without rerunning models.
+
+**Outbox.** Codex sessions keep Linear MCP disabled. Each phase attempt has an
+`outbox/` directory, and the prompt tells the worker to write drafts there as
+`NNN-<kind>.md` (`progress`, `ready` or `blocked`) following `templates/draft-<kind>.md`.
+The runner polls the outbox while Codex runs and once after it exits. It lints each draft:
+the kind must be allowed for the phase, the first paragraph must be one plain sentence, the
+template's required sections must be present and no other headings used, within the length
+limits, and with no JSON, code blocks, tables, long hashes or HTML comments except one
+optional last `Evidence:` line. Valid `progress` drafts are posted at once. `ready` and
+`blocked` drafts wait for the session's result: a ready note is posted when the result is
+ready, and a blocked note is quoted in the runner's blocked comment. An invalid draft is
+kept on disk, recorded in `state.drafts` and `<attempt>/outbox-lint.json`, and never
+posted; the runner posts its own templated fallback where the event needs one. The review
+sandbox is read-only, so the reviewer writes its note as the result's `summary`, which the
+runner saves as `outbox/NNN-review.md` and lints the same way.
 
 ## Supervisor
 
@@ -249,14 +309,17 @@ recovery whose expected state still matches exactly. Then it:
 3. selects the first allowlisted issue that is not done or deferred, whose Linear
    `blockedBy` issues are all Done and whose gates pass, and runs it through the lifecycle;
 4. after each accepted issue re-validates the accepted result against the pinned
-   contract, reads Linear Done and the checked checklist back, writes
+   contract, reads Linear Done and the checked checklist back and writes
    `lifecycle/<issue>/readback.json` (commit, live status, contract hash, SHA-256 of
-   `final-result.json`, `intake.json`, `manifest.json` and `delivery/integrity.json`) and
-   posts it, with the existing marker-comment mechanism, to the issue, the terminal issue
-   and `supervision.report_issues`;
+   `final-result.json`, `intake.json`, `manifest.json` and `delivery/integrity.json`); the
+   issue's plain-language `done` comment points to the run directory;
 5. stops at a planned checkpoint (`supervision.stop_after` or `--stop-after`), on STOP,
    when nothing more is ready (`partial`, listing deferred and waiting issues) or when the
-   queue is complete, and writes the terminal report.
+   queue is complete, writes the terminal report and posts a new `batch-finished` comment on
+   the terminal issue and `supervision.report_issues`.
+
+When it carries out a recorded recovery it first posts a `recovery` comment on the issue
+and removes the needs-input mark of the stop it recovers.
 
 A batch-level failure (gates, ownership, Linear errors, changed configuration, lost
 read-back) pauses the batch as before. An issue-level block (worker or repair blocked,
@@ -279,6 +342,64 @@ Deferring parks uncommitted work in `refs/linear-runner/parked/<batch>/<issue>/<
 (plus the manifest's patch/tar snapshot) before restoring a clean worktree; an issue that
 already has an unaccepted controller commit is never deferred automatically. Dependents
 of a deferred issue keep waiting because their Linear prerequisite is not Done.
+
+## Stops
+
+Every pause is recorded in `state.stops` with a class. The rule is in
+`attention.classify_stop` and tested:
+
+| Class | When |
+| --- | --- |
+| `needs-decision` | worker or review blocked, soft budget exceeded, or something changed outside the runner (issue state, scope, gates, Git history, configuration) |
+| `technical-block` | checks still failing after the allowed repairs, delivery failed, or another runner-raised stop |
+| `environment` | Linear or Codex errors (authentication, HTTP, timeouts, missing results), OS errors and signals |
+| `runner-defect` | any other exception type (a bug in the runner) |
+
+On a pause the runner posts a NEW `blocked` comment on the issue that stopped (the terminal
+issue if none was active). Its first sentence says what stopped and addresses the owner
+(`attention.owner_mention`); it quotes the worker's or reviewer's own words (a valid
+`blocked` or `review` draft, else the result's summary and unmet criteria), says what
+decision or action is needed and gives the exact `recover` and `launch` commands. A
+`batch-paused` comment goes to the terminal issue and `report_issues` (except the issue that
+already got the blocked comment). Then the issue is marked as needing input with the DRAFT
+`needs_input.mechanism`:
+
+* `label`: add `needs_input.label` (for example "Needs input") and remove it when a recovery
+  runs. The label must already exist in the team.
+* `state`: move the issue to `needs_input.state` and move it back to its previous state when
+  a recovery runs; launch preflight accepts that state for the saved issue. The state must
+  already exist.
+* `mention`: change nothing on the issue; the comment's mention is the signal.
+
+Finally the notifier runs once for the stop (`notifier.backend`): `none`, `command` (runs
+`notifier.command` with the comment on stdin and `{subject}` replaced by its first sentence,
+for example `["mail", "-s", "{subject}", "you@example.org"]` or
+`["notify-send", "{subject}"]`; no shell), or `linear-mention-only`. Comments posted with
+your own Linear credential may not notify you about your own mention, so an out-of-band
+notifier is the dependable signal.
+
+## Watchdog
+
+`runner.py watchdog --batch B` is model-free and meant for a host timer. It alerts once,
+with a new comment on the owning issue plus the notifier, when `supervisor.json` still says
+`running` but that process is gone (killed, out of memory; no terminal outcome was written),
+or when the supervisor runs but nothing in `state.json`, `supervisor.json` or the active run
+directory has changed for `watchdog.stall_minutes` (DRAFT 120). Alerts are recorded in
+`<state dir>/watchdog.json`, so the same condition never alerts twice; a new stall after
+progress alerts again. It never takes the project lock or writes `state.json`. For a
+vanished supervisor it also applies the needs-input mechanism, cleared by the next recovery.
+
+Example timer (not created by the runner; pass the Linear credential variable by name if the
+workspace uses `token_env`):
+
+```bash
+systemd-run --user --unit=linear-runner-watchdog-my-batch --on-calendar='*:0/15' \
+  --property=WorkingDirectory=/absolute/path/to/linear-runner --setenv=LINEAR_MCP_TOKEN \
+  /usr/bin/python3 /absolute/path/to/linear-runner/runner.py watchdog \
+  --batch /absolute/path/to/batches/my-batch.json
+systemctl --user list-timers 'linear-runner-watchdog-*'    # inspect
+systemctl --user stop linear-runner-watchdog-my-batch.timer # remove after the batch
+```
 
 ## Stop, recovery and continuation
 
@@ -400,8 +521,9 @@ N       a whole number, at least 1: "1 time", "2 times", ...
   "ignore"` disables them for a batch.
 
 Parallel workers, distributed leasing, automatic restart and scientific acceptance are
-not implemented. Tests use temporary Git repositories with fake Codex, Linear and launcher
-boundaries; they make no network calls and never run `systemd-run`.
+not implemented. Tests use temporary Git repositories with fake Codex, Linear, notifier,
+process and launcher boundaries; they make no network calls, send no mail and never run
+`systemd-run`.
 
 ## License
 

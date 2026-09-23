@@ -4,6 +4,8 @@ This repository owns the reusable Linear-to-Codex issue runner, configuration ex
 
 Follow your own configured workflow for tracking changes: record substantive changes in a matching issue with the executing session and validation evidence, and keep related guidance in sync.
 
+After changing `templates/` or `messages.py`, run `python3 render_samples.py` and commit `docs/template-samples.md` (a test checks it is current). Linear comments are for people: plain sentences, no JSON or tables.
+
 Run `python3 -m unittest -v`, plus offline `validate-config` for affected batches (at least `python3 runner.py validate-config --home examples/home --batch examples/home/batches/example.json`), before committing. Live issue dispatch is not a unit test; do not launch unrelated work to verify controller changes. Preserve existing state/logs and unrelated work. Keep run reports, prompts from executed sessions and private artifacts outside this source repository. Record commit/push/merge state and limitations in the issue handoff.
 
 There is one engine (`runner.py`) and one configuration model (README "Configuration layers").
