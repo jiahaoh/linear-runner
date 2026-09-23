@@ -320,12 +320,26 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
         if pid_alive(runner.state.get("child_pid")):
             raise LaunchError(f"Previous worker PID {runner.state['child_pid']} may still be alive; inspect first")
         stop = root / "STOP"
-        if stop.exists() and not clear_stop:
-            raise LaunchError(f"STOP marker present ({stop.read_text().strip()!r}); inspect `status`, then relaunch "
-                              "with --clear-stop")
+        cleared = None
+        if stop.exists():
+            # A pending recovery was recorded against this exact marker: carrying out that
+            # recovery clears it. Any other marker (a bare continuation, or a STOP written
+            # after the recovery was recorded) needs an explicit --clear-stop.
+            pending = runner.state.get("pending_recovery") or {}
+            digest = hashlib.sha256(stop.read_bytes()).hexdigest()
+            if pending.get("stop_marker_sha256") == digest:
+                cleared = {"text": stop.read_text(), "sha256": digest, "by": f"pending recovery {pending['id']}"}
+            elif clear_stop:
+                cleared = {"text": stop.read_text(), "sha256": digest, "by": "--clear-stop"}
+            elif pending:
+                raise LaunchError(f"STOP marker changed after recovery {pending['id']} was recorded "
+                                  f"({stop.read_text().strip()!r}); inspect `status`, then relaunch with --clear-stop")
+            else:
+                raise LaunchError(f"STOP marker present ({stop.read_text().strip()!r}); inspect `status`, then "
+                                  "relaunch with --clear-stop")
         record = preflight(config, runner, launch_id=launch_id, force=force_preflight)
-        cleared = stop.read_text() if stop.exists() else None
-        stop.unlink(missing_ok=True)
+        if cleared:
+            stop.unlink()
     launcher = config["launcher"]
     python = launcher["python"] or sys.executable
     batch = next(v for k, v in config["_layers"].items() if k.startswith("batch "))
@@ -341,7 +355,9 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
             if config["linear"].get("token_env") else [], "stop_marker": str(root / "STOP")
             if launcher["stop_on_exit"] else None, "startup_timeout_seconds": launcher["startup_timeout_seconds"],
             "stop_after": list(stop_after), "scope": scope}
+    # The launcher block is outside the configuration fingerprint; record what was used.
     entry = {"launch_id": launch_id, "at": now(), "backend": backend.name, "spec": spec,
+             "launcher": dict(launcher, python=python),
              "preflight": str(root / "preflight" / f"{launch_id}.json"), "cleared_stop": cleared,
              "state_before": expected_state(runner.state), "config_sha256": record["identities"]["config"]["fingerprint"],
              "source_head": record["identities"]["source"]["head"]}

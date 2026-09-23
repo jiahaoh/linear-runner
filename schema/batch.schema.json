@@ -15,7 +15,7 @@
     "guidance_files": {"type": "array", "items": {"$ref": "#/$defs/text"}},
     "required_done": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
     "supervision": {
-      "description": "DRAFT: generic supervisor behavior for this queue.",
+      "description": "Supervisor behavior for this queue: planned checkpoints, blocking policy, extra report destinations, decision rules and baseline checks.",
       "type": "object",
       "additionalProperties": false,
       "properties": {

@@ -1,9 +1,12 @@
-"""Named, recorded recovery commands (DRAFT names and flags).
+"""Named, recorded recovery commands.
 
 Each command runs under the project lock, checks the saved state exactly, records who
 authorized it and why (``--reason``, ``--authorized-by``) in ``state.json`` and in the
 append-only, hash-chained ``recovery-log.jsonl``, and leaves a *pending recovery* that the
-next ``launch`` consumes after checking that the state is still exactly as recorded.
+next ``launch`` consumes after checking that the state is still exactly as recorded. If a
+STOP marker existed when the recovery was recorded, its hash is recorded too, and that
+launch clears exactly that marker without ``--clear-stop``. ``--then continue`` (default)
+continues the batch after the recovered issue; ``--then stop`` stops after it.
 No command accepts work, deletes history or resets usage, repair or escalation counters.
 
 * ``resume``  - continue the saved active issue from its saved step (or restore a
@@ -82,13 +85,15 @@ def expected_state(state):
 def _record(runner, kind, *, reason, authorized_by, then, details, pending=True):
     state = runner.state
     identifier = details.pop("id")
+    marker = runner.root / "STOP"
     record = {"id": identifier, "kind": kind, "at": now(), "reason": reason.strip(),
               "authorized_by": authorized_by.strip(), "then": then, "details": details,
-              "expected": expected_state(state), "host": os.uname().nodename}
+              "expected": expected_state(state), "host": os.uname().nodename,
+              "stop_marker_sha256": _sha(marker.read_bytes()) if marker.exists() else None}
     append_log(runner.root, dict(record, event="recorded"))
     state.setdefault("recoveries", []).append(record)
     if pending:
-        state["pending_recovery"] = {k: record[k] for k in ("id", "kind", "then", "expected")}
+        state["pending_recovery"] = {k: record[k] for k in ("id", "kind", "then", "expected", "stop_marker_sha256")}
         state["pending_recovery"]["redeliver"] = bool(details.get("redeliver"))
     runner.save()
     return record
@@ -158,7 +163,7 @@ def _repin(runner, active, identifier):
             "old_criteria": old_criteria, "new_criteria": review_criteria(live)}
 
 
-def recover_resume(runner, *, reason, authorized_by, then="stop", note_file=None, repin=False, issue=None):
+def recover_resume(runner, *, reason, authorized_by, then="continue", note_file=None, repin=False, issue=None):
     _preflight(runner, reason, authorized_by)
     identifier = "R-" + run_id()
     details = {"id": identifier}
@@ -185,7 +190,7 @@ def recover_resume(runner, *, reason, authorized_by, then="stop", note_file=None
     return _record(runner, "resume", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 
-def recover_review(runner, *, reason, authorized_by, then="stop", note_file=None, repin=False, redeliver=False):
+def recover_review(runner, *, reason, authorized_by, then="continue", note_file=None, repin=False, redeliver=False):
     _preflight(runner, reason, authorized_by)
     active = _active(runner, ("review",))
     if active.get("budget_exceeded"):
@@ -202,7 +207,7 @@ def recover_review(runner, *, reason, authorized_by, then="stop", note_file=None
     return _record(runner, "review", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 
-def recover_budget(runner, *, reason, authorized_by, phase, limits, then="stop", note_file=None):
+def recover_budget(runner, *, reason, authorized_by, phase, limits, then="continue", note_file=None):
     _preflight(runner, reason, authorized_by)
     active = _active(runner)
     exceeded = active.get("budget_exceeded")
@@ -231,7 +236,7 @@ def recover_budget(runner, *, reason, authorized_by, phase, limits, then="stop",
     return _record(runner, "budget", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 
-def recover_publish(runner, *, reason, authorized_by, then="stop"):
+def recover_publish(runner, *, reason, authorized_by, then="continue"):
     _preflight(runner, reason, authorized_by)
     active = _active(runner, ("publish", "done"))
     try:

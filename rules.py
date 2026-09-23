@@ -1,50 +1,81 @@
-"""DRAFT: pre-authorized decision rules written in an issue description.
+"""Pre-authorized decision rules written in an issue description.
 
 An issue may carry at most one fenced code block whose info string is exactly
-``linear-runner-rules``. The block holds one JSON object::
+``linear-runner-rules``. Each non-blank line that does not start with ``#`` is one rule::
 
     ```linear-runner-rules
-    {"version": 1,
-     "rules": [{"id": "defer-after-two-blocks",
-                "when": {"event": "worker_blocked", "min_count": 2, "same_criterion": true},
-                "then": {"action": "defer_issue"}}]}
+    # defer the viewer issue instead of stopping everything
+    defer issue when worker blocked 2 times on the same criterion
+    stop batch when review blocked 1 time
     ```
 
-Rules are read from the issue as pinned at intake (the contract), never from a later
-live edit. Parsing is strict: unknown keys, events or actions reject the whole block, and
-the supervisor refuses to dispatch an issue whose block does not parse. A rule applies
-only when its exact condition matches the recorded blocks of that issue; the first
-matching rule in order wins and every application is recorded by the caller. Rules can
-only stop or defer; they never accept, skip a criterion or change scope.
+Grammar (keywords are case-insensitive; quoted criterion text must match exactly)::
+
+    <action> when <event> <N> time|times [on the same criterion | on "<exact criterion text>"]
+
+    action: defer issue | stop batch
+    event:  worker blocked | review blocked
+    N:      a whole number >= 1; "1 time", "2 times", ...
+
+Any other line is an error that names the line, and the supervisor refuses to dispatch
+the issue (launch preflight fails). Rules are read from the issue as pinned at intake,
+never from a later live edit. A rule applies only when its exact condition matches the
+issue's recorded blocks; the first matching rule in order wins, and every application
+is recorded with the rule's id (derived from its normalized text). Rules can only defer
+the issue or stop the batch; they never accept work, drop a criterion or change scope.
 """
 from __future__ import annotations
 
-import json
+import hashlib
 import re
 
 FENCE = "linear-runner-rules"
-VERSION = 1
-# Block events recorded by the supervisor. Only the first two may appear in a rule.
-EVENTS = ("worker_blocked", "review_blocked")
-ACTIONS = ("defer_issue", "stop")
-_BLOCK = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*" + re.escape(FENCE) + r"[ \t]*\n(.*?)\n[ \t]*\1[ \t]*$",
+ACTIONS = {"defer issue": "defer_issue", "stop batch": "stop_batch"}
+EVENTS = {"worker blocked": "worker_blocked", "review blocked": "review_blocked"}
+GRAMMAR = '<action> when <event> <N> time(s) [on the same criterion | on "<exact criterion text>"]'
+_BLOCK = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*" + re.escape(FENCE) + r"[ \t]*\n(.*?)\n?[ \t]*\1[ \t]*$",
                     re.M | re.S)
-_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_RULE = re.compile(r"(?P<action>defer\s+issue|stop\s+batch)\s+when\s+(?P<event>worker\s+blocked|review\s+blocked)"
+                   r"\s+(?P<count>\d+)\s+(?P<unit>times?)"
+                   r"(?:\s+on\s+(?:(?P<same>the\s+same\s+criterion)|\"(?P<criterion>.+)\"))?", re.I)
 
 
 class RuleError(ValueError):
     pass
 
 
-def _keys(value, allowed, required, where):
-    if not isinstance(value, dict):
-        raise RuleError(f"{where}: expected an object")
-    unknown = sorted(set(value) - set(allowed))
-    if unknown:
-        raise RuleError(f"{where}: unknown key(s) {unknown}")
-    missing = sorted(set(required) - set(value))
-    if missing:
-        raise RuleError(f"{where}: missing key(s) {missing}")
+def _words(text):
+    return " ".join(text.lower().split())
+
+
+def parse_rule(line, number=None, criteria=None):
+    """Parse one rule line; raise RuleError naming the line when it does not fit the grammar."""
+    where = f"{FENCE} line {number}" if number is not None else FENCE
+    text = line.strip()
+    match = _RULE.fullmatch(text)
+    if not match:
+        raise RuleError(f"{where}: {text!r} is not a rule; expected: {GRAMMAR}")
+    count = int(match["count"])
+    unit = match["unit"].lower()
+    if count < 1:
+        raise RuleError(f"{where}: {text!r}: the count must be at least 1")
+    if unit != ("time" if count == 1 else "times"):
+        raise RuleError(f"{where}: {text!r}: write '1 time' or '{max(count, 2)} times'")
+    action, event = _words(match["action"]), _words(match["event"])
+    normalized = f"{action} when {event} {count} {unit}"
+    when = {"event": EVENTS[event], "min_count": count}
+    if match["same"]:
+        when["same_criterion"] = True
+        normalized += " on the same criterion"
+    elif match["criterion"] is not None:
+        criterion = match["criterion"]
+        if criteria is not None and criterion not in criteria:
+            raise RuleError(f"{where}: {text!r}: \"{criterion}\" is not an unchecked criterion of this issue "
+                            "(the quoted text must match exactly)")
+        when["criterion"] = criterion
+        normalized += f' on "{criterion}"'
+    return {"id": "rule-" + hashlib.sha256(normalized.encode()).hexdigest()[:12], "text": normalized,
+            "when": when, "then": {"action": ACTIONS[action]}}
 
 
 def parse_rules(description, criteria=None):
@@ -56,39 +87,16 @@ def parse_rules(description, criteria=None):
         return []
     if len(blocks) > 1:
         raise RuleError(f"more than one '{FENCE}' block")
-    try:
-        data = json.loads(blocks[0][1])
-    except ValueError as error:
-        raise RuleError(f"rule block is not valid JSON: {error}") from None
-    _keys(data, ("version", "rules"), ("version", "rules"), "rules")
-    if data["version"] != VERSION:
-        raise RuleError(f"rules.version must be {VERSION}")
-    if not isinstance(data["rules"], list) or not data["rules"]:
-        raise RuleError("rules.rules must be a non-empty list")
-    seen = set()
-    for index, rule in enumerate(data["rules"]):
-        where = f"rules[{index}]"
-        _keys(rule, ("id", "when", "then"), ("id", "when", "then"), where)
-        if not isinstance(rule["id"], str) or not _ID.match(rule["id"]) or rule["id"] in seen:
-            raise RuleError(f"{where}.id: must be a unique identifier")
+    rules, seen = [], set()
+    for number, line in enumerate(blocks[0][1].splitlines(), start=1):
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        rule = parse_rule(line, number, criteria)
+        if rule["id"] in seen:
+            raise RuleError(f"{FENCE} line {number}: {line.strip()!r} repeats an earlier rule")
         seen.add(rule["id"])
-        when = rule["when"]
-        _keys(when, ("event", "min_count", "same_criterion", "criterion"), ("event", "min_count"), f"{where}.when")
-        if when["event"] not in EVENTS:
-            raise RuleError(f"{where}.when.event: must be one of {list(EVENTS)}")
-        if not isinstance(when["min_count"], int) or isinstance(when["min_count"], bool) or when["min_count"] < 1:
-            raise RuleError(f"{where}.when.min_count: must be an integer >= 1")
-        if not isinstance(when.get("same_criterion", False), bool):
-            raise RuleError(f"{where}.when.same_criterion: must be true or false")
-        if "criterion" in when:
-            if not isinstance(when["criterion"], str) or not when["criterion"]:
-                raise RuleError(f"{where}.when.criterion: must be non-empty text")
-            if criteria is not None and when["criterion"] not in criteria:
-                raise RuleError(f"{where}.when.criterion: not an unchecked criterion of this issue")
-        _keys(rule["then"], ("action",), ("action",), f"{where}.then")
-        if rule["then"]["action"] not in ACTIONS:
-            raise RuleError(f"{where}.then.action: must be one of {list(ACTIONS)}")
-    return data["rules"]
+        rules.append(rule)
+    return rules
 
 
 def evaluate(rules, blocks):
@@ -96,7 +104,7 @@ def evaluate(rules, blocks):
 
     ``blocks`` are the supervisor's records for one issue, oldest first; each has ``id``,
     ``event`` and ``unsatisfied`` (criterion texts the model reported unsatisfied).
-    The condition looks at the latest ``min_count`` blocks of the named event.
+    The condition looks at the latest ``N`` blocks of the named event.
     """
     for rule in rules:
         when = rule["when"]
@@ -111,8 +119,6 @@ def evaluate(rules, blocks):
             matched = [when["criterion"]]
         if when.get("same_criterion"):
             common = set.intersection(*(set(b["unsatisfied"]) for b in window))
-            if matched is not None:
-                common &= set(matched)
             if not common:
                 continue
             matched = sorted(common)

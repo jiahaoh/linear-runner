@@ -26,9 +26,12 @@ RESOLVED_NAME = "resolved-config.json"
 BUILTIN_VARIABLES = ("home", "runner_root", "batch", "worktree")
 # Bookkeeping keys that are not configuration and never enter the fingerprint.
 META_KEYS = ("_sources", "_layers")
+# Host launch settings: they choose how the supervisor process starts, not what the batch
+# does, so changing them never blocks resuming. Each launch record stores the values used.
+UNFINGERPRINTED = ("launcher",)
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
-# DRAFT defaults for the supervisor (batch layer) and launcher (site layer).
-SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
+# Defaults for the supervisor (batch layer) and launcher (site layer).
+SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "continue_independent", "report_issues": [], "decision_rules": "honor",
                         "baseline_checks": False}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
                      "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}
@@ -295,7 +298,7 @@ def load_config(batch_path, home=None):
     for identity in config["required_done"]:
         if identity in config["issues"]:
             raise ConfigError(f"{batch_label}: required_done issue {identity} cannot also be an implementation issue")
-    # DRAFT: supervisor behavior (planned checkpoints, blocking policy, reporting, rules).
+    # Supervisor behavior: planned checkpoints, blocking policy, reporting and rules.
     # report_issues may name issues outside the allowlist (for example a tracking issue).
     supervision = dict(copy.deepcopy(SUPERVISION_DEFAULTS), **copy.deepcopy(batch.get("supervision", {})))
     outside = [i for i in supervision["stop_after"] if i not in config["issues"]]
@@ -461,7 +464,7 @@ def config_fingerprint(config):
 
     The runner checkout path is normalized away; its commit and dirty flag identify it.
     """
-    effective = {k: v for k, v in config.items() if k not in META_KEYS}
+    effective = {k: v for k, v in config.items() if k not in META_KEYS + UNFINGERPRINTED}
     root = effective.get("variables", {}).get("runner_root") or str(RUNNER_ROOT)
     return hashlib.sha256(json.dumps(_portable(effective, root), sort_keys=True).encode()).hexdigest()
 

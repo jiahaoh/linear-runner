@@ -191,9 +191,9 @@ class LayeredConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "must not be empty"):
             self.load(project={"guidance_files": ["empty.md"]})
 
-    def test_draft_supervision_launcher_and_integrity_fields(self):
+    def test_supervision_launcher_and_integrity_fields(self):
         loaded = self.load()
-        self.assertEqual(loaded["supervision"], {"stop_after": [], "on_block": "stop", "report_issues": [],
+        self.assertEqual(loaded["supervision"], {"stop_after": [], "on_block": "continue_independent", "report_issues": [],
                                                  "decision_rules": "honor", "baseline_checks": False})
         self.assertEqual(loaded["launcher"]["backend"], "systemd-user")
         self.assertTrue(loaded["launcher"]["stop_on_exit"])
@@ -239,6 +239,8 @@ class LayeredConfigTests(unittest.TestCase):
         changed = copy.deepcopy(resolved); changed["policy"]["phases"]["max_repairs"] = 1
         self.assertNotEqual(baseline, config_fingerprint(changed))
         self.assertEqual(baseline, config_fingerprint(dict(resolved, _sources={}, _layers={})))
+        # Launch settings never block resuming: they are recorded per launch instead.
+        self.assertEqual(baseline, config_fingerprint(dict(resolved, launcher=dict(resolved["launcher"], cpu_list="3"))))
 
 
 class RunnerIdentityTests(unittest.TestCase):

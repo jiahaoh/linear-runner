@@ -951,7 +951,9 @@ def build_parser():
     run.add_argument("--resume", action="store_true")
     launch = commands.add_parser("launch", parents=[common], help="model-free preflight, start the supervisor, confirm, exit")
     launch.add_argument("--backend", choices=["systemd-user", "foreground"], help="default: site launcher.backend")
-    launch.add_argument("--clear-stop", action="store_true", help="remove an inspected STOP marker after preflight passes")
+    launch.add_argument("--clear-stop", action="store_true",
+                        help="remove an inspected STOP marker after preflight passes (not needed for the marker a "
+                             "pending recovery was recorded against)")
     launch.add_argument("--rerun-preflight", action="store_true", help="do not reuse earlier preflight results")
     supervise = commands.add_parser("supervise", parents=[common], help="the supervisor a launched unit runs")
     supervise.add_argument("--launch-id", required=True)
@@ -966,8 +968,8 @@ def build_parser():
     authority.add_argument("--reason", required=True, help="why this recovery is needed (recorded)")
     authority.add_argument("--authorized-by", required=True, help="who authorized it (recorded)")
     then = argparse.ArgumentParser(add_help=False)
-    then.add_argument("--then", choices=["stop", "continue"], default="stop",
-                      help="after the recovered issue: stop (default) or continue the queue")
+    then.add_argument("--then", choices=["continue", "stop"], default="continue",
+                      help="after the recovered issue: continue the batch (default) or stop")
     note = argparse.ArgumentParser(add_help=False)
     note.add_argument("--note-file", help="owner note appended to later model prompts (recorded with its hash)")
     resume = kinds.add_parser("resume", parents=[common, authority, then, note], help="continue the active issue from its saved step")
@@ -995,8 +997,13 @@ def build_parser():
 def status_report(config):
     root = Path(config["state_dir"])
     state = read_json(root / "state.json") if (root / "state.json").exists() else {"phase": "not started"}
-    supervisor = root / "supervisor.json"
-    return dict(state, supervisor=read_json(supervisor) if supervisor.exists() else None,
+    supervisor = read_json(root / "supervisor.json") if (root / "supervisor.json").exists() else None
+    launch = None
+    if supervisor and (root / "launches" / f"{supervisor['launch_id']}.json").exists():
+        record = read_json(root / "launches" / f"{supervisor['launch_id']}.json")
+        launch = {"launch_id": record["launch_id"], "backend": record["backend"], "unit": record["spec"]["unit"],
+                  "launcher": record.get("launcher"), "cleared_stop": record.get("cleared_stop")}
+    return dict(state, supervisor=supervisor, launch=launch,
                 stop_marker=(root / "STOP").read_text().strip() if (root / "STOP").exists() else None)
 
 

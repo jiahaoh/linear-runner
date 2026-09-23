@@ -42,7 +42,7 @@
     },
     "relpath": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+$"},
     "integrity": {
-      "description": "DRAFT: generic post-delivery integrity step (no model). manifest is relative to the issue's delivery directory; file_hashes values and true_fields files are relative to the manifest's directory.",
+      "description": "Post-delivery integrity step (no model). manifest is relative to the issue's delivery directory; file_hashes values and true_fields files are relative to the manifest's directory.",
       "type": "object",
       "additionalProperties": false,
       "required": ["manifest", "revision_field"],

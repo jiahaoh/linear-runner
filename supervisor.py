@@ -239,13 +239,14 @@ class Supervisor:
             self.state.setdefault("rule_applications", []).append(application)
             self.r.save()
             append_log(self.root, dict(application, event="rule_applied",
-                                       authorized_by=f"decision rule {rule['id']} in the pinned {issue} description"))
+                                       authorized_by=f"decision rule {rule['text']!r} in the pinned {issue} description"))
             action = rule["then"]["action"]
-            cause = {"rule": rule["id"], "block": block["id"]}
+            cause = {"rule": rule["id"], "rule_text": rule["text"], "block": block["id"]}
         else:
-            action = "defer_issue" if self.config["supervision"]["on_block"] == "continue_independent" else "stop"
-            cause = {"policy": "on_block=continue_independent", "block": block["id"]}
-        if action == "stop":
+            policy = self.config["supervision"]["on_block"]
+            action = "defer_issue" if policy == "continue_independent" else "stop_batch"
+            cause = {"policy": f"on_block={policy}", "block": block["id"]}
+        if action == "stop_batch":
             raise error
         identifier = "A-" + run_id()
         try:
