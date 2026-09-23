@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Site layer (private): host bindings",
-  "description": "Executables, storage roots and the host model catalog for one execution host. Executables and variables become ${name} substitutions in project and batch paths, checks and environment values. The optional launcher object configures how `launch` starts the host supervisor.",
+  "description": "Executables, storage roots and the host model catalog for one execution host. Executables and variables become ${name} substitutions in project and batch paths, checks and environment values. The optional launcher object configures how `launch` starts the host supervisor. The optional attention object holds DRAFT notifier, watchdog, draft-lint and outbox settings.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -77,6 +77,78 @@
         },
         "stop_on_exit": {
           "type": "boolean"
+        }
+      }
+    },
+    "attention": {
+      "description": "DRAFT settings for telling a person about progress and stops; outside the configuration fingerprint.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "notifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "enum": [
+                "none",
+                "command",
+                "linear-mention-only"
+              ]
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/text"
+              }
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "watchdog": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stall_minutes": {
+              "type": "integer",
+              "minimum": 5
+            }
+          }
+        },
+        "lint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_chars": {
+              "type": "integer",
+              "minimum": 200
+            },
+            "max_lines": {
+              "type": "integer",
+              "minimum": 5
+            },
+            "max_first_sentence_chars": {
+              "type": "integer",
+              "minimum": 40
+            }
+          }
+        },
+        "outbox": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "poll_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "settle_seconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
         }
       }
     }

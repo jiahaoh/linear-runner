@@ -26,15 +26,32 @@ RESOLVED_NAME = "resolved-config.json"
 BUILTIN_VARIABLES = ("home", "runner_root", "batch", "worktree")
 # Bookkeeping keys that are not configuration and never enter the fingerprint.
 META_KEYS = ("_sources", "_layers")
-# Host launch settings: they choose how the supervisor process starts, not what the batch
-# does, so changing them never blocks resuming. Each launch record stores the values used.
-UNFINGERPRINTED = ("launcher",)
+# Host launch settings (how the supervisor process starts) and attention settings (how a
+# person is told about progress and stops) do not change what the batch does, so changing
+# them never blocks resuming. Each launch record stores the launcher values used.
+UNFINGERPRINTED = ("launcher", "attention")
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
 # Defaults for the supervisor (batch layer) and launcher (site layer).
 SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
                         "baseline_checks": False}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
                      "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}
+
+# DRAFT (awaiting the owner's choice): how a person is told about progress and stops.
+# Workspace ``attention``: owner_mention, needs_input. Site ``attention``: notifier,
+# watchdog, lint, outbox. Every value below is a DRAFT default.
+ATTENTION_DEFAULTS = {
+    "owner_mention": "",                      # DRAFT: text put where the owner is addressed, e.g. "@handle"
+    "needs_input": {"mechanism": "mention",   # DRAFT: label | state | mention
+                    "label": "Needs input",   # DRAFT: label added on a stop, removed when a recovery runs
+                    "state": "Blocked"},      # DRAFT: workflow state used by the "state" mechanism
+    "notifier": {"backend": "none",           # DRAFT: none | command | linear-mention-only
+                 "command": [],               # DRAFT: argv; the message is on stdin, {subject} is replaced
+                 "timeout_seconds": 30},
+    "watchdog": {"stall_minutes": 120},       # DRAFT: alert after this long without recorded progress
+    "lint": {"max_chars": 1500, "max_lines": 30, "max_first_sentence_chars": 240},  # DRAFT draft limits
+    "outbox": {"poll_seconds": 15, "settle_seconds": 3},  # DRAFT: poll interval; ignore files newer than this
+}
 
 
 class ConfigError(ValueError):
@@ -419,6 +436,21 @@ def load_config(batch_path, home=None):
     launcher["environment"] = {name: substitute(value, variables, f"site.launcher.environment.{name}")
                                for name, value in launcher["environment"].items()}
     put("launcher", launcher, site_label)
+    attention = copy.deepcopy(ATTENTION_DEFAULTS)
+    for label, block in ((workspace_label, workspace.get("attention", {})), (site_label, site.get("attention", {}))):
+        for key, value in block.items():
+            if isinstance(attention.get(key), dict):
+                attention[key].update(copy.deepcopy(value))
+            else:
+                attention[key] = copy.deepcopy(value)
+            _record(sources, f"attention.{key}", value, label)
+    for key in ATTENTION_DEFAULTS:
+        sources.setdefault(f"attention.{key}", "built-in DRAFT default")
+    notifier = attention["notifier"]
+    if notifier["backend"] == "command" and not notifier["command"]:
+        raise ConfigError("site.attention.notifier: the command backend needs a non-empty command argv")
+    notifier["command"] = [substitute(arg, variables, "site.attention.notifier.command") for arg in notifier["command"]]
+    config["attention"] = attention
     for name in BUILTIN_VARIABLES:
         sources[f"variables.{name}"] = "built-in"
     for key in ("state_dir", "artifact_root"):

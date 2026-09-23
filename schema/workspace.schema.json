@@ -49,6 +49,35 @@
           "$ref": "#/$defs/state"
         }
       }
+    },
+    "attention": {
+      "description": "DRAFT: how the owner is addressed and how an issue that needs input is marked; outside the configuration fingerprint.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner_mention": {
+          "type": "string"
+        },
+        "needs_input": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mechanism": {
+              "enum": [
+                "label",
+                "state",
+                "mention"
+              ]
+            },
+            "label": {
+              "$ref": "#/$defs/state"
+            },
+            "state": {
+              "$ref": "#/$defs/state"
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
