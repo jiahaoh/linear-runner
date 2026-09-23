@@ -9,5 +9,16 @@
   },
   "state_root": "/absolute/path/to/external-runs/controller",
   "artifact_root": "/absolute/path/to/external-runs/issues",
-  "model_catalog": "~/.codex/models_cache.json"
+  "model_catalog": "~/.codex/models_cache.json",
+  "launcher": {
+    "backend": "systemd-user",
+    "python": "${python}",
+    "cpu_list": "0",
+    "environment": {
+      "PATH": "/absolute/path/to/bin:/usr/bin:/bin"
+    },
+    "unit_prefix": "linear-runner",
+    "startup_timeout_seconds": 30,
+    "stop_on_exit": true
+  }
 }

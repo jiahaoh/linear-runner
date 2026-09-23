@@ -8,8 +8,9 @@ repair and an independent read-only review. No extra Python packages are require
 The engine has no project-specific prompts, owner, workspace or toolchain. Policy lives
 in the public `registry/`; everything private (hosts, workspaces, projects, batches)
 lives in a private configuration home outside this repository. Your own workflow and
-authorization rules belong in project or batch guidance files. Outer launchers follow
-[prompts/launch-batch.md](prompts/launch-batch.md).
+authorization rules belong in project or batch guidance files. One command,
+`runner.py launch`, runs a model-free preflight, starts a host supervisor and exits; no
+outer model session is needed to start, continue or recover a batch.
 
 Requires Python 3.10+, Git, a POSIX host (tested on Linux), an authenticated Codex CLI and
 a Linear credential reachable through an environment variable or the Codex credential
@@ -20,14 +21,19 @@ before unattended use.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `status`, `stop`, `clear-stop`) |
+| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`) |
+| `launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` backends |
+| `supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
+| `recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
+| `rules.py` | Decision rules written in issue descriptions (DRAFT format) |
+| `delivery.py` | Generic, config-driven delivery integrity step |
 | `config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning |
 | `linear_client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint |
 | `report.py` | Standalone terminal HTML/JSON report |
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
-| `prompts/` | Generic worker guidance and the outer launch procedure |
+| `prompts/` | Generic worker guidance; `launch-batch.md` points to `runner.py launch` |
 | `test_*.py` | Offline tests; `test_public_tree.py` fails on private identifiers in any tracked file |
 
 ## Configuration layers
@@ -57,10 +63,32 @@ model does not allow) are errors.
 
 | Layer | Fields |
 | --- | --- |
-| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog` |
+| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher` (DRAFT) |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames |
-| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `identity_files`, `check_environment`, `checks`, optional `delivery_checks` |
-| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates` |
+| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` (DRAFT) |
+| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision` (DRAFT) |
+
+Fields marked DRAFT are a phase-1 proposal and may still change:
+
+| Layer.field (DRAFT) | Key | Default | Meaning |
+| --- | --- | --- | --- |
+| site `launcher` | `backend` | `systemd-user` | `systemd-user` or `foreground` (in-process; tests and debugging) |
+| | `python` | the interpreter running `launch` | Interpreter for the supervisor unit; `${name}` allowed |
+| | `cpu_list` | none | Wrap the supervisor in `taskset -c <list>` |
+| | `environment` | `{}` | Extra `--setenv` values for the unit, for example `PATH` |
+| | `unit_prefix` | `linear-runner` | Unit name is `<prefix>-<batch id>-<launch id>.service` |
+| | `startup_timeout_seconds` | 30 | How long `launch` waits to confirm the supervisor started |
+| | `stop_on_exit` | `true` | Write the STOP marker when the supervisor exits (also via `ExecStopPost`) |
+| batch `supervision` | `stop_after` | `[]` | Planned checkpoints: stop after these issues are accepted |
+| | `on_block` | `stop` | `continue_independent`: defer an issue-level block and continue with independent issues |
+| | `report_issues` | `[]` | Extra issues that receive each lifecycle read-back |
+| | `decision_rules` | `honor` | `ignore` disables rule blocks in issue descriptions |
+| | `baseline_checks` | `false` | Run the default-tier checks on the clean baseline during launch preflight |
+| project `delivery_integrity` | `manifest` | required | Renderer manifest, relative to the issue's `delivery/` directory |
+| | `revision_field` | required | Manifest field that must equal the committed revision |
+| | `required_checks` | `[]` | Check names that must be in the validated evidence |
+| | `file_hashes` | `{}` | Manifest field → file (relative to the manifest) whose SHA-256 it must equal |
+| | `true_fields` | `[]` | `{"file", "field"}` pairs (relative to the manifest) that must be literally `true` |
 
 The batch state directory is `<state_root>/<batch id>`. Relative paths resolve against the
 file that names them. Paths, check arguments, check environment values and credential-file
@@ -79,8 +107,8 @@ cache path, and `linear_client.py` re-reads it on each request. Do not put secre
 ### Name resolution and pinning
 
 `validate-config` is fully offline: it creates no state and contacts neither Linear nor
-Codex, so the Linear project and assignee remain unresolved names in its report. `dry-run`
-and `run` resolve the exact project name and the assignee to IDs (no match or more than one
+Codex, so the Linear project and assignee remain unresolved names in its report. `dry-run`,
+`run` and `launch` resolve the exact project name and the assignee to IDs (no match or more than one
 exact match is an error) and write `<state dir>/resolved-config.json` with the resolved IDs,
 the effective configuration, the source layer of every value and the layer files used.
 Project names must match exactly within the authenticated workspace. Later runs reuse the
@@ -104,20 +132,41 @@ checkout are not distinguished; run batches from a clean commit.
    active controller per project.
 3. Copy `examples/home/` to your private home, replace every placeholder and use real
    validation commands. Add project or batch guidance files as needed.
-4. Validate offline, dry-run against Linear, then inspect one completed issue before
-   continuing with a newly introduced profile or host.
+4. Validate offline, run the tests, then launch. Inspect one completed issue before
+   continuing with a newly introduced profile or host (a planned checkpoint does this).
 
 ```bash
-python3 runner.py validate-config --batch ~/.config/linear-runner/batches/my-batch.json
+B=~/.config/linear-runner/batches/my-batch.json
+python3 runner.py validate-config --batch $B
 python3 -m unittest -v
-python3 runner.py dry-run --batch ~/.config/linear-runner/batches/my-batch.json
-python3 runner.py run --batch ~/.config/linear-runner/batches/my-batch.json --max-issues 1
-python3 runner.py status --batch ~/.config/linear-runner/batches/my-batch.json
+python3 runner.py launch --batch $B                          # preflight, start unit, confirm, exit
+python3 runner.py launch --batch $B --stop-after TEAM-123    # same, with a planned checkpoint
+python3 runner.py status --batch $B                          # state, supervisor.json, STOP marker
 ```
 
-`--max-issues` limits implementation dispatch; the terminal report runs after the last
-issue in that limit without an extra slot. If more work remains, the runner checkpoints
-and exits.
+`launch` resolves and pins Linear names, runs the preflight below, starts the supervisor
+(by default a transient `systemd-run --user` unit with `Restart=no`,
+`KillMode=control-group`, logs appended to `<state dir>/supervisor.log` and an
+`ExecStopPost` that writes STOP), waits until the supervisor reports itself running and
+prints the unit, PID, state directory, log, launch record and terminal-report path. It
+then exits; no model or operator session stays attached. A credential named by
+`token_env` is passed to the unit by name (`--setenv=NAME`), never by value.
+`--backend foreground` runs the supervisor in the launching process instead.
+
+Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.json`):
+
+| Step | Checks | Reused when unchanged |
+| --- | --- | --- |
+| `config` | Every layer and the registry validate; resolved fingerprint | configuration |
+| `worktree` | Expected branch, not moved outside the controller, clean unless an active issue owns the changes | source (branch, HEAD, clean flag, content hash) + configuration |
+| `model_catalog` | Host catalog readable; which registry profiles it offers | catalog bytes + configuration |
+| `baseline_checks` (optional) | Default-tier checks pass on the clean baseline | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
+| `linear` | Authenticated live read of every allowlisted issue, gates, ownership, decision-rule blocks, model/effort per phase, dependency-aware dry-run selection, or the resume checks for a saved active issue | never: live state is always re-read |
+
+Each step records `reused` and a reason (`reused: source, config unchanged since L-...`,
+`changed: source`, `no previous preflight result`, `previous result did not pass`,
+`live state: always re-read`). `--rerun-preflight` disables reuse. `run --max-issues N`
+still works for a single in-process run without the supervisor.
 
 ## Lifecycle
 
@@ -151,8 +200,13 @@ elsewhere stops the batch for reconciliation.
    its slot.
 6. **Commit.** The controller commits the validated, unchanged source itself. Any worker
    commit or other history change stops the batch.
-7. **Delivery.** Optional `delivery_checks` receive `RUNNER_DELIVERY_CONTEXT` with the
-   revision and successful checks. A failure stops before review.
+7. **Delivery.** Optional `delivery_checks` receive `RUNNER_DELIVERY_CONTEXT` (a JSON file
+   with the revision, validation records, issue, `issue_run_dir` and `delivery_dir`). With
+   `delivery_integrity` configured, the controller then verifies, without a model, that
+   every recorded check passed with an intact log hash, the required checks are present,
+   the renderer manifest exists and names the committed revision, the listed file hashes
+   match and the listed flags are `true`; it writes `delivery/integrity.json`. Scientific
+   specifics stay in the project's renderer and configuration. A failure stops before review.
 8. **Review.** The controller first moves the issue to the `review` state (normally
    In Review) and confirms it by read-back; if the issue is already in that state, for
    example after an interrupted write or a failed review, no second write is made. A
@@ -169,39 +223,135 @@ elsewhere stops the batch for reconciliation.
 
 Each phase records requested and observed model/effort, usage, prompt and tool-output
 bytes and elapsed time. Exceeding a phase's soft budget (or missing usage telemetry)
-checkpoints the issue for explicit reconciliation; resume does not reset it. Usage is the
+checkpoints the issue for explicit reconciliation (`recover budget`); resume does not
+reset it. Usage is the
 per-session maximum of cumulative counters summed over sessions; it is not billed cost.
 
-One stable execution-summary comment per issue and one terminal-report comment are
-upserted by marker. Each write first saves a local pending record; a failed write keeps
+One stable execution-summary comment per issue, one lifecycle read-back comment per
+accepted issue and destination, and one terminal-report comment are upserted by marker. Each write first saves a local pending record; a failed write keeps
 the batch from advancing, and resume reconciles the marker comment or an already
 completed publish without rerunning models or rewriting the description.
 
-## Stop, supervision and recovery
+## Supervisor
+
+The unit runs `runner.py supervise --launch-id <id>`, which holds the project lock for its
+whole run. It refuses to start (and writes nothing to Linear) unless the preflight for its
+launch ID passed against the current configuration and source revision, no STOP marker
+exists, no earlier worker is alive, and a paused or unfinished state has a recorded
+recovery whose expected state still matches exactly. Then it:
+
+1. completes any missing lifecycle read-back of issues already accepted;
+2. finishes the saved active issue, under the recovery's restrictions;
+3. selects the first allowlisted issue that is not done or deferred, whose Linear
+   `blockedBy` issues are all Done and whose gates pass, and runs it through the lifecycle;
+4. after each accepted issue re-validates the accepted result against the pinned
+   contract, reads Linear Done and the checked checklist back, writes
+   `lifecycle/<issue>/readback.json` (commit, live status, contract hash, SHA-256 of
+   `final-result.json`, `intake.json`, `manifest.json` and `delivery/integrity.json`) and
+   posts it, with the existing marker-comment mechanism, to the issue, the terminal issue
+   and `supervision.report_issues`;
+5. stops at a planned checkpoint (`supervision.stop_after` or `--stop-after`), on STOP,
+   when nothing more is ready (`partial`, listing deferred and waiting issues) or when the
+   queue is complete, and writes the terminal report.
+
+A batch-level failure (gates, ownership, Linear errors, changed configuration, lost
+read-back) pauses the batch as before. An issue-level block (worker or repair blocked,
+repair limit, delivery failure, rejected review, soft budget) is recorded in
+`state.blocks`; then the first matching decision rule decides, otherwise
+`supervision.on_block`: `stop` pauses, `continue_independent` defers the issue and
+continues. Deferring parks uncommitted work in `refs/linear-runner/parked/<batch>/<issue>/<id>`
+(plus the manifest's patch/tar snapshot) before restoring a clean worktree; an issue that
+already has an unaccepted controller commit is never deferred automatically. Dependents
+of a deferred issue keep waiting because their Linear prerequisite is not Done.
+
+## Stop, recovery and continuation
 
 ```bash
-python3 runner.py stop --batch <batch file>
-python3 runner.py status --batch <batch file>
-# Inspect saved work, child processes, Git, issue ownership and validation logs.
-python3 runner.py clear-stop --batch <batch file>
-python3 runner.py run --batch <batch file> --resume --max-issues 1
+B=<batch file>
+python3 runner.py status --batch $B      # phase, active issue/step, blocks, deferred, pending recovery, supervisor.json, STOP
+python3 runner.py stop --batch $B        # stop between issues (durable STOP marker)
+systemctl --user stop <unit>             # immediate: child process group terminated, state preserved, blocked report
 ```
 
-`stop` writes a durable marker; the active issue reaches a checkpoint and no next issue
-starts. For immediate interruption, stop the supervising service: the controller
-terminates its child process group, preserves state and records a blocked terminal report.
-Verify no previous child is alive before resuming. Never delete state or reset the
-worktree to clear a failure. Run unattended under a host supervisor such as
-`systemd-run --user` with automatic restart disabled. The lock protects one state
-directory on one host only.
+Continue after a planned checkpoint, STOP or `partial` outcome (nothing is paused):
+
+```bash
+python3 runner.py launch --batch $B --clear-stop [--stop-after ISSUE]
+```
+
+A paused batch or an unfinished issue needs a recorded recovery first, then the same
+launch command. Every recovery requires `--reason` and `--authorized-by`, runs offline
+except `--repin-contract`, and is written to `state.json` and the append-only,
+hash-chained `<state dir>/recovery-log.jsonl`. None accepts work or resets history,
+usage, repairs or escalation. `--then stop` (the default) stops after the recovered
+issue; `--then continue` continues the queue.
+
+| Situation | Command (then `launch --batch $B --clear-stop`) |
+| --- | --- |
+| Resume the active issue from its saved step (for example a blocked worker) | `recover resume --batch $B --reason R --authorized-by A [--note-file F] [--then continue]` |
+| Re-run only the independent review of the frozen commit | `recover review --batch $B --reason R --authorized-by A [--redeliver] [--repin-contract] [--note-file F]` |
+| Soft-budget checkpoint | `recover budget --batch $B --phase P --input-tokens N --output-tokens N --tool-calls N --reason R --authorized-by A` |
+| Publication or its read-back failed after acceptance | `recover publish --batch $B --reason R --authorized-by A` |
+| Set an issue aside and continue with the others | `recover defer --batch $B --issue ISSUE [--restore-worktree] [--keep-commit] --reason R --authorized-by A` |
+| Restore a deferred, parked issue | `recover resume --batch $B --issue ISSUE --reason R --authorized-by A` |
+| Withdraw a recovery that was not launched | `recover cancel --batch $B --reason R --authorized-by A` |
+| A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A --then continue` |
+
+Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
+and appended to later model prompts; it does not change acceptance criteria.
+`--repin-contract` adopts an edited live issue before acceptance only, keeping the
+previous intake and issue beside it. `--redeliver` re-runs delivery for the frozen commit
+and keeps the old packet as `delivery-superseded-<id>`. `review` allows only the review
+model phase and `publish` allows none. `budget` moves the checkpoint into
+`budget_reconciliations` and records the new limits as that phase's allowance for this
+issue. `defer --restore-worktree` parks uncommitted work in a Git ref; `--keep-commit`
+continues on top of an unaccepted controller commit. A parked issue can be restored only
+when HEAD has not moved since it was parked, or when it was parked cleanly at `implement`.
+
+Verify no previous child is alive before recovering (recoveries and launch refuse a live
+recorded PID). Never delete state or reset the worktree to clear a failure. The lock
+protects one state directory on one host only; the transient unit survives logout (with
+lingering enabled) but not a reboot, and it never restarts itself.
 
 State written by an earlier runner version has a different configuration fingerprint and
 is refused; finish or reconcile it with the runner version that created it rather than
 editing state.
 
+## Decision rules (DRAFT)
+
+An issue description may pre-authorize what the supervisor does when that issue blocks
+repeatedly. Put exactly one fenced block with the info string `linear-runner-rules` and
+one JSON object in the description:
+
+````markdown
+```linear-runner-rules
+{"version": 1,
+ "rules": [
+   {"id": "defer-after-two-worker-blocks",
+    "when": {"event": "worker_blocked", "min_count": 2, "same_criterion": true},
+    "then": {"action": "defer_issue"}}
+ ]}
+```
+````
+
+| Field | Values |
+| --- | --- |
+| `when.event` | `worker_blocked` (implementation or repair returned blocked), `review_blocked` (independent review rejected) |
+| `when.min_count` | integer ≥ 1: the latest this-many blocks of that event are examined |
+| `when.same_criterion` | optional `true`: those blocks share at least one unsatisfied criterion |
+| `when.criterion` | optional exact text of one unchecked criterion that each of those blocks left unsatisfied |
+| `then.action` | `defer_issue` (park and continue with independent issues) or `stop` |
+
+Rules are read from the issue as pinned at intake, parsed strictly (an invalid block fails
+preflight and the issue is not dispatched), evaluated in order, and applied only on an
+exact match. Each application is recorded in `state.rule_applications` and the recovery
+log with the rule, the blocks it matched and the matched criteria. Rules cannot accept
+work, drop a criterion or change scope; set `supervision.decision_rules` to `ignore` to
+disable them for a batch.
+
 Parallel workers, distributed leasing, automatic restart and scientific acceptance are
-not implemented. Tests use temporary Git repositories with fake Codex and Linear
-boundaries; they make no network calls.
+not implemented. Tests use temporary Git repositories with fake Codex, Linear and launcher
+boundaries; they make no network calls and never run `systemd-run`.
 
 ## License
 

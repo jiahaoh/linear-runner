@@ -929,7 +929,9 @@ def summarize(config):
     return {"valid": True, "batch": config["batch_id"], "project": config["project_name"],
             "workspace": config["linear_workspace"], "issues": config["issues"], "state_dir": config["state_dir"],
             "resolution_pending": {"project": config["project_name"], "assignee": config["assignee"]},
-            "runner": config["runner"], "layers": config["_layers"]}
+            "runner": config["runner"], "supervision": config["supervision"],
+            "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
+            "delivery_integrity": bool(config["delivery_integrity"]), "layers": config["_layers"]}
 
 
 def build_parser():

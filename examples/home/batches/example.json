@@ -6,5 +6,12 @@
   "branch": "codex/example-batch",
   "worktree": "/absolute/path/to/prepared/worktree",
   "required_done": [],
+  "supervision": {
+    "stop_after": [],
+    "on_block": "stop",
+    "report_issues": [],
+    "decision_rules": "honor",
+    "baseline_checks": false
+  },
   "human_gates": []
 }
