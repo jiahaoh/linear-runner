@@ -1173,7 +1173,7 @@ def summarize(config):
     return {"valid": True, "batch": config["batch_id"], "project": config["project_name"],
             "workspace": config["linear_workspace"], "issues": config["issues"], "state_dir": config["state_dir"],
             "resolution_pending": {"project": config["project_name"], "assignee": config["assignee"]},
-            "runner": config["runner"], "supervision": config["supervision"],
+            "runner": config["runner"], "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "layers": config["_layers"]}
 
@@ -1188,6 +1188,7 @@ def build_parser():
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
                        ("status", "print saved state, supervisor status and pending recovery"),
                        ("stop", "write the STOP marker (stops between issues)"),
+                       ("watchdog", "model-free check for a vanished or stalled supervisor (run by a host timer)"),
                        ("clear-stop", "remove the STOP marker")):
         commands.add_parser(name, parents=[common], help=text)
     run = commands.add_parser("run", parents=[common], help="run in this process (no supervisor)")
@@ -1285,6 +1286,17 @@ def main(argv=None):
     root = Path(config["state_dir"])
     if args.command == "status":
         print(json.dumps(status_report(config), indent=2))
+        return
+    if args.command == "watchdog":
+        import watchdog
+        if not (root / "resolved-config.json").exists():
+            print(json.dumps({"status": "idle", "reason": "this batch has not been launched"}))
+            return
+        try:
+            config, _ = pin_resolution(config, None)
+        except (ConfigError, RuntimeError, OSError) as error:
+            parser.error(str(error))
+        print(json.dumps(watchdog.check(config, LinearClient(config["linear"])), indent=2))
         return
     if args.command in ("stop", "clear-stop"):
         root.mkdir(parents=True, exist_ok=True)

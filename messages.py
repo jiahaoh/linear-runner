@@ -138,7 +138,7 @@ def own_words(*, who, result=None, draft=None, draft_problem=None, draft_path=No
     return "\n\n".join(parts)
 
 
-def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None):
+def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classification=None):
     """The exact commands to continue after a stop, one per line."""
     launch = f"- Then start it: {command(ctx, 'launch')}"
     if issue is None:
@@ -149,18 +149,21 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None):
                           "--output-tokens", "<N>", "--tool-calls", "<N>", auth=True)
     elif event == "review_blocked" or step == "review":
         primary = command(ctx, "recover", "review", auth=True)
-        hint = " Add `--note-file <file>` to give the reviewer a note, or `--repin-contract` after clarifying a criterion."
+        hint = " (add `--note-file <file>` to give the reviewer a note, or `--repin-contract` after clarifying a criterion)"
     elif step in ("publish", "done"):
         primary = command(ctx, "recover", "publish", auth=True)
     elif step == "repair":
         primary = None
     else:
         primary = command(ctx, "recover", "resume", auth=True)
-        hint = " Add `--note-file <file>` to give the worker a note."
+        hint = " (add `--note-file <file>` to give the worker a note)"
     defer = command(ctx, "recover", "defer", "--issue", issue, "--restore-worktree", auth=True)
     if primary is None:
         return f"- An interrupted repair cannot be resumed; set the issue aside: {defer}\n{launch}"
-    return f"- Record the recovery: {primary}{hint}\n{launch}\n- Or set the issue aside instead: {defer}"
+    steps = f"- Record the recovery: {primary}{hint}\n{launch}"
+    if classification in ("environment", "runner-defect"):
+        return steps
+    return steps + f"\n- Or set the issue aside instead: {defer}"
 
 
 def blocked(ctx, *, issue, classification, event=None, error="", step=None, phase=None, result=None, who="worker",
@@ -178,7 +181,8 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
         if event in ("worker_blocked", "review_blocked", "checks_failed", "budget_exceeded") else ""
     return render("blocked", {"subject": subject, "owner": ctx["owner"], "cause": cause, "what_happened": happened,
                               "own_words": words, "needed": needed,
-                              "continue_steps": recovery_steps(ctx, issue=issue, event=event, step=step, phase=phase),
+                              "continue_steps": recovery_steps(ctx, issue=issue, event=event, step=step, phase=phase,
+                                                               classification=classification),
                               "evidence": evidence(*evidence_paths)}, headline=classification)
 
 

@@ -23,7 +23,6 @@ It replaces per-batch supervise scripts. Under the project lock it:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 import signal
