@@ -1,0 +1,12 @@
+{
+  "notes": [
+    "Settled policy. in_progress at claim, review when the independent review starts, done after accepted publication.",
+    "A workspace layer may rename these states for its team."
+  ],
+  "states": {
+    "in_progress": "In Progress",
+    "review": "In Review",
+    "done": "Done"
+  },
+  "require_milestone": true
+}

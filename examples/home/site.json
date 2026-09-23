@@ -1,0 +1,13 @@
+{
+  "executables": {
+    "codex": "codex",
+    "python": "python3",
+    "uv": "uv"
+  },
+  "variables": {
+    "scratch": "/absolute/path/to/local/scratch"
+  },
+  "state_root": "/absolute/path/to/external-runs/controller",
+  "artifact_root": "/absolute/path/to/external-runs/issues",
+  "model_catalog": "~/.codex/models_cache.json"
+}

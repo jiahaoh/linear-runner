@@ -1,0 +1,10 @@
+{
+  "id": "example-batch",
+  "project": "example",
+  "issues": ["TEAM-123"],
+  "terminal_issue": "TEAM-123",
+  "branch": "codex/example-batch",
+  "worktree": "/absolute/path/to/prepared/worktree",
+  "required_done": [],
+  "human_gates": []
+}

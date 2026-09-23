@@ -1,0 +1,39 @@
+{
+  "notes": [
+    "Settled policy: the model/effort pairs used by earlier batches.",
+    "Review floor: Deep for Research, Validation and Deep-labelled issues; Standard otherwise.",
+    "No phase overrides; one escalation to Deep after an unsuccessful repair."
+  ],
+  "routing_version": "issue-phase-v1",
+  "order": [
+    "Economy",
+    "Standard",
+    "Deep"
+  ],
+  "profiles": {
+    "Deep": {
+      "model": "gpt-6-astra",
+      "effort": "high"
+    },
+    "Standard": {
+      "model": "gpt-6-astra",
+      "effort": "medium"
+    },
+    "Economy": {
+      "model": "gpt-5.6-luna",
+      "effort": "max"
+    }
+  },
+  "escalation_profile": "Deep",
+  "review_floors": {
+    "default": "Standard",
+    "by_task_kind": {
+      "Research": "Deep",
+      "Validation": "Deep"
+    },
+    "by_profile": {
+      "Deep": "Deep"
+    }
+  },
+  "phase_overrides": {}
+}

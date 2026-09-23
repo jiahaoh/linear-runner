@@ -1,0 +1,16 @@
+{
+  "notes": [
+    "Settled policy. Every dispatched issue needs exactly one task-kind label and exactly one profile label; other labels are ignored."
+  ],
+  "task_kinds": [
+    "Research",
+    "Implementation",
+    "Validation",
+    "Maintenance"
+  ],
+  "profiles": [
+    "Deep",
+    "Standard",
+    "Economy"
+  ]
+}

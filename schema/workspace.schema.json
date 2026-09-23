@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workspace layer (private): one Linear workspace",
+  "description": "Stored as workspaces/<slug>.json. Credentials are referenced by environment-variable name or credential-cache path, never stored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slug",
+    "auth"
+  ],
+  "properties": {
+    "slug": {
+      "$ref": "#/$defs/slug"
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "credentials_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "assignee": {
+      "description": "\"me\" or an exact Linear user name/display name/email; resolved to an ID at dry-run/preflight.",
+      "type": "string",
+      "minLength": 1
+    },
+    "states": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "in_progress": {
+          "$ref": "#/$defs/state"
+        },
+        "review": {
+          "$ref": "#/$defs/state"
+        },
+        "done": {
+          "$ref": "#/$defs/state"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "state": {
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$"
+    }
+  }
+}

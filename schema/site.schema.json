@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Site layer (private): host bindings",
+  "description": "Executables, storage roots and the host model catalog for one execution host. Executables and variables become ${name} substitutions in project and batch paths, checks and environment values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "executables",
+    "state_root",
+    "artifact_root",
+    "model_catalog"
+  ],
+  "properties": {
+    "executables": {
+      "type": "object",
+      "required": [
+        "codex"
+      ],
+      "propertyNames": {
+        "$ref": "#/$defs/variable"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "variables": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/variable"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "state_root": {
+      "$ref": "#/$defs/text"
+    },
+    "artifact_root": {
+      "$ref": "#/$defs/text"
+    },
+    "model_catalog": {
+      "$ref": "#/$defs/text"
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "variable": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  }
+}

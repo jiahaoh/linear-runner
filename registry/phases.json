@@ -1,0 +1,37 @@
+{
+  "notes": [
+    "Settled policy. Budgets are soft: exceeding one checkpoints the issue for explicit reconciliation.",
+    "Batch-3 observed maxima: implement 13.3M input / 75k output / 125 tool calls / 2793 s; review 2.3M input / 16k output / 48 tool calls / 575 s.",
+    "implement 15M/150k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement.",
+    "review 5M/40k/120 matches the last working batch-3 budget; 1800 s is about three times the slowest observed review.",
+    "max_repairs 2 is the engine's upper bound, shared across resumes and profiles; each check may run 1800 s."
+  ],
+  "phases": {
+    "implement": {
+      "budget": {
+        "input_tokens": 15000000,
+        "output_tokens": 150000,
+        "tool_calls": 250
+      },
+      "timeout_seconds": 5400
+    },
+    "repair": {
+      "budget": {
+        "input_tokens": 5000000,
+        "output_tokens": 50000,
+        "tool_calls": 100
+      },
+      "timeout_seconds": 5400
+    },
+    "review": {
+      "budget": {
+        "input_tokens": 5000000,
+        "output_tokens": 40000,
+        "tool_calls": 120
+      },
+      "timeout_seconds": 1800
+    }
+  },
+  "max_repairs": 2,
+  "check_timeout_seconds": 1800
+}

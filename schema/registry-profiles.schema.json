@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Execution profile registry",
+  "description": "Profile to model/effort routing, review floors, phase overrides and the single escalation target.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "routing_version",
+    "order",
+    "profiles",
+    "escalation_profile",
+    "review_floors",
+    "phase_overrides"
+  ],
+  "properties": {
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "routing_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "order": {
+      "description": "Profiles from least to most capable; floors and escalation compare positions in this list.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/label"
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/label"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model",
+          "effort"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "pattern": "^\\S+$"
+          },
+          "effort": {
+            "type": "string",
+            "pattern": "^\\S+$"
+          }
+        }
+      }
+    },
+    "escalation_profile": {
+      "$ref": "#/$defs/label"
+    },
+    "review_floors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "by_task_kind",
+        "by_profile"
+      ],
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/label"
+        },
+        "by_task_kind": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/label"
+          }
+        },
+        "by_profile": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/label"
+          }
+        }
+      }
+    },
+    "phase_overrides": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "implement",
+          "repair",
+          "review"
+        ]
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/label"
+      }
+    }
+  },
+  "$defs": {
+    "label": {
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$"
+    }
+  }
+}

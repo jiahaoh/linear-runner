@@ -1,0 +1,8 @@
+{
+  "slug": "example",
+  "auth": {
+    "token_env": "LINEAR_MCP_TOKEN"
+  },
+  "assignee": "me",
+  "states": {}
+}

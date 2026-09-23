@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Linear workflow registry",
+  "description": "Default Linear workflow state names and milestone policy. A workspace layer may rename states.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "states",
+    "require_milestone"
+  ],
+  "properties": {
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "states": {
+      "$ref": "#/$defs/states"
+    },
+    "require_milestone": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "state": {
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$"
+    },
+    "states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "in_progress",
+        "review",
+        "done"
+      ],
+      "properties": {
+        "in_progress": {
+          "$ref": "#/$defs/state"
+        },
+        "review": {
+          "$ref": "#/$defs/state"
+        },
+        "done": {
+          "$ref": "#/$defs/state"
+        }
+      }
+    }
+  }
+}

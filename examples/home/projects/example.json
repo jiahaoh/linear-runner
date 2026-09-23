@@ -1,0 +1,38 @@
+{
+  "workspace": "example",
+  "linear_project": "Example project",
+  "repo": "/absolute/path/to/repository",
+  "artifact_owner": "REPLACE_OWNER",
+  "retention": "REPLACE_RETENTION_POLICY",
+  "backup_status": "unverified",
+  "guidance_files": [
+    "${runner_root}/prompts/generic.md"
+  ],
+  "context_files": [],
+  "identity_files": [],
+  "check_environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "TMPDIR": "${scratch}/${batch}"
+  },
+  "checks": [
+    {
+      "name": "regression",
+      "kind": "code",
+      "tier": "default",
+      "inputs": [
+        "**/*.py",
+        "pyproject.toml",
+        "uv.lock"
+      ],
+      "cwd": ".",
+      "command": [
+        "${python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-v"
+      ]
+    }
+  ],
+  "delivery_checks": []
+}

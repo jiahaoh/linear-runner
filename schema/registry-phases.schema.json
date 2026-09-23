@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase budget and limit registry",
+  "description": "Soft per-phase usage budgets, model-call timeouts, the shared repair limit and the per-check timeout.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "phases",
+    "max_repairs",
+    "check_timeout_seconds"
+  ],
+  "properties": {
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "phases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implement",
+        "repair",
+        "review"
+      ],
+      "properties": {
+        "implement": {
+          "$ref": "#/$defs/phase"
+        },
+        "repair": {
+          "$ref": "#/$defs/phase"
+        },
+        "review": {
+          "$ref": "#/$defs/phase"
+        }
+      }
+    },
+    "max_repairs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "check_timeout_seconds": {
+      "$ref": "#/$defs/positive"
+    }
+  },
+  "$defs": {
+    "positive": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budget",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input_tokens",
+            "output_tokens",
+            "tool_calls"
+          ],
+          "properties": {
+            "input_tokens": {
+              "$ref": "#/$defs/positive"
+            },
+            "output_tokens": {
+              "$ref": "#/$defs/positive"
+            },
+            "tool_calls": {
+              "$ref": "#/$defs/positive"
+            }
+          }
+        },
+        "timeout_seconds": {
+          "$ref": "#/$defs/positive"
+        }
+      }
+    }
+  }
+}

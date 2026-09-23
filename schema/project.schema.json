@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project layer (private): one repository and Linear project",
+  "description": "Stored as projects/<name>.json. The Linear project is referenced by exact name and resolved to an ID at dry-run/preflight.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["workspace", "linear_project", "repo", "artifact_owner", "retention", "guidance_files", "checks"],
+  "properties": {
+    "workspace": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"},
+    "linear_project": {"$ref": "#/$defs/text"},
+    "repo": {"$ref": "#/$defs/text"},
+    "artifact_owner": {"$ref": "#/$defs/text"},
+    "retention": {"$ref": "#/$defs/text"},
+    "backup_status": {"$ref": "#/$defs/text"},
+    "guidance_files": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
+    "context_files": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "identity_files": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "check_environment": {
+      "type": "object",
+      "propertyNames": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {"type": "string"}
+    },
+    "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}},
+    "delivery_checks": {"type": "array", "items": {"$ref": "#/$defs/delivery"}}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "argv": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "tier", "inputs", "cwd", "command"],
+      "properties": {
+        "name": {"$ref": "#/$defs/text"},
+        "kind": {"enum": ["code", "docs", "presentation", "always"]},
+        "tier": {"enum": ["default", "extended"]},
+        "inputs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
+        "cwd": {"$ref": "#/$defs/text"},
+        "command": {"$ref": "#/$defs/argv"}
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cwd", "command"],
+      "properties": {
+        "cwd": {"$ref": "#/$defs/text"},
+        "command": {"$ref": "#/$defs/argv"}
+      }
+    }
+  }
+}
