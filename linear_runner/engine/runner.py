@@ -759,18 +759,18 @@ class Runner:
         self.ledger.reconcile()
 
     def outbox_instructions(self, phase, outbox):
-        limits = self.attention["lint"]
-        rules = (f"open with one plain sentence saying what happened and whether the owner must act; use only the "
-                 f"template's section headings; no JSON, code blocks, tables or long hashes; at most "
-                 f"{limits['max_chars']} characters; an optional last line 'Evidence: <host paths>'")
+        """The owner-update instructions: the draft rules come from ``updates.draft_rules``, i.e.
+        from the same lint limits and templates the controller checks drafts against."""
+        rules = updates.draft_rules(self.attention["lint"], updates.DRAFT_KINDS[phase])
         if phase == "review":
-            return (f"\n\nWrite `summary` as a short note for the owner that follows {updates.TEMPLATE_DIR}/draft-review.md: "
-                    f"{rules}. The controller posts it to Linear.")
+            return (f"\n\nWrite `summary` as a short note for the owner that follows {updates.TEMPLATE_DIR}/draft-review.md. "
+                    f"The controller checks it against these rules and posts it to Linear only if it passes: {rules}. "
+                    "Otherwise the owner gets a generic note instead of yours.")
         return (f"\n\nOwner updates: you may write short Markdown drafts to {outbox}/NNN-<kind>.md (001, 002, ...; "
                 "write a .tmp file, then rename it). Kinds: progress (posted to Linear as soon as the controller sees it), "
                 "ready or blocked (posted with your final result). Follow "
-                f"{updates.TEMPLATE_DIR}/draft-<kind>.md: {rules}. A draft that fails these checks is kept but not "
-                "posted, and it is never re-read: write a new numbered file instead.")
+                f"{updates.TEMPLATE_DIR}/draft-<kind>.md and these rules, which the controller checks: {rules}. A draft "
+                "that fails them is kept but not posted, and it is never re-read: write a new numbered file instead.")
 
     def poll_outbox(self, active, phase, attempt, *, final=False):
         """Lint new drafts; post progress drafts now; at ``final`` also lint held drafts."""
@@ -1379,6 +1379,21 @@ class Runner:
             raise RuntimeError(f"Shared contract {path} changed since intake (pinned sha256 {contract['sha256']}); "
                                "restore it before continuing")
 
+    def review_prompt(self, active):
+        """The independent review task (``model_phase`` appends the owner-update instructions)."""
+        issue = active["issue_id"]
+        return (f"Independently assess {issue}. Read {active['run_dir']}/intake.json, "
+                f"{active['validation_dir']}/checks.json, the implementation result and delivery evidence in {active['run_dir']}, "
+                f"and the Git diff {active['starting_commit']}..{active['commit']} in {self.repo}. "
+                "Assess every original acceptance criterion and relevant source; do not rely only on the worker's claims. "
+                "Return the readiness schema with criterion-level evidence and the current full commit. Copy each original unchecked checklist item verbatim into criterion. "
+                "No mutations of files, Git or Linear. Unmet/uncertain criteria mean blocked. "
+                "Do not approve human or scientific gates. " + self.contract_prompt(active) + self.deliverables_prompt(active) +
+                f"The final JSON must identify issue_id={issue!r} and commit={active['commit']!r}. "
+                "Return one acceptance entry per required criterion, including unsatisfied items when blocked. "
+                "An empty acceptance array or a summary alone is not a review. "
+                f"Exact required criteria: {json.dumps(review_criteria(active['issue']))}")
+
     def contract_prompt(self, active):
         contract = active.get("shared_contract")
         if not contract:
@@ -1485,19 +1500,8 @@ class Runner:
             self.save(active=active)
             self.enter_review(issue)
             self.save(phase="reviewing")
-            expected = review_criteria(active["issue"])
-            result = self.model_phase(active, "review", f"Independently assess {issue}. Read {active['run_dir']}/intake.json, "
-                f"{active['validation_dir']}/checks.json, the implementation result and delivery evidence in {active['run_dir']}, "
-                f"and the Git diff {active['starting_commit']}..{active['commit']} in {self.repo}. "
-                "Assess every original acceptance criterion and relevant source; do not rely only on the worker's claims. "
-                "Return the readiness schema with criterion-level evidence and the current full commit. Copy each original unchecked checklist item verbatim into criterion. "
-                "No mutations of files, Git or Linear. Unmet/uncertain criteria mean blocked. "
-                "Do not approve human or scientific gates. " + self.contract_prompt(active) + self.deliverables_prompt(active) +
-                f"The final JSON must identify issue_id={issue!r} and commit={active['commit']!r}. "
-                "Return one acceptance entry per required criterion, including unsatisfied items when blocked. "
-                "An empty acceptance array or a summary alone is not a review. "
-                f"Exact required criteria: {json.dumps(expected)}", writable=False,
-                result_schema=review_schema(active["issue"], active["commit"]))
+            result = self.model_phase(active, "review", self.review_prompt(active), writable=False,
+                                      result_schema=review_schema(active["issue"], active["commit"]))
             self.verify_frozen(active)
             self.verify_contract(active)
             try:

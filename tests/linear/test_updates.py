@@ -103,6 +103,20 @@ class LintTests(unittest.TestCase):
         self.assertIn("line 6: a command block must hold exactly one command line",
                       updates.lint(two, kind="runner", limits=LIMITS, allow_commands=True))
 
+    def test_prompt_rules_state_the_lint_limits_and_required_sections(self):
+        limits = {"max_chars": 900, "max_lines": 12, "max_first_sentence_chars": 111}
+        rules = updates.draft_rules(limits, ("review",))
+        for text in ("exactly ONE sentence, at most 111 characters, ending with '.', '!' or '?'",
+                     "no second sentence", "At most 900 characters and 12 lines", "required sections: review: **Assessment**"):
+            self.assertIn(text, rules)
+        self.assertIn("ready: **What was done**, **How it was checked**",
+                      updates.draft_rules(limits, updates.DRAFT_KINDS["implement"]))
+        # The rule's own example: the W-191 canary's two-sentence opening fails, the joined one passes.
+        body = "\n\n**Assessment**\nThe change meets both criteria.\n"
+        self.assertIn("the first paragraph must be exactly one sentence ending with '.', '!' or '?'",
+                      TestDraftLint.lint("review", "X is ready. No action is needed." + body))
+        self.assertEqual(TestDraftLint.lint("review", "X is ready and the owner does not need to act." + body), [])
+
     def test_render_drops_empty_optional_sections(self):
         body = updates.render("ready", {"issue": "TEAM-1", "summary": "> done", "criteria": "", "limitations": "",
                                         "evidence": ""})
@@ -197,6 +211,16 @@ class EventTests(unittest.TestCase):
 
     def runner(self):
         return Runner(copy.deepcopy(self.config), self.linear)
+
+    def test_every_backend_gets_the_draft_rules_from_the_configured_limits(self):
+        runner = self.runner()
+        runner.attention["lint"] = {"max_chars": 900, "max_lines": 12, "max_first_sentence_chars": 111}
+        for phase in ("implement", "repair", "review"):
+            with self.subTest(phase=phase):
+                text = runner.outbox_instructions(phase, self.root / "outbox")
+                self.assertIn(updates.draft_rules(runner.attention["lint"], updates.DRAFT_KINDS[phase]), text)
+                self.assertIn("at most 111 characters", text)
+        self.assertIn("Write `summary` as a short note", runner.outbox_instructions("review", self.root / "outbox"))
 
     def test_lost_response_is_reconciled_without_a_second_comment(self):
         self.linear.lose_responses = 1

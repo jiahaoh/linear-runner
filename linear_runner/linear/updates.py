@@ -172,6 +172,24 @@ def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None, 
     return list(dict.fromkeys(problems))
 
 
+def draft_rules(limits, kinds):
+    """The draft rules as model prompts state them, built from the same ``limits`` that ``lint``
+    checks and from each kind's template (its required sections), so the two cannot drift.
+    The first-paragraph rule is spelled out with an example because two short sentences
+    ("X is ready. No action is needed.") were the W-191 canary's rejected review summary."""
+    required = "; ".join(f"{kind}: " + ", ".join(f"**{name}**" for name in draft_template(kind)["required"])
+                         for kind in kinds)
+    return ("(1) the first paragraph is exactly ONE sentence, at most "
+            f"{limits['max_first_sentence_chars']} characters, ending with '.', '!' or '?', that says what happened "
+            "and whether the owner must act. Nothing else goes before the first blank line: no second sentence "
+            "and no abbreviation with a period followed by a space (such as 'e.g. '). For example, not \"X is "
+            "ready. No action is needed.\" but \"X is ready and the owner does not need to act.\" (2) After a "
+            "blank line, use only the template's section headings, each in bold on its own line; required "
+            f"sections: {required}. (3) Plain sentences only: no JSON, code blocks, tables, HTML comments or long "
+            f"hashes. (4) At most {limits['max_chars']} characters and {limits['max_lines']} lines in total. (5) An "
+            "optional last line 'Evidence: <host paths, comma separated>'")
+
+
 def lint_draft(path, phase, limits):
     """Lint an outbox draft file; return (kind, text, problems)."""
     path = Path(path)

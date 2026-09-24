@@ -636,7 +636,10 @@ ready, and a blocked note is quoted in the runner's blocked comment. An invalid 
 kept on disk, recorded in `state.drafts` and `<attempt>/outbox-lint.json`, and never
 posted; the runner posts its own templated fallback where the event needs one. The review
 sandbox is read-only, so the reviewer writes its note as the result's `summary`, which the
-runner saves as `outbox/NNN-review.md` and lints the same way.
+runner saves as `outbox/NNN-review.md` and lints the same way. Every backend's prompt states
+these rules in the same words (`updates.draft_rules`), built from the site `lint` limits and
+the templates' required sections, including that the first paragraph is exactly one sentence
+of at most `max_first_sentence_chars` characters.
 
 ## Supervisor
 
