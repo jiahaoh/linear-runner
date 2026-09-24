@@ -1,8 +1,8 @@
 ---
 author: person
-status: proposed wording (W-181 phase 1); the owner settles it before issues are written this way
+status: approved (W-181); write every dispatched issue description in this shape
 used-for: writing a Linear issue description that the runner dispatches; never posted by the runner
-shared-contract: the project's contract_file (see README "Compact intake and shared contract")
+shared-contract: the project's contract_file (see README "Context cost")
 ---
 ## Purpose
 
