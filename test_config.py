@@ -321,7 +321,7 @@ class ResolutionTests(unittest.TestCase):
         page = {"projects": [{"id": "p-1", "name": "Thesis"}, {"id": "p-2", "name": "Thesis archive"}], "hasNextPage": False}
         client, calls = self.client({"list_projects": page})
         self.assertEqual(client.resolve_project("Thesis"), "p-1")
-        self.assertEqual(calls[0], ("list_projects", {"query": "Thesis", "limit": 250}))
+        self.assertEqual(calls[0], ("list_projects", {"query": "Thesis", "limit": 50}))
         with self.assertRaisesRegex(RuntimeError, "no exact match"):
             client.resolve_project("thesis")
         client, _ = self.client({"list_projects": [{"id": "a", "name": "Dup"}, {"id": "b", "name": "Dup"}]})
@@ -331,6 +331,21 @@ class ResolutionTests(unittest.TestCase):
                  "c2": {"projects": [{"id": "y", "name": "Later"}], "hasNextPage": False}}
         client, _ = self.client({"list_projects": lambda args: pages[args.get("cursor")]})
         self.assertEqual(client.resolve_project("Later"), "y")
+
+    def test_project_resolution_prefers_the_uuid_issues_reference(self):
+        # Linear returns a short project id plus the UUID that issues carry as projectId.
+        page = {"projects": [{"id": "P-TEAM-12", "uuid": "uuid-of-thesis", "name": "Thesis"}],
+                "hasNextPage": False}
+        client, _ = self.client({"list_projects": page})
+        self.assertEqual(client.resolve_project("Thesis"), "uuid-of-thesis")
+
+    def test_tool_errors_carry_the_server_detail(self):
+        client = LinearClient({"token_env": "UNUSED_TEST_TOKEN"})
+        client.initialized = True
+        client.rpc = lambda method, params=None, notification=False: {
+            "isError": True, "content": [{"type": "text", "text": "limit: Too big: expected number to be <=50"}]}
+        with self.assertRaisesRegex(RuntimeError, r"list_projects failed \(limit: Too big"):
+            client.call("list_projects", query="x", limit=250)
 
     def test_assignee_me_and_exact_user_names(self):
         client, calls = self.client({"get_user": {"id": "u-me", "name": "Owner"},

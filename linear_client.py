@@ -93,7 +93,9 @@ class LinearClient:
             self.initialized = True
         result = self.rpc("tools/call", {"name": name, "arguments": arguments})
         if result.get("isError"):
-            raise RuntimeError(f"Linear {name} failed; inspect the issue before retrying")
+            detail = " ".join(part.get("text", "") for part in result.get("content", [])
+                              if part.get("type") == "text").strip()[:300]
+            raise RuntimeError(f"Linear {name} failed ({detail or 'no detail'}); inspect the issue before retrying")
         texts = [part["text"] for part in result.get("content", []) if part.get("type") == "text"]
         try:
             return json.loads("\n".join(texts))
@@ -122,7 +124,8 @@ class LinearClient:
     def _pages(self, tool, key, **arguments):
         items, cursor = [], None
         while True:
-            args = dict(arguments, limit=250)
+            # list_projects and list_users reject limits above 50.
+            args = dict(arguments, limit=50)
             if cursor:
                 args["cursor"] = cursor
             page = self.call(tool, **args)
@@ -140,7 +143,9 @@ class LinearClient:
         if len(matches) != 1:
             problem = "no exact match" if not matches else f"ambiguous: {len(matches)} exact matches"
             raise RuntimeError(f"Cannot resolve Linear {kind} {name!r} ({problem}); fix the configured name")
-        identity = matches[0].get("id")
+        # Projects carry a short `id` (e.g. "P-TEAM-12") and the UUID that issues reference
+        # as `projectId` in `uuid`; users carry the UUID in `id`.
+        identity = matches[0].get("uuid") or matches[0].get("id")
         if not isinstance(identity, str) or not identity:
             raise RuntimeError(f"Linear {kind} {name!r} response has no ID")
         return identity
