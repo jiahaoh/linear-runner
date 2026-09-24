@@ -183,13 +183,15 @@ class Supervisor:
         issue = entry["issue_id"]
         run = Path(entry["run_dir"])
         accepted = read_json(run / "final-result.json")
-        contract_issue = read_json(run / "intake.json")["issue"]
+        # issue.json is the full pinned issue of a compact intake; older runs keep it in intake.json.
+        contract_issue = read_json(run / "issue.json") if (run / "issue.json").is_file() \
+            else read_json(run / "intake.json")["issue"]
         validate_review_result(accepted, contract_issue, entry["commit"])
         live = self.r.linear.issue(issue)
         self.r.verify_issue(live, completed=True)
         if not published_contract_matches(live, contract_issue):
             raise RuntimeError(f"{issue}: post-run checklist read-back mismatch")
-        files = {name: sha256(run / name) for name in ("final-result.json", "intake.json", "manifest.json")
+        files = {name: sha256(run / name) for name in ("final-result.json", "intake.json", "issue.json", "manifest.json")
                  if (run / name).is_file()}
         integrity = run / "delivery" / "integrity.json"
         if integrity.is_file():

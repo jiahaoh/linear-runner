@@ -9,6 +9,7 @@
     "${runner_root}/prompts/generic.md"
   ],
   "context_files": [],
+  "contract_file": "../contracts/shared-contract.md",
   "identity_files": [],
   "check_environment": {
     "PYTHONDONTWRITEBYTECODE": "1",

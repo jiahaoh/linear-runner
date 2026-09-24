@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 
 from config import write_json
+import intake as intake_module
 from runner import (IssueBlocked, git, fingerprint, issue_contract, now, run_id, review_criteria,
                     validate_review_result)
 
@@ -154,7 +155,15 @@ def _repin(runner, active, identifier):
     if intake.exists():
         (run / f"intake-before-{identifier}.json").write_bytes(intake.read_bytes())
         packet = json.loads(intake.read_text())
-        packet["issue"] = live
+        if packet.get("schema") == intake_module.SCHEMA:
+            if (run / "issue.json").exists():
+                (run / f"issue-json-before-{identifier}.json").write_bytes((run / "issue.json").read_bytes())
+            write_json(run / "issue.json", live)
+            packet.update(issue=intake_module.issue_view(live),
+                          acceptance_criteria=intake_module.unchecked_criteria(live.get("description")),
+                          issue_snapshot=intake_module.file_reference(run / "issue.json"))
+        else:
+            packet["issue"] = live
         write_json(intake, packet)
     old, old_criteria = active["contract"], review_criteria(active["issue"])
     active["issue"], active["contract"] = live, issue_contract(live)

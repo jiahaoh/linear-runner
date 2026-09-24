@@ -453,6 +453,21 @@ def load_config(batch_path, home=None):
     sources["guidance_files"] = project_label if not batch.get("guidance_files") else f"{project_label} + {batch_label}"
     config["_worker_instructions"] = "\n\n".join(texts)
     sources["_worker_instructions"] = sources["guidance_files"]
+    config["_guidance_parts"] = texts
+    sources["_guidance_parts"] = sources["guidance_files"]
+
+    # Shared contract: one versioned file, referenced by path and content hash (not inlined).
+    contract = None
+    if project.get("contract_file"):
+        where = f"{project_label}.contract_file"
+        path = _path(project["contract_file"], project_path.parent, variables, where)
+        body = _read_text(path, where)
+        if not body.strip():
+            raise ConfigError(f"{where}: must not be empty")
+        contract = {"path": str(path), "sha256": hashlib.sha256(body.encode()).hexdigest(),
+                    "bytes": len(body.encode())}
+    put("contract", contract, project_label)
+    put("intake_mode", project.get("intake_mode", "compact"), project_label)
 
     # Site: host executables, storage roots and the model catalog.
     builtins = {name: variables[name] for name in ("home", "runner_root")}

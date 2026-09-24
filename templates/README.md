@@ -18,3 +18,8 @@ the owner needs to do. Details live in artifacts; a comment has at most one
 review JSON schemas) are separate and are not rendered here.
 
 `python3 render_samples.py` writes one sample per template to `docs/template-samples.md`.
+
+`issue-contract.md` (`author: person`) is not a comment: it is the shape for writing a
+dispatched issue's description (purpose, deliverables, 5 to 10 verifiable criteria, optional
+decision rules, exclusions), pointing to the project's shared contract instead of repeating
+it. `examples/issue-contract-example.md` is a filled-in fictional example.
