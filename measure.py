@@ -244,6 +244,12 @@ def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=N
             if growth:
                 row["rollout"] = dict(growth, path=str(path))
         issue["invocations"].append(row)
+    for check in records.find_checks(roots):
+        if issues and check["issue"] not in issues:
+            continue
+        issue = report["issues"].setdefault(check["issue"], {"intakes": [], "invocations": []})
+        issue.setdefault("checks", []).append({k: check[k] for k in ("run_id", "stage", "name", "exit_code", "status",
+                                                                     "reused")})
     report["totals"] = totals(report)
     return report
 
@@ -310,6 +316,14 @@ def render_markdown(report):
                                              fmt(row["input_added"]), fmt(r.get("calls")), fmt(r.get("first_context")),
                                              fmt(r.get("last_context")), fmt(r.get("prefix")),
                                              *(fmt(growth.get(kind)) for kind in GROWTH_KINDS)]) + " |")
+    lines += ["", "## Check outcomes", "",
+              "Recorded validation and delivery checks; an allowed empty selection counts as passing.", "",
+              "| Issue | Run | Stage | Check | Exit | Outcome | Reused |", "|---|---|---|---|---|---|---|"]
+    for name, issue in report["issues"].items():
+        for check in issue.get("checks", []):
+            lines.append("| " + " | ".join([name, check["run_id"], check["stage"], str(check["name"]),
+                                             fmt(check["exit_code"]), fmt(records.outcome_text(check["status"])),
+                                             "yes" if check["reused"] else "no"]) + " |")
     t = report["totals"]
     lines += ["", "## Totals", "", "```json", json.dumps(t, indent=2), "```", ""]
     return "\n".join(lines)

@@ -29,6 +29,7 @@ import uuid
 import attention
 from config import (ATTENTION_DEFAULTS, PHASES, ConfigError, config_fingerprint, load_config, pin_resolution,
                     read_json, write_json, write_resolved)
+from delivery import EMPTY_NOTE, check_outcome, check_passed
 from linear_client import LinearClient
 import messages
 import updates
@@ -422,7 +423,11 @@ class Runner:
         return read_json(result_path), events, meta["session_id"]
 
     def validate(self, directory, checks, environment):
-        """Run argv checks (no shell) with ``{run_dir}`` substitution; record logs and hashes."""
+        """Run argv checks (no shell) with ``{run_dir}`` substitution; record logs and hashes.
+
+        Each record has ``status``: ``passed`` (exit 0), ``failed``, or ``empty`` when the
+        check sets ``allow_empty`` and exited 5 (no tests selected), which counts as passing.
+        """
         records = []
         for index, check in enumerate(checks):
             command = [s.replace("{run_dir}", str(directory)) for s in check["command"]]
@@ -443,11 +448,16 @@ class Runner:
                     self.stop_child()
                     self.child = None
                     self.save(child_pid=None)
-            records.append({"command": command, "cwd": str(cwd), "environment_overrides": environment, "started_at": started,
-                            "finished_at": now(), "exit_code": returncode, "log": str(log),
-                            "sha256": hashlib.sha256(log.read_bytes()).hexdigest()})
+            allow_empty = bool(check.get("allow_empty"))
+            record = {"command": command, "cwd": str(cwd), "environment_overrides": environment, "started_at": started,
+                      "finished_at": now(), "exit_code": returncode, "status": check_outcome(returncode, allow_empty),
+                      "allow_empty": allow_empty, "log": str(log),
+                      "sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
+            if record["status"] == "empty":
+                record["note"] = EMPTY_NOTE
+            records.append(record)
         write_json(directory / "checks.json", records)
-        return all(c["exit_code"] == 0 for c in records)
+        return all(check_passed(c) for c in records)
 
     def manifest(self, active, result=None):
         directory = Path(active["run_dir"])
@@ -870,10 +880,10 @@ class Runner:
         if active.get("escalation"):
             failed.append("escalated")
         records = read_json(Path(active["validation_dir"]) / "checks.json") if active.get("validation_dir") else []
-        if not records or any(c.get("exit_code") != 0 for c in records):
+        if not records or not all(check_passed(c) for c in records):
             failed.append("deterministic checks did not all pass")
         delivery = Path(active["run_dir"]) / "delivery" / "checks.json"
-        if delivery.is_file() and any(c.get("exit_code") != 0 for c in read_json(delivery)):
+        if delivery.is_file() and not all(check_passed(c) for c in read_json(delivery)):
             failed.append("delivery checks did not all pass")
         files = lines = 0
         for row in git(self.repo, "diff", "--numstat", active["starting_commit"], active["commit"]).splitlines():
@@ -990,7 +1000,9 @@ class Runner:
         validation = []
         if active.get("validation_dir") and (Path(active["validation_dir"]) / "checks.json").is_file():
             validation = [{"command": c.get("name", " ".join(c.get("command", []))),
-                           "outcome": f"exit {c.get('exit_code')}" + (" (reused)" if c.get("reused") else "")}
+                           "outcome": (f"exit {c.get('exit_code')}"
+                                       + (f" ({EMPTY_NOTE})" if c.get("status") == "empty" else "")
+                                       + (" (reused)" if c.get("reused") else ""))}
                           for c in read_json(Path(active["validation_dir"]) / "checks.json")]
         status = result.get("status") if result.get("status") in ("ready", "blocked") else "in_progress"
         criteria = [{"criterion": e.get("criterion", ""), "state": "met" if e.get("satisfied") else "unmet",
@@ -1050,12 +1062,14 @@ class Runner:
                     digest.update(path.read_bytes() if path.is_file() else b"<deleted>")
             key = digest.hexdigest()
             previous = cache.get(spec["name"], {})
-            # Only intact successful evidence is reused; failures always rerun.
-            if previous.get("key") == key and previous.get("exit_code") == 0 and Path(previous["log"]).is_file() and hashlib.sha256(Path(previous["log"]).read_bytes()).hexdigest() == previous["sha256"]:
+            # Only intact successful evidence (passed, or an allowed empty selection) is reused;
+            # failures always rerun. ``key`` covers the whole check definition, allow_empty included.
+            if previous.get("key") == key and check_passed(previous) and Path(previous["log"]).is_file() and hashlib.sha256(Path(previous["log"]).read_bytes()).hexdigest() == previous["sha256"]:
                 results.append(dict(previous, reused=True))
                 continue
             subdir = directory / str(index); subdir.mkdir()
-            self.validate(subdir, [{k: spec[k] for k in ("cwd", "command")}], self.config["check_environment"])
+            self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty") if k in spec}],
+                          self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
             result.update(name=spec["name"], key=key, model=None, reused=False)
             cache[spec["name"]] = result
@@ -1069,7 +1083,7 @@ class Runner:
         active["validation_dir"] = str(directory)
         active["validated_fingerprint"] = before
         self.save(active=active)
-        return all(c["exit_code"] == 0 for c in results)
+        return all(check_passed(c) for c in results)
 
     def worker_packet(self, active):
         """Write ``intake.json`` (and, for the compact packet, ``issue.json``); return the prompt."""
@@ -1184,7 +1198,7 @@ class Runner:
                                                                    directory=active["validation_dir"]),
                           dedupe=active["validation_dir"])
                 break
-            failures = [c for c in records if c["exit_code"]]
+            failures = [c for c in records if not check_passed(c)]
             failure_key = hashlib.sha256(json.dumps([(c["name"], c["key"], c["exit_code"]) for c in failures]).encode()).hexdigest()
             if active.get("failure_key") == failure_key or active["repairs"] >= self.policy["phases"]["max_repairs"]:
                 raise IssueBlocked("Repeated unchanged failure or repair limit exhausted; failing: "

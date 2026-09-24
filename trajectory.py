@@ -132,7 +132,7 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
 
     audit = []
     for check in kept_checks:
-        audit.append({k: check[k] for k in ("issue", "run_id", "stage", "name", "exit_code", "reused", "started_at",
+        audit.append({k: check[k] for k in ("issue", "run_id", "stage", "name", "exit_code", "status", "reused", "started_at",
                                              "seconds", "rss_kib", "log", "log_found", "hash_matches")})
 
     comparison = []
@@ -236,9 +236,10 @@ def tables(result):
     session_header = ["Issue", "Session", "Role", "Invocations", "Latest input", "Covered", "Monotonic"]
     session_rows = [[s["issue"], s["session_id"], s["role"], s["invocations"], (s["counter"] or {}).get("input_tokens"),
                      s["covered"], s["monotonic"]] for s in result["sessions"]]
-    audit_header = ["Issue", "Stage", "Check", "Exit", "Reused", "Seconds", "Max RSS KiB", "Log hash matches"]
-    audit_rows = [[c["issue"], c["stage"], c["name"], c["exit_code"], c["reused"], c["seconds"], c["rss_kib"],
-                   c["hash_matches"]] for c in result["validation_audit"]]
+    audit_header = ["Issue", "Stage", "Check", "Exit", "Outcome", "Reused", "Seconds", "Max RSS KiB",
+                    "Log hash matches"]
+    audit_rows = [[c["issue"], c["stage"], c["name"], c["exit_code"], records.outcome_text(c.get("status")), c["reused"],
+                   c["seconds"], c["rss_kib"], c["hash_matches"]] for c in result["validation_audit"]]
     comparison_header = ["Batch", "Issues", "Invocations", "Sessions", "Covered", "Active s", "Check s", "Input",
                          "Cached (subset)", "Output", "Reasoning (subset)"]
     comparison_rows = [[c["batch"], c["issues"], c["recorded_invocations"], c["sessions"], c["covered"],

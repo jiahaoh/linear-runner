@@ -112,11 +112,14 @@ def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), m
 
 
 def validation(ctx, *, issue, records, passed, repair=None, directory=None):
-    failing = [r for r in records if r.get("exit_code")]
+    from delivery import check_passed
+    failing = [r for r in records if not check_passed(r)]
+    empty = [r for r in records if r.get("status") == "empty" and check_passed(r)]
     reused = sum(bool(r.get("reused")) for r in records)
     checks = plural(len(records), "check") + (f", {reused} reused from unchanged inputs" if reused else "")
     fields = {"issue": issue, "checks": checks, "failed": len(failing), "total": len(records), "repair": repair,
-              "max_repairs": ctx["max_repairs"], "evidence": evidence(directory)}
+              "max_repairs": ctx["max_repairs"], "evidence": evidence(directory),
+              "empty": " ".join(f"{r.get('name', 'check')} selected no tests (allowed)." for r in empty)}
     if not passed:
         fields["failing"] = " ".join(f"{r.get('name', 'check')} exited with code {r.get('exit_code')}." for r in failing)
         fields["repair_note"] = ("The repair worker gets the failing check logs and may change only what those "

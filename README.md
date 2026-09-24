@@ -76,7 +76,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` |
+| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls` |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -229,6 +229,14 @@ elsewhere stops the batch for reconciliation.
    matching input bytes (including ignored fixtures), the inherited and configured
    environment, the executable and `identity_files`. Only successful records with intact
    log hashes are reused; failures are never reused. Validation that changes source stops.
+   **Empty checks:** a check may set `"allow_empty": true`. Its exit code 5 (pytest's "no
+   tests collected", for example when a marker selects nothing after the tests moved) is then
+   recorded as `status: "empty"` with the note "no tests selected; not applicable" and counts
+   as passing; the validation comment lists it as "<name> selected no tests (allowed)", and
+   `report`/`measure` show the outcome as "empty". Any other nonzero exit, and exit 5 without
+   the flag, is still a failure. The flag is part of the check definition, so changing it
+   changes the configuration fingerprint and the check's reuse identity. Every check record
+   in `checks.json` has `status` (`passed`, `failed` or `empty`) and `allow_empty`.
 5. **Repair.** At most `max_repairs` (≤ 2) repairs, shared across resumes and profiles.
    After an unsuccessful repair, one escalation to the registry's `escalation_profile` is
    available. An unchanged failing input stops recovery; an interrupted repair consumes

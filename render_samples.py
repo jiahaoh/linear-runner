@@ -101,7 +101,8 @@ def samples():
     """(title, template file, author, when posted, issue, kind, body)."""
     attempt = RUN + "/implement-20260923T101500Z-5e6f7a8b"
     selection = {"profile": "Standard", "model": "model-a", "effort": "medium"}
-    records = [{"name": "regression", "exit_code": 1}, {"name": "docs", "exit_code": 0, "reused": True}]
+    records = [{"name": "regression", "exit_code": 1}, {"name": "docs", "exit_code": 0, "reused": True},
+               {"name": "pytest-extended", "exit_code": 5, "status": "empty", "allow_empty": True}]
     recovery = {"id": "R-20260923T120000Z-9c8d7e6f", "kind": "resume", "authorized_by": "Owner", "then": "continue",
                 "reason": "The calibration table is at data/calibration.csv; the note tells the worker",
                 "details": {"issue": "TEAM-12", "step": "implement"}}

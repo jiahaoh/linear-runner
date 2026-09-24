@@ -6,6 +6,9 @@ headline.repairing: {failed} of {total} checks failed for {issue}; the runner is
 ---
 {headline}
 
+**Not applicable**
+{empty}
+
 **Failing checks**
 {failing}
 

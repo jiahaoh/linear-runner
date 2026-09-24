@@ -322,6 +322,94 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(self.runner.run_checks(active))
         self.assertFalse(json.loads((Path(active["validation_dir"]) / "checks.json").read_text())[0]["reused"])
 
+    def test_allowed_empty_selection_counts_as_passing_and_is_recorded(self):
+        empty = [sys.executable, "-c", "raise SystemExit(5)"]
+        self.config["checks"].append({"name": "pytest-extended", "kind": "code", "tier": "default", "inputs": ["*"],
+                                      "cwd": ".", "command": empty, "allow_empty": True})
+        self.runner.execute(limit=1)
+        self.assertEqual(self.calls, ["implement", "review"])  # no repair
+        self.assertEqual(self.linear.data["statusType"], "completed")
+        run = Path(self.runner.state["history"][0]["run_dir"])
+        records = json.loads(next(run.glob("validation-*/checks.json")).read_text())
+        record = next(r for r in records if r["name"] == "pytest-extended")
+        self.assertEqual((record["exit_code"], record["status"], record["allow_empty"], record["note"]),
+                         (5, "empty", True, "no tests selected; not applicable"))
+        self.assertEqual(records[0]["status"], "passed")
+        comment = self.linear.last("DEV-1", "validation")
+        self.assertTrue(comment.startswith("Checks passed for DEV-1 (2 checks)"))
+        self.assertIn("**Not applicable**\npytest-extended selected no tests (allowed).", comment)
+        # An empty outcome is passing evidence, so it is reused while its identity is unchanged.
+        active = {"run_dir": str(run), "issue_id": "DEV-1", "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        self.assertTrue(self.runner.run_checks(active))
+        reused = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+        self.assertEqual([(r["status"], r["reused"]) for r in reused], [("passed", True), ("empty", True)])
+
+    def test_empty_selection_without_allow_empty_and_other_exits_still_fail(self):
+        active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        Path(active["run_dir"]).mkdir(parents=True)
+        (self.repo / "result.txt").write_text("ready")
+        spec = {"name": "pytest-extended", "kind": "code", "tier": "default", "inputs": ["*"], "cwd": "."}
+        cases = [(5, False, "failed"), (1, True, "failed"), (4, True, "failed"), (5, True, "empty"), (0, True, "passed")]
+        keys = {}
+        for code, allow, status in cases:
+            with self.subTest(code=code, allow_empty=allow):
+                check = dict(spec, command=[sys.executable, "-c", f"raise SystemExit({code})"])
+                if allow:
+                    check["allow_empty"] = True
+                self.config["checks"] = [check]
+                self.assertEqual(self.runner.run_checks(active), status != "failed")
+                record = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())[0]
+                self.assertEqual((record["exit_code"], record["status"], record["reused"]), (code, status, False))
+                self.assertEqual("note" in record, status == "empty")
+                keys[(code, allow)] = record["key"]
+        # allow_empty is part of the check definition: it changes the reuse identity.
+        self.assertNotEqual(keys[(5, False)], keys[(5, True)])
+
+    def test_allow_empty_is_part_of_the_configuration_fingerprint(self):
+        from config import config_fingerprint
+        project = json.loads((self.home / "projects" / "fixture.json").read_text())
+        project["checks"][0]["allow_empty"] = True
+        (self.home / "projects" / "fixture.json").write_text(json.dumps(project))
+        changed = load_config(self.batch, self.home)
+        self.assertIs(changed["checks"][0]["allow_empty"], True)
+        self.assertNotEqual(config_fingerprint(dict(changed, project_id="p", assignee_id="owner")),
+                            config_fingerprint(self.config))
+        project["checks"][0]["allow_empty"] = "yes"
+        (self.home / "projects" / "fixture.json").write_text(json.dumps(project))
+        from config import ConfigError
+        with self.assertRaisesRegex(ConfigError, "allow_empty: expected boolean"):
+            load_config(self.batch, self.home)
+
+    def test_delivery_integrity_accepts_only_evidenced_empty_outcomes(self):
+        from delivery import check_outcome, check_passed
+        self.assertEqual([check_outcome(0), check_outcome(5), check_outcome(5, True), check_outcome(1, True)],
+                         ["passed", "failed", "empty", "failed"])
+        self.assertTrue(check_passed({"exit_code": 0}))  # records written before the status field
+        self.assertTrue(check_passed({"exit_code": 5, "status": "empty", "allow_empty": True}))
+        self.assertFalse(check_passed({"exit_code": 5, "status": "empty", "allow_empty": False}))
+        self.assertFalse(check_passed({"exit_code": 5, "status": "failed", "allow_empty": True}))
+        self.assertFalse(check_passed({"exit_code": 1, "status": "empty", "allow_empty": True}))
+
+    def test_report_and_measure_name_empty_outcomes(self):
+        import measure
+        import trajectory
+        run = self.root / "runs" / "DEV-1" / "20260101T000000Z-0000000a"
+        validation = run / "validation-20260101T000100Z-0000000b"
+        validation.mkdir(parents=True)
+        log = validation / "check-0.log"; log.write_text("collected 0 items / 3 deselected")
+        write_json(validation / "checks.json", [
+            {"name": "pytest-extended", "exit_code": 5, "status": "empty", "allow_empty": True, "reused": False,
+             "log": str(log), "sha256": runner_module.hashlib.sha256(log.read_bytes()).hexdigest(),
+             "started_at": "2026-01-01T00:01:00+00:00", "finished_at": "2026-01-01T00:01:02+00:00"}])
+        result = trajectory.from_roots([self.root / "runs"], captured_at="2026-01-02T00:00:00+00:00")
+        self.assertEqual(result["validation_audit"][0]["status"], "empty")
+        self.assertIn("| DEV-1 | validation-20260101T000100Z-0000000b | pytest-extended | 5 | empty (no tests "
+                      "selected; allowed) |", trajectory.render_markdown(result))
+        report = measure.measure([self.root / "runs"])
+        self.assertEqual(report["issues"]["DEV-1"]["checks"][0]["status"], "empty")
+        self.assertIn("| pytest-extended | 5 | empty (no tests selected; allowed) | no |", measure.render_markdown(report))
+
     def test_review_cannot_change_validated_source(self):
         original = self.runner.codex
         def corrupt(prompt, directory, **kwargs):

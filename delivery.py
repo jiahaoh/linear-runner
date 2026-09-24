@@ -3,7 +3,8 @@
 Project ``delivery_checks`` render an issue's delivery packet from saved evidence and
 receive ``RUNNER_DELIVERY_CONTEXT``. Afterwards this step verifies, from files only:
 
-* every validation check the controller recorded passed and its log hash is intact;
+* every validation check the controller recorded passed (or selected no tests where its
+  definition allows that, ``allow_empty``) and its log hash is intact;
 * the project's ``required_checks`` are among them;
 * every delivery check passed and its log hash is intact;
 * the renderer's manifest exists, names the committed revision in ``revision_field``,
@@ -24,6 +25,34 @@ class DeliveryError(RuntimeError):
     pass
 
 
+# pytest's exit code when no test was collected or every test was deselected. A check with
+# ``"allow_empty": true`` records this exit code as the distinct outcome ``empty``, which
+# counts as passing; every other nonzero exit (and exit 5 without the flag) is a failure.
+EMPTY_EXIT_CODE = 5
+EMPTY_NOTE = "no tests selected; not applicable"
+
+
+def check_outcome(exit_code, allow_empty=False):
+    """``passed``, ``empty`` (allowed empty selection) or ``failed`` for one check run."""
+    if exit_code == 0:
+        return "passed"
+    if allow_empty and exit_code == EMPTY_EXIT_CODE:
+        return "empty"
+    return "failed"
+
+
+def check_passed(record):
+    """Whether a saved check record counts as passing: exit 0, or an allowed empty selection.
+
+    An ``empty`` outcome is accepted only with its own evidence: exit code 5 and the
+    ``allow_empty`` flag recorded from the check definition.
+    """
+    if record.get("exit_code") == 0:
+        return True
+    return (record.get("status") == "empty" and record.get("exit_code") == EMPTY_EXIT_CODE
+            and record.get("allow_empty") is True)
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -39,7 +68,7 @@ def _inside(base, relative, where):
 def _intact(records, where):
     for record in records:
         name = record.get("name") or " ".join(record.get("command", [])[:3])
-        if record.get("exit_code") != 0:
+        if not check_passed(record):
             raise DeliveryError(f"{where} {name!r} did not pass")
         log = Path(record.get("log", ""))
         if not log.is_file() or sha256(log) != record.get("sha256"):

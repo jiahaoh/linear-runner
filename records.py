@@ -158,6 +158,20 @@ def _resolve_log(record_log, checks_path, run_dir):
     return candidate if candidate.is_file() else None
 
 
+def check_status(record):
+    """``passed``, ``failed`` or ``empty`` (an allowed empty selection); older records have no
+    ``status`` field and are derived from the exit code."""
+    if record.get("status") in ("passed", "failed", "empty"):
+        return record["status"]
+    code = record.get("exit_code")
+    return None if code is None else "passed" if code == 0 else "failed"
+
+
+def outcome_text(status):
+    """A check outcome for people: an allowed empty selection is named as such."""
+    return "empty (no tests selected; allowed)" if status == "empty" else status
+
+
 def find_checks(roots):
     """Unique runner check records from ``validation-*/checks.json`` and ``delivery/checks.json``."""
     unique = {}
@@ -190,7 +204,7 @@ def find_checks(roots):
                 rss = int(match.group(1)) if match else None
             unique[key] = {
                 "issue": issue, "run_id": run, "stage": stage, "name": name,
-                "exit_code": record.get("exit_code"), "reused": reused,
+                "exit_code": record.get("exit_code"), "status": check_status(record), "reused": reused,
                 "started_at": record.get("started_at"), "finished_at": record.get("finished_at"),
                 "seconds": (end - start).total_seconds() if start and end and not reused else None,
                 "rss_kib": rss, "log": str(log) if log else record.get("log"),

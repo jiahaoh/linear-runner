@@ -116,9 +116,10 @@ def _baseline_checks(runner, directory):
             continue
         target = directory / spec["name"]
         target.mkdir(parents=True)
-        passed = runner.validate(target, [{k: spec[k] for k in ("cwd", "command")}], runner.config["check_environment"])
+        passed = runner.validate(target, [{k: spec[k] for k in ("cwd", "command", "allow_empty") if k in spec}],
+                                 runner.config["check_environment"])
         record = read_json(target / "checks.json")[0]
-        records[spec["name"]] = {k: record[k] for k in ("exit_code", "log", "sha256")}
+        records[spec["name"]] = {k: record[k] for k in ("exit_code", "status", "log", "sha256")}
         if not passed:
             raise LaunchError(f"Baseline check {spec['name']!r} failed; see {record['log']}")
     return records
