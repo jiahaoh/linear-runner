@@ -766,7 +766,8 @@ needs depends on whether a recovery is pending:
   unfinished issue; those always need a recorded recovery.
 
 Every recovery requires `--reason` and `--authorized-by`, runs offline except
-`--repin-contract` and `repin-config` (Linear name resolution), and is written to
+`--repin-contract`, `--accept-contract-drift` (both read the live issue) and `repin-config`
+(Linear name resolution), and is written to
 `state.json` and the append-only, hash-chained `<state dir>/recovery-log.jsonl`. None accepts work or resets history, usage, repairs or
 escalation. `--then continue` (the default) lets the supervisor continue the batch after
 the recovered issue finishes, just as a fresh launch would; `--then stop` stops after it
@@ -780,6 +781,7 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | Re-run only the independent review of the frozen commit | `recover review --batch $B --reason R --authorized-by A [--redeliver] [--repin-contract] [--note-file F]` |
 | Soft-budget checkpoint | `recover budget --batch $B --phase P --input-tokens N --output-tokens N --tool-calls N --reason R --authorized-by A` |
 | Publication or its read-back failed after acceptance | `recover publish --batch $B --reason R --authorized-by A` |
+| After acceptance (step `publish` or `done`) the contract check stops, but the issue changed only outside the accepted criteria and scope | `recover publish --batch $B --accept-contract-drift --reason R --authorized-by A` |
 | Set an issue aside and continue with the others | `recover defer --batch $B --issue ISSUE [--restore-worktree] [--keep-commit] --reason R --authorized-by A` |
 | Restore a deferred, parked issue | `recover resume --batch $B --issue ISSUE --reason R --authorized-by A` |
 | Withdraw a recovery that was not launched | `recover cancel --batch $B --reason R --authorized-by A` |
@@ -800,7 +802,19 @@ that finished `blocked`, a plain `resume` is refused with a pointer to `revalida
 single escalation) and is refused once every repair is used. An interrupted repair cannot
 be resumed; `revalidate` or `defer` are its recoveries.
 `--repin-contract` adopts an edited live issue before acceptance only, keeping the
-previous intake and issue beside it. `--redeliver` re-runs delivery for the frozen commit
+previous intake and issue beside it. After acceptance the one re-pin is `recover publish
+--accept-contract-drift`: it reads the live issue and re-pins the contract only if the
+acceptance criteria (the checklist items the reviewer accepted) and every scope field
+(`description`, `projectId`, `assigneeId`, `projectMilestone`, and the `blocks`,
+`blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
+description may differ only by publication's ticks (`[x]`/`[X]`). Otherwise it refuses and
+names the changed fields: a changed criterion or scope needs a new independent review
+(`recover review --repin-contract`), which runs only at the review step, and no recovery moves
+an accepted issue back to review, so restore the accepted text or fields in Linear or defer
+the issue. On success it keeps the accepted description pinned, stores the previous snapshot
+as `issue-before-<R-id>.json` (and `issue-json-before-<R-id>.json`), and records the old and
+new contract hashes and the changed field names in `active.contract_repins`, the recovery
+record and the recovery log. Like every `publish` recovery it runs no model. `--redeliver` re-runs delivery for the frozen commit
 and keeps the old packet as `delivery-superseded-<id>`. `review` allows only the review
 model phase and `publish` allows none. `budget` moves the checkpoint into
 `budget_reconciliations` and records the new limits as that phase's allowance for this

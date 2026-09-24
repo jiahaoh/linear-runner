@@ -111,7 +111,11 @@ def build_parser():
     budget.add_argument("--tool-calls", type=int, required=True)
     kinds.add_parser("revalidate", parents=[common, authority, then],
                      help="re-run the checks on the current source at a repair or validate stop (no model, no repair slot)")
-    kinds.add_parser("publish", parents=[common, authority, then], help="reconcile publication of an accepted review; no model")
+    publish = kinds.add_parser("publish", parents=[common, authority, then],
+                               help="reconcile publication of an accepted review; no model")
+    publish.add_argument("--accept-contract-drift", action="store_true",
+                         help="also re-pin the issue contract when only fields outside the accepted criteria and "
+                              "scope changed (refused, naming the fields, otherwise)")
     kinds.add_parser("cancel", parents=[common, authority], help="withdraw a pending recovery that was not launched")
     kinds.add_parser("repin-config", parents=[common, authority],
                      help="adopt a changed configuration and/or runner commit for a paused or stopped batch "
@@ -176,7 +180,7 @@ def recover(args, runner):
     if args.kind == "revalidate":
         return recovery.recover_revalidate(runner, then=args.then, **common)
     if args.kind == "publish":
-        return recovery.recover_publish(runner, then=args.then, **common)
+        return recovery.recover_publish(runner, then=args.then, accept_drift=args.accept_contract_drift, **common)
     if args.kind == "cancel":
         return recovery.recover_cancel(runner, **common)
     return recovery.recover_defer(runner, issue=args.issue, restore_worktree=args.restore_worktree,

@@ -262,7 +262,8 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
         primary = ("Record a review-only recovery (you can add --note-file with a note for the reviewer, or "
                    "--repin-contract after clarifying a criterion):", command(ctx, "recover", "review", auth=True))
     elif step in ("publish", "done"):
-        primary = ("Record a publish-only recovery (no model runs):", command(ctx, "recover", "publish", auth=True))
+        primary = ("Record a publish-only recovery (no model runs; add --accept-contract-drift when the issue changed "
+                   "only outside the accepted criteria and scope):", command(ctx, "recover", "publish", auth=True))
     else:
         primary = ("Record the recovery (you can add --note-file with a note for the worker):",
                    command(ctx, "recover", "resume", auth=True))
@@ -330,6 +331,8 @@ def recovery(ctx, *, record, step=None, note=None, evidence_paths=(), stage=None
     action = variant("recovery", "kind", kind, values)
     if kind == "review" and details.get("redeliver"):
         action += " Delivery is re-run first; the previous packet is kept."
+    if kind == "publish" and details.get("accepted_contract_drift"):
+        action += " " + variant("recovery", "drift", "publish", values)
     if kind == "resume" and details.get("repair_retry"):
         action += " The worker gets one more repair of the failing checks, with the owner's note."
     if model_text(stage):

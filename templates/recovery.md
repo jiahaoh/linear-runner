@@ -7,6 +7,7 @@ kind.revalidate: The runner re-runs the checks for {subject} on the current sour
 kind.review: The runner re-runs only the independent review of the committed work.
 kind.budget: The runner resumes {subject} with the new budget allowance for the {phase} phase.
 kind.publish: The runner finishes publishing the already accepted review; no model runs.
+drift.publish: The issue changed only outside the accepted criteria and scope, so the runner re-pinned it without a new review.
 kind.defer: {subject} is set aside and the batch continues with independent issues.
 then.continue: After this issue the batch continues.
 then.stop: After this issue the batch stops again.

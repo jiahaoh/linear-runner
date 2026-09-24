@@ -23,6 +23,12 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   re-running delivery (``--redeliver``, the previous packet is kept).
 * ``budget``  - reconcile a soft-budget checkpoint with an explicitly recorded new allowance.
 * ``publish`` - reconcile publication of an already accepted review; no model may run.
+  ``--accept-contract-drift`` (at ``publish`` or ``done``) also re-pins the issue contract
+  when the live issue changed only outside what the reviewer accepted: the acceptance
+  criteria and every scope field (description, project, assignee, milestone, ``blocks``,
+  ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot, otherwise
+  it refuses and names the changed fields. It records the old and new contract hashes and
+  the changed field names; it never runs a model.
 * ``defer``   - set an issue aside and let the queue continue with independent issues.
 * ``cancel``  - withdraw a pending recovery that has not been launched (recorded too).
 * ``repin-config`` - adopt a changed configuration and/or a newer runner commit for a paused
@@ -40,13 +46,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
 from linear_runner.config import write_json
 from linear_runner.engine import intake as intake_module
-from linear_runner.engine.runner import (IssueBlocked, git, fingerprint, issue_contract, now, run_id, review_criteria,
-                                         validate_review_result)
+from linear_runner.engine.runner import (CONTRACT_RELATIONS, IssueBlocked, git, fingerprint, issue_contract, now,
+                                         published_issue, run_id, review_criteria, validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
 KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel", "repin-config")
@@ -61,6 +68,9 @@ VALIDATED_STEPS = ("commit", "delivery", "review", "publish", "done")
 # Steps before independent acceptance, where an edited issue contract may be re-pinned.
 PRE_ACCEPTANCE = ("implement", "validate", "commit", "delivery", "review")
 PARK_REF = "refs/linear-runner/parked"
+# Scope fields the independent review accepted (besides the criteria and the issue id);
+# --accept-contract-drift requires each to be byte-identical to the accepted snapshot.
+SCOPE_FIELDS = ("description", "projectId", "assigneeId", "projectMilestone")
 
 
 class RecoveryError(RuntimeError):
@@ -166,7 +176,9 @@ def _note(runner, active, identifier, note_file, reason, authorized_by):
 def _repin(runner, active, identifier):
     """Adopt the edited live issue before acceptance; the previous intake is preserved."""
     if active["step"] not in PRE_ACCEPTANCE:
-        raise RecoveryError("The contract can be re-pinned only before independent acceptance")
+        raise RecoveryError("The contract can be re-pinned only before independent acceptance; after it, "
+                            "`recover publish --accept-contract-drift` adopts changes outside the accepted criteria "
+                            "and scope")
     live = runner.linear.issue(active["issue_id"])
     runner.verify_issue(live)
     runner.verify_live_state(live, active["step"])
@@ -283,6 +295,10 @@ def recover_revalidate(runner, *, reason, authorized_by, then="continue"):
 
 def recover_review(runner, *, reason, authorized_by, then="continue", note_file=None, repin=False, redeliver=False):
     _preflight(runner, reason, authorized_by)
+    if (runner.state.get("active") or {}).get("step") in ("publish", "done"):
+        raise RecoveryError(f"Active {runner.state['active']['issue_id']} is past independent acceptance (step "
+                            f"{runner.state['active']['step']!r}); use `recover publish`, with --accept-contract-drift "
+                            "when the issue changed only outside the accepted criteria and scope")
     active = _active(runner, ("review",))
     if active.get("budget_exceeded"):
         raise RecoveryError("A soft-budget checkpoint needs `recover budget` with an explicit allowance")
@@ -327,7 +343,80 @@ def recover_budget(runner, *, reason, authorized_by, phase, limits, then="contin
     return _record(runner, "budget", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 
-def recover_publish(runner, *, reason, authorized_by, then="continue"):
+def _canonical(value):
+    return json.dumps(value, sort_keys=True)
+
+
+def _checklist(description):
+    """Every checklist item's text in order, whatever its mark ([ ], [x] or [X])."""
+    return re.findall(r"^\s*[-*] \[[ xX]\] (.+)$", description or "", re.M)
+
+
+def accepted_scope_changes(accepted, live):
+    """Names of what the reviewer accepted that differ in ``live``: ``acceptance criteria``,
+    the SCOPE_FIELDS and ``relations.<name>`` for CONTRACT_RELATIONS. The description may
+    differ from the accepted one only by publication's ticks (``[x]``/``[X]``)."""
+    changed = []
+    if live.get("id") != accepted.get("id"):
+        changed.append("id")
+    description = live.get("description") or ""
+    if _checklist(description) != _checklist(accepted.get("description")):
+        changed.append("acceptance criteria")
+    ticked = re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", description, flags=re.M)
+    if description != (accepted.get("description") or "") and ticked != published_issue(accepted)["description"]:
+        changed.append("description")
+    changed += [f for f in SCOPE_FIELDS[1:] if _canonical(live.get(f)) != _canonical(accepted.get(f))]
+    old, new = accepted.get("relations") or {}, live.get("relations") or {}
+    changed += [f"relations.{k}" for k in CONTRACT_RELATIONS if _canonical(new.get(k)) != _canonical(old.get(k))]
+    return changed
+
+
+def changed_fields(before, after):
+    """Top-level issue fields (and ``relations.<name>``) whose values differ."""
+    names = []
+    for key in sorted(set(before) | set(after)):
+        if key == "relations":
+            old, new = before.get(key) or {}, after.get(key) or {}
+            names += [f"relations.{k}" for k in sorted(set(old) | set(new)) if _canonical(old.get(k)) != _canonical(new.get(k))]
+        elif _canonical(before.get(key)) != _canonical(after.get(key)):
+            names.append(key)
+    return names
+
+
+def _accept_drift(runner, active, identifier, reason, authorized_by):
+    """Re-pin the contract after acceptance when only fields outside it changed (see module notes)."""
+    live = runner.linear.issue(active["issue_id"])
+    accepted = active["issue"]
+    scope = accepted_scope_changes(accepted, live)
+    if scope:
+        raise RecoveryError(
+            f"{active['issue_id']}: what the independent review accepted changed ({', '.join(scope)}); "
+            "--accept-contract-drift re-pins only changes outside the accepted criteria and scope. A changed "
+            "criterion or scope field needs a new review against the edited issue (`recover review "
+            "--repin-contract`), which runs only at the review step, and no recovery moves an accepted issue back "
+            "to review: restore the accepted text or fields in Linear, or set the issue aside (`recover defer`)")
+    runner.verify_issue(live)
+    runner.verify_live_state(live, active["step"])
+    # The accepted description stays pinned (the live one equals it or its ticked form), so
+    # publication writes and validates exactly what the reviewer accepted.
+    pinned = dict(live, description=accepted.get("description"))
+    run = Path(active["run_dir"])
+    before = run / f"issue-before-{identifier}.json"
+    write_json(before, accepted)
+    snapshot = run / "issue.json"
+    if snapshot.exists():
+        (run / f"issue-json-before-{identifier}.json").write_bytes(snapshot.read_bytes())
+        write_json(snapshot, pinned)
+    record = {"id": identifier, "at": now(), "step": active["step"], "old_contract": active["contract"],
+              "new_contract": issue_contract(pinned), "changed_fields": changed_fields(accepted, pinned),
+              "previous_issue": str(before), "reason": reason.strip(), "authorized_by": authorized_by.strip()}
+    active.setdefault("contract_repins", []).append(record)
+    active["issue"], active["contract"] = pinned, record["new_contract"]
+    runner.state.setdefault("issue_cache", {})[active["issue_id"]] = live
+    return {k: record[k] for k in ("old_contract", "new_contract", "changed_fields", "previous_issue")}
+
+
+def recover_publish(runner, *, reason, authorized_by, then="continue", accept_drift=False):
     _preflight(runner, reason, authorized_by)
     active = _active(runner, ("publish", "done"))
     try:
@@ -338,6 +427,9 @@ def recover_publish(runner, *, reason, authorized_by, then="continue"):
     identifier = "R-" + run_id()
     details = {"id": identifier, "issue": active["issue_id"], "step": active["step"], "commit": active["commit"],
                "accepted_result_sha256": _sha(json.dumps(active["accepted_result"], sort_keys=True))}
+    if accept_drift:
+        details["accepted_contract_drift"] = _accept_drift(runner, active, identifier, reason, authorized_by)
+        runner.save(active=active)
     return _record(runner, "publish", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 

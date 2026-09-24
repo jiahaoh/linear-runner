@@ -543,6 +543,81 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         self.assertEqual(self.linear.data["statusType"], "completed")
         self.assertTrue((self.state_dir / "lifecycle" / "DEV-1" / "readback.json").is_file())
 
+    def test_accept_contract_drift_repins_changes_outside_the_accepted_scope_without_a_model(self):
+        self.pause_at_publish()
+        before = self.state()["active"]
+        self.linear.data["title"] = "Renamed after acceptance"
+        self.linear.data["relations"]["relatedTo"] = [{"id": "DEV-9", "title": "Filed later, mentions DEV-1"}]
+        with self.assertRaisesRegex(RecoveryError, "--reason"):
+            self.recover("publish", accept_drift=True, reason=" ")
+        record = self.recover("publish", accept_drift=True, then="stop")
+        drift = record["details"]["accepted_contract_drift"]
+        self.assertEqual(drift["old_contract"], before["contract"])
+        self.assertIn("relations.relatedTo", drift["changed_fields"])
+        self.assertIn("title", drift["changed_fields"])
+        self.assertNotIn("description", drift["changed_fields"])
+        active = self.state()["active"]
+        self.assertEqual(active["contract"], drift["new_contract"])
+        self.assertEqual(active["issue"]["description"], before["issue"]["description"])  # accepted text stays pinned
+        self.assertEqual(runner_module.issue_contract(active["issue"]), drift["new_contract"])
+        repin = active["contract_repins"][0]
+        self.assertEqual((repin["authorized_by"], repin["reason"], repin["step"]), ("Owner", "fixture reason", "publish"))
+        self.assertEqual(json.loads(Path(drift["previous_issue"]).read_text()), before["issue"])
+        logged = verify_log(self.state_dir)[-1]
+        self.assertEqual((logged["event"], logged["kind"]), ("recorded", "publish"))
+        self.assertEqual(logged["details"]["accepted_contract_drift"], drift)
+        calls = list(self.calls)
+        entry = self.launch()
+        self.assertEqual((entry["started"]["outcome"], self.calls, self.done()), ("checkpoint", calls, ["DEV-1"]))
+        self.assertEqual(self.linear.data["description"], "- [x] Produce validated output")
+        self.assertIn("re-pinned it without a new review", self.linear.last("DEV-1", "recovery"))
+
+    def test_accept_contract_drift_refuses_changed_criteria_or_scope(self):
+        self.pause_at_publish()
+        self.linear.others["NEW-1"] = {"id": "NEW-1", "statusType": "completed"}
+        saved = copy.deepcopy(self.linear.data)
+        cases = [({"description": "- [ ] Produce validated output quickly"}, "acceptance criteria, description"),
+                 ({"description": "- [ ] Produce validated output\n\nAlso add a plot."}, "description"),
+                 ({"projectMilestone": {"id": "later"}}, "projectMilestone"),
+                 ({"projectId": "other"}, "projectId"),
+                 ({"assigneeId": "someone"}, "assigneeId"),
+                 ({"relations": {"blockedBy": [{"id": "NEW-1"}]}}, "relations.blockedBy"),
+                 ({"relations": {"blockedBy": [], "blocks": [{"id": "DEV-2"}]}}, "relations.blocks"),
+                 ({"relations": {"blockedBy": [], "duplicateOf": {"id": "DEV-3"}}}, "relations.duplicateOf")]
+        state = self.state()
+        for change, named in cases:
+            with self.subTest(change=change):
+                self.linear.data = dict(copy.deepcopy(saved), **change)
+                with self.assertRaisesRegex(RecoveryError, rf"accepted changed \({named}\).*recover review "
+                                                           "--repin-contract"):
+                    self.recover("publish", accept_drift=True)
+                self.assertEqual(self.state(), state)  # nothing recorded, nothing re-pinned
+        self.assertFalse((self.state_dir / recovery.LOG_NAME).exists())
+        self.linear.data = saved
+        with self.assertRaisesRegex(RecoveryError, "only before independent acceptance.*--accept-contract-drift"):
+            self.recover("resume", repin=True)
+        with self.assertRaisesRegex(RecoveryError, "past independent acceptance.*--accept-contract-drift"):
+            self.recover("review", repin=True)
+
+    def test_accept_contract_drift_at_done_keeps_the_published_checklist(self):
+        original = self.linear.post_comment
+        def flaky(issue, body, marker, **kwargs):
+            if "/done/" in marker:
+                raise RuntimeError("Linear offline during the done post")
+            return original(issue, body, marker, **kwargs)
+        self.linear.post_comment = flaky
+        self.launch()
+        self.linear.post_comment = original
+        self.assertEqual(self.state()["active"]["step"], "done")
+        self.linear.data["description"] = self.linear.data["description"].replace("[x]", "[X]")
+        self.linear.data["relations"]["relatedTo"] = [{"id": "DEV-9", "title": "mentions DEV-1"}]
+        record = self.recover("publish", accept_drift=True, then="stop")
+        self.assertIn("relations.relatedTo", record["details"]["accepted_contract_drift"]["changed_fields"])
+        self.assertNotIn("description", record["details"]["accepted_contract_drift"]["changed_fields"])
+        calls = list(self.calls)
+        self.assertEqual(self.launch()["started"]["outcome"], "checkpoint")
+        self.assertEqual((self.calls, self.done()), (calls, ["DEV-1"]))
+
     def test_resume_blocked_worker_with_recorded_note(self):
         self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
         self.launch()
@@ -1264,6 +1339,12 @@ class CommandLineTests(Harness):
             main(["recover", "publish", *args, "--authorized-by", "Owner"])
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             main(["recover", "defer", *args, "--reason", "x", "--authorized-by", "Owner"])
+
+    def test_recover_publish_accepts_the_contract_drift_flag(self):
+        args = ["recover", "publish", "--batch", "b", "--reason", "r", "--authorized-by", "a"]
+        parser = cli_module.build_parser()
+        self.assertFalse(parser.parse_args(args).accept_contract_drift)
+        self.assertTrue(parser.parse_args(args + ["--accept-contract-drift"]).accept_contract_drift)
 
     def test_launch_refusal_writes_nothing_to_linear(self):
         args = ["--batch", str(self.batch), "--home", str(self.home)]
