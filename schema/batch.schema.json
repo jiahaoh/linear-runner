@@ -126,6 +126,14 @@
         "low_risk_review": {
           "description": "Allow the lighter review of registry profiles.review_routing.light_review for low-risk issues.",
           "type": "boolean"
+        },
+        "compact_token_limit": {
+          "description": "Codex auto-compaction threshold in tokens for every model phase (overrides the registry phase value); null leaves Codex's default.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1000
         }
       }
     }

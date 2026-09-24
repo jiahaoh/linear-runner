@@ -33,7 +33,7 @@ UNFINGERPRINTED = ("launcher", "attention")
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
 # Defaults for the supervisor (batch layer) and launcher (site layer).
 # Per-batch opt-in context-cost controls (thresholds and rules live in the registry).
-CONTEXT_CONTROL_DEFAULTS = {"bounded_sessions": False, "low_risk_review": False}
+CONTEXT_CONTROL_DEFAULTS = {"bounded_sessions": False, "low_risk_review": False, "compact_token_limit": None}
 SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
                         "baseline_checks": False}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},

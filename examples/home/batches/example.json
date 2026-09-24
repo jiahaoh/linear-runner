@@ -17,7 +17,8 @@
   },
   "context_controls": {
     "bounded_sessions": false,
-    "low_risk_review": false
+    "low_risk_review": false,
+    "compact_token_limit": null
   },
   "human_gates": []
 }

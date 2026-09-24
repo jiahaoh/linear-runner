@@ -97,7 +97,7 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
             "profile": item["profile"], "requested_model": item["requested_model"],
             "requested_effort": item["requested_effort"], "observed_models": item["observed_models"],
             "prompt_bytes": item["prompt_bytes"], "tool_output_bytes": item["tool_output_bytes"],
-            "handoff": item.get("handoff"),
+            "handoff": item.get("handoff"), "compact_token_limit": item.get("compact_token_limit"),
             "cumulative_usage": {k: item["counter"][k] for k in USAGE_KEYS if k in item["counter"]}
             if item["counter"] is not None else None,
             "usage_delta": _delta(item["counter"], previous if item["counter"] is not None else None),

@@ -8,8 +8,10 @@ import unittest
 
 import intake
 import measure
-from fixtures import TEST_REGISTRY
-from runner import git, usage_totals, write_json
+from fixtures import FakeLinear, TEST_REGISTRY, make_home
+from config import load_config, pin_resolution
+from runner import Runner, git, usage_totals, write_json
+import tempfile
 from test_supervisor import Harness
 import trajectory
 
@@ -260,7 +262,8 @@ class DisabledTests(BoundedSessionTests):
 
     def test_default_off_resumes_and_asks_for_no_handoff(self):
         runner = self.run_issue()
-        self.assertEqual(runner.config["context_controls"], {"bounded_sessions": False, "low_risk_review": False})
+        self.assertEqual(runner.config["context_controls"], {"bounded_sessions": False, "low_risk_review": False,
+                                                      "compact_token_limit": None})
         self.assertEqual(self.phases(), [("implement", None), ("repair", "DEV-1-implement-1"), ("review", None)])
         self.assertNotIn("handoff.json", self.prompts[0])
 
@@ -373,7 +376,8 @@ class ContextControlsConfigTests(Harness):
     def test_controls_are_validated_and_fingerprinted(self):
         from config import ConfigError, config_fingerprint, load_config
         base = load_config(self.batch, self.home)
-        self.assertEqual(base["context_controls"], {"bounded_sessions": False, "low_risk_review": False})
+        self.assertEqual(base["context_controls"], {"bounded_sessions": False, "low_risk_review": False,
+                                                      "compact_token_limit": None})
         batch = json.loads(self.batch.read_text())
         self.batch.write_text(json.dumps(dict(batch, context_controls={"low_risk_review": True})))
         enabled = load_config(self.batch, self.home)
@@ -418,6 +422,102 @@ class TerminalTrajectoryTests(Harness):
         self.assertTrue((root / "terminal-report.json").is_file())
         self.assertEqual(json.loads((root / "terminal-delivery.json").read_text())["trajectory"],
                          {"error": "broken records"})
+
+
+class CompactionArgvTests(unittest.TestCase):
+    """The real subprocess argv with a fake Codex executable; no model is called."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        fake = self.root / "fake-codex"
+        fake.write_text(f"#!{sys.executable}\n" +
+                        "import json, pathlib, sys\n"
+                        "sys.stdin.read()\n"
+                        "pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({'argv': sys.argv[1:]}))\n"
+                        "print(json.dumps({'type':'thread.started','thread_id':'fixture-session'}),flush=True)\n"
+                        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'output_tokens':2}}),flush=True)\n")
+        fake.chmod(0o755)
+        self.repo = self.root / "repo"; self.repo.mkdir()
+        self.home, self.batch = make_home(self.root, self.repo,
+                                          site={"executables": {"codex": str(fake), "python": sys.executable}})
+
+    def runner(self, controls=None, registry=None):
+        if controls is not None:
+            batch = json.loads(self.batch.read_text())
+            self.batch.write_text(json.dumps(dict(batch, context_controls=controls)))
+        if registry is not None:
+            write_json(self.home / "registry" / "phases.json", registry)
+        config, _ = pin_resolution(load_config(self.batch, self.home), FakeLinear())
+        return Runner(config, FakeLinear())
+
+    def argv(self, runner, phase, **kwargs):
+        directory = self.root / f"{phase}-{len(list(self.root.iterdir()))}"
+        result, _, _ = runner.codex("test only", directory, phase=phase, model="astra", effort="high",
+                                    compact_limit=runner.compact_limit(phase), **kwargs)
+        meta = json.loads((directory / "session.json").read_text())
+        return result["argv"], meta["compact_token_limit"]
+
+    def test_limit_is_passed_on_fresh_and_resumed_calls_only_when_set(self):
+        runner = self.runner()
+        for kwargs in ({"writable": True}, {"writable": True, "resume": "s-1"}, {"writable": False}):
+            argv, recorded = self.argv(runner, "implement", **kwargs)
+            self.assertFalse([a for a in argv if "auto_compact" in a])
+            self.assertIsNone(recorded)
+        runner = self.runner({"compact_token_limit": 150000})
+        for kwargs in ({"writable": True}, {"writable": True, "resume": "s-1"}, {"writable": False}):
+            with self.subTest(**kwargs):
+                argv, recorded = self.argv(runner, "review", **kwargs)
+                index = argv.index("model_auto_compact_token_limit=150000")
+                self.assertEqual(argv[index - 1], "-c")
+                if kwargs.get("resume"):
+                    self.assertGreater(index, argv.index("resume"))
+                self.assertEqual(recorded, 150000)
+
+    def test_registry_phase_value_and_batch_override(self):
+        registry = copy.deepcopy(TEST_REGISTRY["phases"])
+        registry["phases"]["implement"]["compact_token_limit"] = 120000
+        runner = self.runner(registry=registry)
+        self.assertEqual((runner.compact_limit("implement"), runner.compact_limit("review")), (120000, None))
+        self.assertIn("model_auto_compact_token_limit=120000", self.argv(runner, "implement", writable=True)[0])
+        runner = self.runner({"compact_token_limit": 90000})
+        self.assertEqual((runner.compact_limit("implement"), runner.compact_limit("review")), (90000, 90000))
+
+    def test_schema_rejects_a_tiny_or_non_integer_limit(self):
+        from config import ConfigError
+        for bad in (10, "150000"):
+            with self.assertRaises(ConfigError):
+                self.runner({"compact_token_limit": bad})
+
+
+class CompactionRecordTests(Harness):
+    BATCH = {"context_controls": {"compact_token_limit": 150000}}
+
+    def test_limit_reaches_codex_and_the_session_and_measurement_records(self):
+        seen = []
+        original = self.codex
+        def codex(prompt, directory, **kwargs):
+            seen.append(kwargs.get("compact_limit"))
+            value = original(prompt, directory, **kwargs)
+            meta_path = Path(directory) / "session.json"
+            meta = json.loads(meta_path.read_text())
+            write_json(meta_path, dict(meta, started_at="2026-01-01T00:00:00+00:00",
+                                       finished_at="2026-01-01T00:01:00+00:00", wall_seconds=60.0))
+            return value
+        runner = self.make_runner()
+        runner.codex = codex
+        runner.execute(limit=1)
+        self.assertEqual(seen, [150000, 150000])
+        run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())
+        self.assertEqual({json.loads(p.read_text())["compact_token_limit"] for p in run.glob("*/session.json")},
+                         {150000})
+        report = measure.measure([run])
+        self.assertEqual([r["compact_token_limit"] for r in report["issues"]["DEV-1"]["invocations"]],
+                         [150000, 150000])
+        table = measure.render_markdown(report)
+        header = next(line for line in table.splitlines() if line.startswith("| Issue | Attempt"))
+        self.assertEqual(header.count("|"), table.splitlines()[table.splitlines().index(header) + 1].count("|"))
+        self.assertIn("| 150,000 |", table)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,10 @@
         },
         "timeout_seconds": {
           "$ref": "#/$defs/positive"
+        },
+        "compact_token_limit": {
+          "description": "Optional: passed to Codex as -c model_auto_compact_token_limit=<N> for this phase (unset by default).",
+          "$ref": "#/$defs/positive"
         }
       }
     }

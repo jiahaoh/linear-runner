@@ -108,6 +108,7 @@ def read_invocation(path):
         "prompt_bytes": meta.get("prompt_bytes"),
         "tool_output_bytes": meta.get("tool_output_bytes"),
         "handoff": meta.get("handoff"),
+        "compact_token_limit": meta.get("compact_token_limit"),
         "counter": counter_of(meta),
         "source": str(path), "sha256": sha256(path), "copies": [],
     }

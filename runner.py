@@ -314,8 +314,12 @@ class Runner:
 
     # --- Codex and check subprocesses -------------------------------------------
 
-    def codex(self, prompt, directory, *, phase, model, effort, writable=False, resume=None, schema=None, watch=None):
+    def codex(self, prompt, directory, *, phase, model, effort, writable=False, resume=None, schema=None, watch=None,
+              compact_limit=None):
         """Run one ``codex exec`` turn; the result must match ``schema`` (default RESULT_SCHEMA).
+
+        ``compact_limit`` (tokens) is passed as ``-c model_auto_compact_token_limit=<N>`` on
+        fresh and resumed calls; ``None`` leaves the Codex default.
 
         ``watch`` is called about every ``attention.outbox.poll_seconds`` while the process
         runs (the outbox poll); its errors are logged, never fatal to the session.
@@ -338,12 +342,15 @@ class Runner:
             command += ["-C", str(self.repo)]
         # Resume has its own --model option; pass selections after the subcommand.
         command += ["--model", model, "-c", "model_reasoning_effort=" + json.dumps(effort)]
+        if compact_limit is not None:
+            command += ["-c", f"model_auto_compact_token_limit={int(compact_limit)}"]
         # The controller owns every Linear read and write.
         command += ["-c", "mcp_servers.linear.enabled=false", "--json", "-o", str(result_path)]
         schema_path = directory / "schema.json"
         write_json(schema_path, schema if schema is not None else RESULT_SCHEMA)
         command += ["--output-schema", str(schema_path), "-"]
         meta = {"phase": phase, "requested_model": model, "requested_reasoning_effort": effort,
+                "compact_token_limit": compact_limit,
                 "started_at": now(), "command": command, "cwd": str(self.repo), "session_id": resume,
                 "environment_overrides": self.config["check_environment"],
                 "host": os.uname().nodename, "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
@@ -783,7 +790,7 @@ class Runner:
         try:
             result, events, session = self.codex(prompt, attempt, phase=phase, model=selection["model"],
                                                  effort=selection["effort"], writable=writable, resume=resume,
-                                                 schema=result_schema,
+                                                 schema=result_schema, compact_limit=self.compact_limit(phase),
                                                  watch=lambda: self.poll_outbox(active, phase, attempt))
         finally:
             try:  # progress drafts written before a failed or timed-out session are still posted
@@ -794,6 +801,7 @@ class Runner:
                 meta = read_json(attempt / "session.json")
                 meta["selection"] = selection
                 meta["prompt_bytes"] = len(prompt.encode())
+                meta["compact_token_limit"] = self.compact_limit(phase)
                 if session_meta:
                     meta["handoff"] = session_meta
                 captured = locals().get("events")
@@ -879,6 +887,11 @@ class Runner:
                 "diff": {"files": files, "lines": lines}, "rule": rule}
 
     # --- Bounded worker sessions (batch opt-in; thresholds in registry phases.bounded_sessions)
+
+    def compact_limit(self, phase):
+        """Codex auto-compaction threshold: the batch override, else the registry phase value, else None."""
+        override = (self.config.get("context_controls") or {}).get("compact_token_limit")
+        return override if override is not None else self.policy["phases"]["phases"][phase].get("compact_token_limit")
 
     def bounded_policy(self):
         policy = self.policy["phases"].get("bounded_sessions")

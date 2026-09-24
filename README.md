@@ -271,12 +271,20 @@ invocations. These controls keep the context small. Bounded sessions and the low
 are off unless a batch opts in:
 
 ```json
-"context_controls": {"bounded_sessions": false, "low_risk_review": false}
+"context_controls": {"bounded_sessions": false, "low_risk_review": false, "compact_token_limit": null}
 ```
 
-Both default to `false`, are schema-validated, and are part of the pinned, fingerprinted batch
+The two switches default to `false` and `compact_token_limit` to `null`; all are schema-validated and and are part of the pinned, fingerprinted batch
 configuration (turning one on for a running batch refuses a resume like any other change).
 The thresholds and the rule itself stay in the registry.
+
+**Codex auto-compaction threshold (optional).** A registry phase may set `compact_token_limit`
+(unset for every phase by default), and a batch may set `context_controls.compact_token_limit`
+(an integer of at least 1,000, or `null`) for all phases; the batch value wins. When a value is
+set, every fresh and resumed call gets `-c model_auto_compact_token_limit=<N>`, a config key of
+Codex CLI 0.154.0 (it is type-checked as an integer; the CLI silently ignores unknown keys, so
+re-check it after a CLI upgrade). Each `session.json` records `compact_token_limit` (`null` when
+unset), and `measure` and `report` show it per invocation.
 
 **Compact intake and shared contract.** A project may name a `contract_file`: one versioned
 file with the rules every issue follows. Its SHA-256 is part of the pinned configuration,

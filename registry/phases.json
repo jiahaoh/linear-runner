@@ -5,7 +5,8 @@
     "implement 15M/150k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement.",
     "review 5M/40k/120 matches the last working batch-3 budget; 1800 s is about three times the slowest observed review.",
     "max_repairs 2 is the engine's upper bound, shared across resumes and profiles; each check may run 1800 s.",
-    "bounded_sessions holds the thresholds; a batch turns the behavior on with context_controls.bounded_sessions (off by default). A worker session whose cumulative input reached 5M tokens, or the first repair after implement, continues in a fresh session seeded with a handoff file (at most 12,000 bytes) instead of resuming the long one. 5M is where batch-3 implement sessions (the W-170 resume, W-171, W-172) approached the model context window."
+    "bounded_sessions holds the thresholds; a batch turns the behavior on with context_controls.bounded_sessions (off by default). A worker session whose cumulative input reached 5M tokens, or the first repair after implement, continues in a fresh session seeded with a handoff file (at most 12,000 bytes) instead of resuming the long one. 5M is where batch-3 implement sessions (the W-170 resume, W-171, W-172) approached the model context window.",
+    "compact_token_limit is unset for every phase. A phase may set it, and a batch may set context_controls.compact_token_limit for all phases; the runner then passes -c model_auto_compact_token_limit=<N> (a Codex CLI 0.154.0 config key) on fresh and resumed calls."
   ],
   "phases": {
     "implement": {

@@ -202,6 +202,7 @@ def measure(roots, *, issues=None, rollouts=None, compact=None):
         row = {"attempt": item["attempt"], "phase": item["phase"], "session_id": item["session_id"],
                "start": item["start"], "finished": bool(item["end"]), "prompt_bytes": item["prompt_bytes"],
                "tool_output_bytes": item["tool_output_bytes"],
+               "compact_token_limit": item.get("compact_token_limit"),
                "session_input_after": counter.get("input_tokens"),
                "input_added": (counter["input_tokens"] - (prior or 0)) if "input_tokens" in counter else None,
                "output_added": (counter["output_tokens"] - (previous.get(("out", item["session_id"])) or 0))
@@ -266,10 +267,11 @@ def render_markdown(report):
                      replay["total"] if replay else "n/a"]
             lines.append("| " + " | ".join(f"{v:,}" if isinstance(v, int) else str(v) for v in cells) + " |")
     lines += ["", "## Invocations", "",
-              "| Issue | Attempt | Phase | Prompt bytes | Tool output bytes | Session input after | Input added | Calls "
+              "| Issue | Attempt | Phase | Compact limit | Prompt bytes | Tool output bytes | Session input after "
+              "| Input added | Calls "
               "| First ctx | Last ctx | Prefix | Growth: intake/context reads | Growth: tests/checks "
               "| Growth: file reads/search | Growth: other commands | Growth: no-tool turns | Compaction |",
-              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
 
     def fmt(value):
         return "unknown" if value is None else f"{value:,}" if isinstance(value, int) else str(value)
@@ -277,7 +279,9 @@ def render_markdown(report):
         for row in issue["invocations"]:
             r = row.get("rollout") or {}
             growth = r.get("growth") or {}
-            lines.append("| " + " | ".join([name, row["attempt"], row["phase"], fmt(row["prompt_bytes"]),
+            lines.append("| " + " | ".join([name, row["attempt"], row["phase"],
+                                             fmt(row.get("compact_token_limit")) if row.get("compact_token_limit")
+                                             else "default", fmt(row["prompt_bytes"]),
                                              fmt(row["tool_output_bytes"]), fmt(row["session_input_after"]),
                                              fmt(row["input_added"]), fmt(r.get("calls")), fmt(r.get("first_context")),
                                              fmt(r.get("last_context")), fmt(r.get("prefix")),
