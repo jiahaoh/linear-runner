@@ -72,7 +72,13 @@ class ClaudeEngineTests(unittest.TestCase):
             self.assertEqual(meta["selection"]["model_source"], "pool default")
             self.assertEqual(meta["selection"]["pool"], meta["selection"]["pool"].split("/")[0] + "/Standard/" + meta["phase"])
             self.assertEqual(meta["backend_details"]["auth"], {"loggedIn": True, "authMethod": "claude.ai"})
-        self.assertIn("(claude-opus-5-5 on Claude, medium effort)", self.linear.last("DEV-1", "claim"))
+        # Each stage comment names the model, effort and backend that ran it.
+        opus = "claude-opus-5-5 (medium effort, Claude)"
+        self.assertIn(f"Implementation runs with {opus}. Repairs, if needed, use the same model. "
+                      f"The review runs with {opus}.", self.linear.last("DEV-1", "claim"))
+        self.assertIn(f"Implemented with {opus}.", self.linear.last("DEV-1", "ready"))
+        self.assertIn(f"Reviewed with {opus}.", self.linear.last("DEV-1", "review"))
+        self.assertIn(f"It was implemented with {opus} and reviewed with {opus}.", self.linear.last("DEV-1", "done"))
 
     def test_repairs_resume_the_session_then_the_limit_and_one_escalation_hold(self):
         runner = self.runner([{"write": {"result.txt": "ready"}}, {"write": {"result.txt": "still"}},
@@ -89,6 +95,21 @@ class ClaudeEngineTests(unittest.TestCase):
                          [("claude-opus-5-5", "medium"), ("claude-opus-5-5", "medium"), ("claude-opus-5-5", "high")])
         active = runner.state["active"]
         self.assertEqual((active["repairs"], active["escalation"], active["session_backend"]), (2, "Deep", "claude"))
+        validations = [b for b, k in zip(self.linear.bodies("DEV-1"), self.linear.kinds("DEV-1")) if k == "validation"]
+        self.assertIn("Repair 1 runs with claude-opus-5-5 (medium effort, Claude).", validations[0])
+        self.assertIn("Repair 2 runs with claude-opus-5-5 (high effort, Claude), escalated to the Deep profile.",
+                      validations[1])
+        self.assertEqual([(s["phase"], s["effort"]) for s in active["stages"]],
+                         [("implement", "medium"), ("repair", "medium"), ("repair", "high")])
+        self.assertIn("The repair phase ran with claude-opus-5-5 (high effort, Claude).", runner.blocked_body(
+            {"issue": "DEV-1", "class": "technical-block", "event": "checks_failed", "error": "limit", "step": "repair"}))
+        # A recovery comment names the model the next phase would run with.
+        from linear_runner.linear import messages
+        planned = runner.planned_selection(active, "repair")
+        self.assertEqual((planned["profile"], planned["effort"]), ("Deep", "high"))
+        body = messages.recovery(runner.ctx, record={"kind": "resume", "authorized_by": "Owner", "reason": "retry",
+                                                     "details": {"issue": "DEV-1"}}, step="repair", stage=planned)
+        self.assertIn("The repair phase runs with claude-opus-5-5 (high effort, Claude).", body)
         with self.assertRaisesRegex(RuntimeError, "repair limit|Repeated"):
             runner.execute(limit=1, resume=True)
         self.assertEqual(len(self.calls()), 3)

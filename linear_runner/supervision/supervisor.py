@@ -125,8 +125,12 @@ class Supervisor:
         note = None
         if details.get("note") and Path(details["note"]["path"]).is_file():
             note = Path(details["note"]["path"]).read_text()
+        # The model phase the recovery runs next, when there is one (revalidate and publish run none first).
+        phase = "review" if record["kind"] == "review" else (active or {}).get("step") \
+            if record["kind"] in ("resume", "budget") else None
+        stage = self.r.planned_selection(active, phase) if active and phase in ("implement", "repair", "review") else None
         body = messages.recovery(self.r.ctx, record=record, step=(active or {}).get("step"), note=note,
-                                 evidence_paths=[self.root / "recovery-log.jsonl"])
+                                 evidence_paths=[self.root / "recovery-log.jsonl"], stage=stage)
         self.r.emit(issue or self.config["terminal_issue"], "recovery", body, dedupe=record["id"])
 
     def consume(self, pending):

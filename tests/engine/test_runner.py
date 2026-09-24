@@ -67,6 +67,11 @@ class EngineTests(unittest.TestCase):
         self.assertTrue((self.runner.root / "terminal-report.json").is_file())
         manifest = json.loads((Path(self.runner.state["history"][0]["run_dir"]) / "manifest.json").read_text())
         self.assertEqual(manifest["issue_url"], "https://linear.app/test/issue/DEV-1")
+        # Stage comments name what ran: the fixture's Standard pools are astra medium on Codex.
+        self.assertIn("Implementation runs with astra (medium effort, Codex).", self.linear.last("DEV-1", "claim"))
+        self.assertIn("Repairs, if needed, run with luna (max effort, Codex).", self.linear.last("DEV-1", "claim"))
+        self.assertIn("It was implemented with astra (medium effort, Codex) and reviewed with astra (medium effort, "
+                      "Codex).", self.linear.last("DEV-1", "done"))
         self.assertNotIn("_sources", manifest["config"])
 
     def test_worker_commit_is_rejected_before_controller_commit(self):

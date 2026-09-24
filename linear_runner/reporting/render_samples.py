@@ -1,6 +1,6 @@
 """Render one sample Linear comment per human-review template into docs/template-samples.md.
 
-The samples use fictional fixture data (issues TEAM-10 to TEAM-14, placeholder paths) and
+The samples use fictional fixture data (issues TEAM-10 to TEAM-15, placeholder paths) and
 the same builders the runner uses, so each sample is exactly the body Linear would get.
 
     python3 render_samples.py            # rewrite docs/template-samples.md
@@ -104,7 +104,16 @@ The error bars use 200 bootstrap samples; that is fine for QC but not for public
 def samples():
     """(title, template file, author, when posted, issue, kind, body)."""
     attempt = RUN + "/implement-20260923T101500Z-5e6f7a8b"
-    selection = {"profile": "Standard", "model": "model-a", "effort": "medium"}
+    def stage(phase, model, effort, backend="codex", profile="Standard", source="pool default"):
+        return {"phase": phase, "profile": profile, "model": model, "effort": effort, "backend": backend,
+                "model_source": source}
+    luna = {p: stage(p, "gpt-6-luna", "max") for p in ("implement", "repair")}
+    astra = stage("review", "gpt-6-astra", "medium")
+    plan = {"implement": luna["implement"], "repair": luna["repair"], "review": astra}
+    label = "issue label model:claude-opus-5-5"
+    opus = {p: stage(p, "claude-opus-5-5", "medium", "claude", source=label) for p in ("implement", "repair")}
+    claude_plan = {"implement": opus["implement"], "repair": opus["repair"], "review": astra}
+    team15 = "/absolute/path/to/runs/TEAM-15/20260924T091500Z-3c4d5e6f"
     records = [{"name": "regression", "exit_code": 1}, {"name": "docs", "exit_code": 0, "reused": True},
                {"name": "pytest-extended", "exit_code": 5, "status": "empty", "allow_empty": True}]
     recovery = {"id": "R-20260923T120000Z-9c8d7e6f", "kind": "resume", "authorized_by": "Owner", "then": "continue",
@@ -118,33 +127,42 @@ def samples():
     status = f"{STATE}/supervisor.json"
     items = [
         ("Claim", "claim.md", "runner", "when work on an issue starts", "TEAM-12", "claim",
-         messages.claim(CTX, issue="TEAM-12", selection=selection, check_count=2, criteria_count=3, run_dir=RUN)),
-        ("Progress", "draft-progress.md", "worker", "as soon as the runner sees the draft, while Codex still runs",
-         "TEAM-12", "progress", messages.draft_post(PROGRESS_DRAFT, "worker", "implement")),
+         messages.claim(CTX, issue="TEAM-12", plan=plan, check_count=2, criteria_count=3, run_dir=RUN)),
+        ("Claim, Claude worker named by a label", "claim.md", "runner",
+         "when work starts on an issue labelled model:claude-opus-5-5", "TEAM-15", "claim",
+         messages.claim(CTX, issue="TEAM-15", plan=claude_plan, check_count=2, criteria_count=2, run_dir=team15)),
+        ("Progress", "draft-progress.md", "worker", "as soon as the runner sees the draft, while the model still runs",
+         "TEAM-12", "progress", messages.draft_post(PROGRESS_DRAFT, "worker", "implement", luna["implement"])),
         ("Ready for validation", "draft-ready.md", "worker", "when the session ends with status ready",
-         "TEAM-12", "ready", messages.draft_post(READY_DRAFT, "worker", "implement")),
+         "TEAM-12", "ready", messages.draft_post(READY_DRAFT, "worker", "implement", luna["implement"])),
         ("Ready for validation, runner fallback", "ready.md", "runner",
          "instead of the worker's note when it is missing or fails the lint", "TEAM-12", "ready",
          messages.ready(CTX, issue="TEAM-12", result=READY_RESULT, attempt=attempt,
                         draft_problem="the first paragraph must be exactly one sentence ending with '.', '!' or '?'",
-                        deliverables=DELIVERABLES[:2])),
+                        deliverables=DELIVERABLES[:2], stage=luna["implement"])),
         ("Validation result", "validation.md", "runner", "after each validation run (passed, or failed with a repair next)",
          "TEAM-12", "validation", messages.validation(CTX, issue="TEAM-12", records=records, passed=False, repair=1,
-                                                      directory=RUN + "/validation-20260923T103000Z-0a1b2c3d")),
+                                                      directory=RUN + "/validation-20260923T103000Z-0a1b2c3d",
+                                                      repair_stage=luna["repair"])),
         ("Review result", "draft-review.md", "reviewer", "when the independent review accepts the work",
-         "TEAM-12", "review", messages.draft_post(REVIEW_DRAFT, "reviewer", "review")),
+         "TEAM-12", "review", messages.draft_post(REVIEW_DRAFT, "reviewer", "review", astra)),
         ("Review result, runner fallback", "review.md", "runner",
          "instead of the reviewer's note when it fails the lint", "TEAM-12", "review",
          messages.review(CTX, issue="TEAM-12", result=REVIEW_RESULT, attempt=RUN + "/review-20260923T110000Z-4d5e6f7a",
-                         draft_problem="missing required section(s): Assessment")),
+                         draft_problem="missing required section(s): Assessment", stage=astra)),
         ("Done, with deliverables to review", "done.md", "runner", "after Done is published and read back",
          "TEAM-12", "done", messages.done(CTX, issue="TEAM-12", commit="4c44464d4ce9a0b1", criteria_count=3, repairs=1,
-                                          run_dir=RUN, deliverables=DELIVERABLES)),
+                                          run_dir=RUN, deliverables=DELIVERABLES,
+                                          stages=[luna["implement"], luna["repair"], astra])),
+        ("Done, Claude-backed implementation", "done.md", "runner",
+         "after Done is published, for an issue a Claude worker implemented", "TEAM-15", "done",
+         messages.done(CTX, issue="TEAM-15", commit="7e6d5c4b3a291807", criteria_count=2, repairs=0, run_dir=team15,
+                       stages=[opus["implement"], astra])),
         ("Blocked or stopped, with the worker's blocked note", "blocked.md + draft-blocked.md", "runner (quotes the worker)",
          "when the batch pauses; the issue also gets the Needs input label", "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="worker_blocked",
                           error="Worker reported blocked", step="implement", phase="implement", result=BLOCKED_RESULT,
-                          draft=BLOCKED_DRAFT, evidence_paths=[RUN, attempt])),
+                          draft=BLOCKED_DRAFT, evidence_paths=[RUN, attempt], stage=luna["implement"])),
         ("Blocked or stopped, review not accepted", "blocked.md", "runner (quotes the reviewer)",
          "when the batch pauses on a rejected review", "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="review_blocked",
@@ -154,7 +172,8 @@ def samples():
                               "requires."), acceptance=[
                               {"criterion": CRITERIA[0], "satisfied": False,
                                "evidence": "qc_report.html shows counts without error bars"},
-                              *[dict(e, satisfied=True) for e in BLOCKED_RESULT["acceptance"][1:]]]), evidence_paths=[RUN, RUN + "/review-20260923T110000Z-4d5e6f7a"])),
+                              *[dict(e, satisfied=True) for e in BLOCKED_RESULT["acceptance"][1:]]]), evidence_paths=[RUN, RUN + "/review-20260923T110000Z-4d5e6f7a"],
+                          stage=astra)),
         ("Blocked or stopped, environment", "blocked.md", "runner", "when a host or service problem pauses the batch",
          "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="environment", error=(
@@ -165,7 +184,8 @@ def samples():
          messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="worker_blocked",
                           error=("Repair did not report ready: the only failing check is pytest-extended, which "
                                  "selected no tests"), step="repair", phase="repair", repairs=1,
-                          result=REPAIR_BLOCKED_RESULT, evidence_paths=[RUN, RUN + "/repair-20260923T104000Z-6a7b8c9d"])),
+                          result=REPAIR_BLOCKED_RESULT, evidence_paths=[RUN, RUN + "/repair-20260923T104000Z-6a7b8c9d"],
+                          stage=luna["repair"])),
         ("Issue deferred", "deferred.md", "runner", "when a decision rule or on_block policy sets an issue aside",
          "TEAM-13", "deferred",
          messages.deferred(CTX, issue="TEAM-13", cause={"rule": "rule-0a1b2c3d4e5f",
@@ -175,7 +195,7 @@ def samples():
         ("Recovery recorded", "recovery.md", "runner", "when a launch carries out a recorded recovery", "TEAM-12",
          "recovery", messages.recovery(CTX, record=recovery, step="implement",
                                        note="The calibration table is data/calibration.csv; read it, do not recreate it.",
-                                       evidence_paths=[f"{STATE}/recovery-log.jsonl"])),
+                                       evidence_paths=[f"{STATE}/recovery-log.jsonl"], stage=luna["implement"])),
         ("Recovery recorded, revalidate", "recovery.md", "runner", "when a launch carries out a revalidate recovery",
          "TEAM-12", "recovery",
          messages.recovery(CTX, record={"id": "R-20260923T121500Z-1d2e3f4a", "kind": "revalidate",
@@ -223,8 +243,8 @@ def render_document():
     lines = ["# Linear comment samples", "",
              "Generated by `python3 render_samples.py` from fictional fixture data; do not edit by hand. Each "
              "sample below is exactly the comment body Linear would receive for that template, including the one "
-             "hidden marker line at the end (an HTML comment Linear does not display). Paths, issue IDs, the "
-             "owner handle and model names are placeholders. Template wording lives in `templates/`.", "",
+             "hidden marker line at the end (an HTML comment Linear does not display). Paths, issue IDs and the "
+             "owner handle are placeholders; model names are the registry's. Template wording lives in `templates/`.", "",
              "| # | Sample | Template | Author | Posted |", "| --- | --- | --- | --- | --- |"]
     items = samples()
     for index, (title, template, author, when, _) in enumerate(items, start=1):

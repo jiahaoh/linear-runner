@@ -82,22 +82,75 @@ def short_cause(text, limit=140):
     return value if len(value) <= limit else value[:limit].rsplit(" ", 1)[0] + " …"
 
 
-def draft_post(text, who, phase):
+def model_text(stage, *, source=False):
+    """``gpt-6-luna (max effort, Codex)``; with ``source``, how a named entry was chosen."""
+    if not stage or not stage.get("model"):
+        return ""
+    from linear_runner.backends import BACKENDS
+    backend = BACKENDS.get(stage.get("backend") or "codex")
+    text = f"{stage['model']} ({stage.get('effort')} effort, {backend.label if backend else stage.get('backend')})"
+    origin = stage.get("model_source") or ""
+    if source and origin.startswith("issue label "):
+        text += f", named by the issue label {origin[len('issue label '):].split(',')[0]}"
+    elif source and origin.startswith("batch model_overrides"):
+        text += ", named by the batch"
+    return text
+
+
+def stage_sentence(verb, stage, suffix=""):
+    """``Implemented with gpt-6-luna (max effort, Codex).`` or "" without a recorded stage."""
+    text = model_text(stage)
+    return f"{verb} with {text}{suffix}." if text else ""
+
+
+def planned_models(plan):
+    """The claim's model plan: implementation, repairs if needed, and the review."""
+    plan = plan or {}
+    parts = []
+    for phase, words in (("implement", "Implementation runs"), ("repair", "Repairs, if needed, run"),
+                         ("review", "The review runs")):
+        text = model_text(plan.get(phase), source=True)
+        if phase == "repair" and text and text == model_text(plan.get("implement"), source=True):
+            parts.append("Repairs, if needed, use the same model.")
+        elif text:
+            parts.append(f"{words} with {text}.")
+    return " ".join(parts)
+
+
+def stages_summary(stages):
+    """The Done line: implemented, repaired (each distinct model in order) and reviewed with."""
+    stages = list(stages or [])
+    def last(phase):
+        return next((s for s in reversed(stages) if s.get("phase") == phase), None)
+    parts = []
+    if last("implement"):
+        parts.append(f"implemented with {model_text(last('implement'))}")
+    repairs = [s for s in stages if s.get("phase") == "repair"]
+    distinct = list(dict.fromkeys(model_text(s) for s in repairs))
+    if distinct:
+        parts.append("repaired with " + " then ".join(distinct))
+    if last("review"):
+        parts.append(f"reviewed with {model_text(last('review'))}")
+    return ("It was " + listing(parts) + ".") if parts else ""
+
+
+def draft_post(text, who, phase, stage=None):
     """A linted model draft as posted: unchanged, with a one-line attribution."""
-    return text.strip() + f"\n\n_Written by the {who} ({phase} phase); posted by the runner._"
+    model = model_text(stage)
+    return text.strip() + (f"\n\n_Written by the {who} in the {phase} phase with {model}; posted by the runner._"
+                           if model else f"\n\n_Written by the {who} ({phase} phase); posted by the runner._")
 
 
 # --- Runner-authored events -------------------------------------------------------------
 
-def claim(ctx, *, issue, selection, check_count, criteria_count, run_dir):
-    from linear_runner.backends import backend_class
-    return render("claim", {"issue": issue, "profile": selection["profile"], "model": selection["model"],
-                            "backend": backend_class(selection.get("backend") or "codex").label,
-                            "effort": selection["effort"], "check_count": plural(check_count, "configured check"),
+def claim(ctx, *, issue, plan, check_count, criteria_count, run_dir):
+    """``plan`` is {phase: selection} for implement, repair and review (as selected now)."""
+    return render("claim", {"issue": issue, "profile": plan["implement"]["profile"], "models": planned_models(plan),
+                            "check_count": plural(check_count, "configured check"),
                             "criteria_count": criteria_phrase(criteria_count), "evidence": evidence(run_dir)})
 
 
-def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), missing=()):
+def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), missing=(), stage=None):
     entries = result.get("acceptance", [])
     met = sum(e.get("satisfied") is True for e in entries if isinstance(e, dict))
     noun = "criterion" if len(entries) == 1 else "criteria"
@@ -107,13 +160,15 @@ def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), m
     limits = [plain(item, 200) for item in result.get("limitations", []) if str(item).strip()]
     if missing:
         criteria += f" Listed deliverables that were not found: {listing(missing)}."
-    return render("ready", {"issue": issue, "summary": quote(result.get("summary")), "criteria": criteria,
+    verb = "Repaired" if (stage or {}).get("phase") == "repair" else "Implemented"
+    return render("ready", {"issue": issue, "model": stage_sentence(verb, stage),
+                            "summary": quote(result.get("summary")), "criteria": criteria,
                             "deliverables": deliverable_lines(deliverables),
                             "limitations": " ".join(l if l.endswith(".") else l + "." for l in limits),
                             "evidence": evidence(attempt)})
 
 
-def validation(ctx, *, issue, records, passed, repair=None, directory=None):
+def validation(ctx, *, issue, records, passed, repair=None, directory=None, repair_stage=None, escalated=False):
     from linear_runner.engine.delivery import check_passed
     failing = [r for r in records if not check_passed(r)]
     empty = [r for r in records if r.get("status") == "empty" and check_passed(r)]
@@ -126,22 +181,28 @@ def validation(ctx, *, issue, records, passed, repair=None, directory=None):
         fields["failing"] = " ".join(f"{r.get('name', 'check')} exited with code {r.get('exit_code')}." for r in failing)
         fields["repair_note"] = ("The repair worker gets the failing check logs and may change only what those "
                                  "checks need.")
+        if model_text(repair_stage):
+            fields["repair_note"] += (f" Repair {repair} runs with {model_text(repair_stage, source=True)}"
+                                      + (f", escalated to the {repair_stage.get('profile')} profile" if escalated else "")
+                                      + ".")
     return render("validation", fields, headline="passed" if passed else "repairing")
 
 
-def review(ctx, *, issue, result, attempt, draft_problem=None):
+def review(ctx, *, issue, result, attempt, draft_problem=None, stage=None):
     count = len(result.get("acceptance", []))
     summary = quote(result.get("summary"))
     if draft_problem:
         summary += f"\n\nThe reviewer's note did not follow its template ({draft_problem}), so it is quoted here."
     return render("review", {"issue": issue, "criteria": criteria_phrase(count), "summary": summary,
+                             "model": stage_sentence("Reviewed", stage),
                              "evidence": evidence(attempt)}, headline="accepted")
 
 
-def done(ctx, *, issue, commit, criteria_count, repairs, run_dir, deliverables=()):
+def done(ctx, *, issue, commit, criteria_count, repairs, run_dir, deliverables=(), stages=()):
     note = "" if not repairs else f"It needed {plural(repairs, 'repair')} before the checks passed."
     return render("done", {"issue": issue, "criteria": criteria_phrase(criteria_count), "commit": commit[:12],
                            "branch": ctx["branch"], "repairs": note, "deliverables": deliverable_lines(deliverables),
+                           "models": stages_summary(stages),
                            "evidence": evidence(run_dir, f"{run_dir}/final-result.json")},
                   headline="deliverables" if deliverables else "default")
 
@@ -210,7 +271,7 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
 
 
 def blocked(ctx, *, issue, classification, event=None, error="", step=None, phase=None, result=None, who="worker",
-            draft=None, draft_problem=None, draft_path=None, evidence_paths=(), repairs=None):
+            draft=None, draft_problem=None, draft_path=None, evidence_paths=(), repairs=None, stage=None):
     subject = issue or f"Batch {ctx['batch']}"
     values = {"subject": subject, "phase": phase or step or "model", "step": step or "current",
               "error": short_cause(error, 300)}
@@ -219,6 +280,8 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
     happened = variant("blocked", "happened", event if known else "other", values)
     if event in ("review_blocked", "checks_failed", "delivery_failed"):
         happened += f" The runner reported: {short_cause(error, 300)}."
+    if model_text(stage):
+        happened += f" The {stage.get('phase')} phase ran with {model_text(stage)}."
     needed = variant("blocked", "needed", "repair_blocked" if event == "worker_blocked" and step == "repair"
                      else event if known else classification, values)
     words = own_words(who=who, result=result, draft=draft, draft_problem=draft_problem, draft_path=draft_path) \
@@ -247,7 +310,7 @@ def deferred(ctx, *, issue, cause, block, result=None, who="worker", draft=None,
 RECOVERY_KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer")
 
 
-def recovery(ctx, *, record, step=None, note=None, evidence_paths=()):
+def recovery(ctx, *, record, step=None, note=None, evidence_paths=(), stage=None):
     details = record.get("details", {})
     subject = details.get("issue") or f"batch {ctx['batch']}"
     values = {"subject": subject, "step": step or details.get("step") or "saved", "phase": details.get("phase", "")}
@@ -257,6 +320,8 @@ def recovery(ctx, *, record, step=None, note=None, evidence_paths=()):
         action += " Delivery is re-run first; the previous packet is kept."
     if kind == "resume" and details.get("repair_retry"):
         action += " The worker gets one more repair of the failing checks, with the owner's note."
+    if model_text(stage):
+        action += f" The {stage.get('phase')} phase runs with {model_text(stage, source=True)}."
     return render("recovery", {"kind": record["kind"], "subject": subject, "authorized_by": record["authorized_by"],
                                "action": action, "reason": plain(record["reason"], 300).rstrip(".") + ".",
                                "then": variant("recovery", "then", record.get("then") or "continue"),

@@ -460,6 +460,14 @@ fenced `bash` block, after one plain sentence saying what it does. Commands star
 `attention.command_prefix` and use `--batch <id>`. `python3 render_samples.py` writes one
 sample of each to [`docs/template-samples.md`](docs/template-samples.md).
 
+**Models in comments.** Every comment about a model stage says which model, effort and
+backend ran it (for example "Implemented with gpt-6-luna (max effort, Codex)"): the claim
+lists the planned implementation, repair and review models (and names the label or batch
+entry that chose a non-default one), worker and reviewer notes carry it in their attribution
+line, the runner's ready and review fallbacks, the repair announcement in a failed
+validation (including an escalation), the Done summary, blocked comments for a model phase,
+and recoveries that start a model phase. `session.json` keeps the full selection record.
+
 **Deliverables.** The worker's readiness result has a `deliverables` list: each file the
 owner should review (for example a rendered report) as `{path, description}`, or `[]`. A
 path must exist inside the worktree or the issue's run directory; others are dropped and

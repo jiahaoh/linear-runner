@@ -5,6 +5,9 @@ headline.accepted: The independent review accepted {criteria} for {issue}; the r
 ---
 {headline}
 
+**Model**
+{model}
+
 **Reviewer summary**
 {summary}
 

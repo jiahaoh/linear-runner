@@ -12,4 +12,7 @@ headline.deliverables: {issue} is Done: the independent review accepted {criteri
 **Delivered**
 Commit {commit} on branch {branch}, local only (not pushed or merged). {repairs}
 
+**Models**
+{models}
+
 Evidence: {evidence}

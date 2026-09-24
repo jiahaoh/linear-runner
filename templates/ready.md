@@ -5,6 +5,9 @@ headline.default: The worker reports {issue} ready for validation; no action is 
 ---
 {headline}
 
+**Model**
+{model}
+
 **Worker summary**
 {summary}
 

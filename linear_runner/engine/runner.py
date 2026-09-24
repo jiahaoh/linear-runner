@@ -680,7 +680,8 @@ class Runner:
             self.save()
             changed = True
             if record["status"] == "posting":
-                self.emit(active["issue_id"], kind, messages.draft_post(text, who, phase), dedupe=str(path))
+                self.emit(active["issue_id"], kind, messages.draft_post(text, who, phase, self.stage_of(active, attempt)),
+                          dedupe=str(path))
                 record["status"] = "posted"
                 self.save()
         if changed:
@@ -714,6 +715,28 @@ class Runner:
         if held and held["path"] in self.state.get("drafts", {}):
             self.state["drafts"][held["path"]]["status"] = status
             self.save()
+
+    @staticmethod
+    def stage_of(active, attempt=None, step=None):
+        """The recorded model stage of ``attempt`` (or the latest one of phase ``step``), else None."""
+        stages = (active or {}).get("stages") or []
+        if attempt is not None:
+            return next((s for s in reversed(stages) if s.get("attempt") == str(attempt)), None)
+        if step in PHASES:
+            return next((s for s in reversed(stages) if s.get("phase") == step), None)
+        return None
+
+    def planned_selection(self, active, phase):
+        """The selection the next ``phase`` of ``active`` would run with (as ``repair``/``model_phase``
+        would choose it now), for comments that announce it; None when it cannot be resolved."""
+        escalation = active.get("escalation")
+        if phase == "repair" and not escalation and active.get("repairs"):
+            escalation = self.policy["profiles"]["escalation_profile"]
+        light = (active.get("review_risk") or {}).get("profile") if phase == "review" else None
+        try:
+            return resolve_profile(self.config, active["issue"], phase, escalation, light)
+        except RuntimeError:
+            return None
 
     def check_deliverables(self, active, items):
         """Keep deliverables whose file exists inside the worktree or the issue's run directory."""
@@ -756,7 +779,8 @@ class Runner:
         drafts = active.get("drafts") or {}
         held = drafts.get("held", {}).get("ready")
         if held:
-            self.emit(active["issue_id"], "ready", messages.draft_post(held["text"], "worker", drafts["phase"]),
+            self.emit(active["issue_id"], "ready", messages.draft_post(held["text"], "worker", drafts["phase"],
+                                                                       self.stage_of(active, drafts.get("attempt"))),
                       dedupe=held["path"])
             self.mark_draft(active, "ready", "posted")
             return
@@ -764,20 +788,23 @@ class Runner:
         self.emit(active["issue_id"], "ready", messages.ready(self.ctx, issue=active["issue_id"], result=result,
                                                               attempt=drafts.get("attempt"), draft_problem=problem,
                                                               deliverables=active.get("deliverables", []),
-                                                              missing=active.get("deliverables_missing", [])),
+                                                              missing=active.get("deliverables_missing", []),
+                                                              stage=self.stage_of(active, drafts.get("attempt"))),
                   dedupe="ready:" + str(drafts.get("attempt")))
 
     def post_review(self, active, result):
         drafts = active.get("drafts") or {}
         held = drafts.get("held", {}).get("review")
         if held:
-            self.emit(active["issue_id"], "review", messages.draft_post(held["text"], "reviewer", "review"),
+            self.emit(active["issue_id"], "review", messages.draft_post(held["text"], "reviewer", "review",
+                                                                        self.stage_of(active, drafts.get("attempt"))),
                       dedupe=held["path"])
             self.mark_draft(active, "review", "posted")
             return
         problem = drafts.get("rejected", {}).get("review", {}).get("problem")
         self.emit(active["issue_id"], "review", messages.review(self.ctx, issue=active["issue_id"], result=result,
-                                                                attempt=drafts.get("attempt"), draft_problem=problem),
+                                                                attempt=drafts.get("attempt"), draft_problem=problem,
+                                                                stage=self.stage_of(active, drafts.get("attempt"))),
                   dedupe="review:" + str(drafts.get("attempt")))
 
     # --- Stops: classification, blocked comment, needs-input, notifier ---------------
@@ -806,7 +833,8 @@ class Runner:
                                 repairs=active.get("repairs"),
                                 who=who, draft=held["text"] if held else None, draft_problem=rejected.get("problem"),
                                 draft_path=rejected.get("path"),
-                                evidence_paths=[active.get("run_dir"), drafts.get("attempt"), self.root / "state.json"])
+                                evidence_paths=[active.get("run_dir"), drafts.get("attempt"), self.root / "state.json"],
+                                stage=self.stage_of(active, step=stop["step"]))
 
     def announce_stop(self, stop):
         """New blocked comment on the owning issue, needs-input mark, then the notifier."""
@@ -866,8 +894,12 @@ class Runner:
         selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"), light)
         self.verify_model(selection)
         active["selection"] = selection
-        self.save(active=active)
         attempt = Path(active["run_dir"]) / (phase + "-" + run_id())
+        # What ran at each stage, for the Linear comments (model, effort, backend and source).
+        active.setdefault("stages", []).append(
+            {k: selection[k] for k in ("phase", "profile", "backend", "model", "effort", "model_source")}
+            | {"attempt": str(attempt), "at": now()})
+        self.save(active=active)
         prompt += self.outbox_instructions(phase, attempt / "outbox")
         if writable:
             prompt += self.handoff_instructions(attempt)
@@ -1256,7 +1288,7 @@ class Runner:
         self.verify_live_state(live, active["step"])
         if active["step"] == "implement":
             self.emit(issue, "claim", messages.claim(
-                self.ctx, issue=issue, selection=resolve_profile(self.config, active["issue"], "implement", active.get("escalation")),
+                self.ctx, issue=issue, plan={phase: self.planned_selection(active, phase) for phase in PHASES},
                 check_count=len(self.config["checks"]), criteria_count=len(review_criteria(active["issue"])),
                 run_dir=active["run_dir"]), dedupe="claim:" + active["run_dir"])
             self.linear.call("save_issue", id=issue, state=self.config["states"]["in_progress"])
@@ -1366,7 +1398,8 @@ class Runner:
             self.emit(issue, "done", messages.done(self.ctx, issue=issue, commit=active["commit"],
                                                    criteria_count=len(active["accepted_result"]["acceptance"]),
                                                    repairs=active.get("repairs", 0), run_dir=active["run_dir"],
-                                                   deliverables=self.final_deliverables(active)),
+                                                   deliverables=self.final_deliverables(active),
+                                                   stages=active.get("stages")),
                       dedupe="done:" + active["run_dir"])
             result = active["accepted_result"]
             write_json(Path(active["run_dir"]) / "final-result.json", result)
@@ -1388,14 +1421,18 @@ class Runner:
             raise IssueBlocked("Repair limit exhausted", "checks_failed")
         escalation_profile = self.policy["profiles"]["escalation_profile"]
         selected = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
+        escalated = False
         if active["repairs"] and selected["profile"] != escalation_profile and not active.get("escalation"):
             active["escalation"] = escalation_profile
             active["escalation_reason"] = "A prior bounded repair did not satisfy checks"
+            escalated = True
         active["repairs"] += 1; active["step"] = "repair"; active.pop("repair_retry", None)
         self.save(active=active, phase="repairing")
         if records is not None:
+            stage = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
             self.emit(issue, "validation", messages.validation(self.ctx, issue=issue, records=records, passed=False,
-                                                               repair=active["repairs"], directory=active["validation_dir"]),
+                                                               repair=active["repairs"], directory=active["validation_dir"],
+                                                               repair_stage=stage, escalated=escalated),
                       dedupe=active["validation_dir"])
         resume, seed, switch = self.worker_session(active, "repair")
         result = self.model_phase(active, "repair", seed + f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
