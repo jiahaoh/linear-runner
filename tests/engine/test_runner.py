@@ -280,14 +280,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
 
     def test_unavailable_model_stops_before_claim_or_dispatch(self):
-        self.policy["profiles"]["profiles"]["Standard"]["model"] = "unavailable"
+        for phases in self.policy["pools"]["pools"]["*"]["Standard"].values():
+            phases[0]["model"] = "unavailable"
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
             self.runner.execute(limit=1)
         self.assertEqual(self.linear.data["statusType"], "unstarted")
         self.assertFalse(self.calls)
         # A listed model without the requested effort is also unavailable (fresh state: config changed).
         config = copy.deepcopy(self.config); config["state_dir"] = str(self.root / "state-effort")
-        config["policy"]["profiles"]["profiles"]["Standard"] = {"model": "luna", "effort": "medium"}
+        config["policy"]["pools"]["pools"]["*"]["Standard"] = {
+            phase: [{"backend": "codex", "model": "luna", "effort": "medium"}] for phase in ("implement", "repair", "review")}
         runner = Runner(config, self.linear); runner.run_session = self.runner.run_session
         write_json(self.root / "models.json", {"models": [{"slug": "luna", "supported_reasoning_levels": [{"effort": "max"}]}]})
         with self.assertRaisesRegex(RuntimeError, "unavailable"):

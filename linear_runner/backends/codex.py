@@ -48,6 +48,9 @@ def execution_evidence(events):
 class CodexBackend:
     name = "codex"
     label = "Codex"
+    capabilities = {"resume": True, "preassigned_session_id": False, "structured_output": "output-schema file (-o)",
+                    "read_only_isolation": "os-sandbox", "compact_token_limit": True, "usage_scope": "session",
+                    "observed_model": "when emitted", "observed_effort": "when emitted", "client_cost_estimate": False}
 
     def __init__(self, config):
         # The resolved configuration: ``codex`` (the executable), ``artifact_root`` and ``model_catalog``.
@@ -65,12 +68,12 @@ class CodexBackend:
             raise RuntimeError("Requested model/effort unavailable in host CLI catalog; no substitution")
         # Catalog support is not a guarantee of remote quota/entitlement at call time.
 
-    def catalog_report(self, profiles):
+    def catalog_report(self, entries):
         available = {m.get("slug"): sorted(level.get("effort") for level in m.get("supported_reasoning_levels", []))
                      for m in self.catalog().get("models", []) if isinstance(m, dict)}
         return {"models": len(available),
-                "registry_profiles_available": {name: value["model"] in available and value["effort"] in available[value["model"]]
-                                                for name, value in profiles.items()}}
+                "registry_pool_entries_available": {f"{e['model']}/{e['effort']}": e["model"] in available
+                                                    and e["effort"] in available[e["model"]] for e in entries}}
 
     # --- One ``codex exec`` turn --------------------------------------------------------
 
@@ -101,6 +104,13 @@ class CodexBackend:
         command += ["--output-schema", str(request.schema_path), "-"]
         return command
 
+    def environment(self, base):
+        return dict(base)
+
+    def describe(self, request):
+        return {"isolation": "workspace write with --approve-for-me" if request.writable or request.resume
+                else "OS sandbox: --sandbox read-only"}
+
     # --- Reading the JSONL events and the result ---------------------------------------
 
     def session_started(self, event):
@@ -111,6 +121,14 @@ class CodexBackend:
 
     def finished(self, events):
         return any(e.get("type") == "turn.completed" for e in events)
+
+    def failure(self, events):
+        errors = [e for e in events if e.get("type") in {"error", "turn.failed"}]
+        if not errors:
+            return None
+        error = errors[-1].get("error") or errors[-1].get("message")
+        text = error.get("message") if isinstance(error, dict) else error
+        return " ".join(str(text or errors[-1].get("type")).split())[:300]
 
     def result(self, request, events):
         path = self.result_path(request)

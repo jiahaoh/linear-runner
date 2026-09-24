@@ -1,4 +1,4 @@
-"""linear-runner: a sequential Linear-to-Codex issue controller.
+"""linear-runner: a sequential Linear-to-model issue controller (Codex or Claude Code).
 
 Subpackages: ``config`` (layered configuration), ``engine`` (the per-issue state machine,
 checks, delivery and intake), ``linear`` (Linear client, comments and attention),

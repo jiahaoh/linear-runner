@@ -1,7 +1,7 @@
-"""Sequential, allowlisted Linear issue execution through the installed Codex CLI.
+"""Sequential, allowlisted Linear issue execution through an installed model CLI (Codex or Claude Code).
 
 Deterministic Python owns scheduling, Linear synchronization, checks, commits and
-publication. Only implementation, bounded repair and independent review invoke Codex.
+publication. Only implementation, bounded repair and independent review invoke a model.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from linear_runner.linear.client import LinearClient
 
 
 def summarize(config):
-    """Offline validation report: no state, credentials, Linear or Codex access."""
+    """Offline validation report: no state, credentials, Linear or model CLI access."""
     return {"valid": True, "batch": config["batch_id"], "project": config["project_name"],
             "workspace": config["linear_workspace"], "issues": config["issues"], "state_dir": config["state_dir"],
             "resolution_pending": {"project": config["project_name"], "assignee": config["assignee"]},
@@ -36,7 +36,7 @@ def build_parser():
     common.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
-    for name, text in (("validate-config", "offline validation; no state, Linear or Codex"),
+    for name, text in (("validate-config", "offline validation; no state, Linear or model CLI"),
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
                        ("status", "print saved state, supervisor status and pending recovery"),
                        ("stop", "write the STOP marker (stops between issues)"),

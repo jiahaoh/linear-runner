@@ -1,0 +1,81 @@
+{
+  "notes": [
+    "Settled policy: the model/effort pairs used by earlier batches, one entry per pool (gpt-6-luna replaces gpt-5.6-luna).",
+    "pools[task kind or *][profile][phase] is an ordered list of {backend, model, effort}; * applies to every task kind and must cover every profile and phase, and a task-kind key replaces single pools.",
+    "The first entry is the default. Another entry runs only when the issue has the label model:<model> or model:<model>@<effort> (implement and repair) or the batch names it in model_overrides (any phase); it must be in that pool, otherwise preflight fails. No model is ever substituted.",
+    "The profile comes from profiles.json (issue label, phase override, review floor, low-risk review, escalation). An escalation uses the escalation profile's pool for the same task kind and phase: the named entry if that pool has it, else its first entry."
+  ],
+  "pools": {
+    "*": {
+      "Deep": {
+        "implement": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-astra",
+            "effort": "high"
+          }
+        ],
+        "repair": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-astra",
+            "effort": "high"
+          }
+        ],
+        "review": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-astra",
+            "effort": "high"
+          }
+        ]
+      },
+      "Standard": {
+        "implement": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          }
+        ],
+        "repair": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          }
+        ],
+        "review": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          }
+        ]
+      },
+      "Economy": {
+        "implement": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          }
+        ],
+        "repair": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          }
+        ],
+        "review": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          }
+        ]
+      }
+    }
+  }
+}

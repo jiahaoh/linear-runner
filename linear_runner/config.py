@@ -2,7 +2,7 @@
 
 Loading is offline: it validates every layer against ``schema/`` plus cross-references,
 reads guidance/context files and substitutes ``${variable}`` values, but never contacts
-Linear or Codex. Linear project and assignee names are resolved to IDs separately
+Linear or a model CLI. Linear project and assignee names are resolved to IDs separately
 (``pin_resolution``) at dry-run/preflight and pinned into the batch state directory.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ import subprocess
 
 # The checkout root (runner.py, registry/, schema/, templates/, examples/): the parent of this package.
 RUNNER_ROOT = Path(__file__).resolve().parent.parent
-REGISTRY_NAMES = ("models", "labels", "profiles", "phases", "linear")
+REGISTRY_NAMES = ("models", "labels", "profiles", "pools", "phases", "linear")
 PHASES = ("implement", "repair", "review")
 HOME_ENV = "LINEAR_RUNNER_HOME"
 DEFAULT_HOME = "~/.config/linear-runner"
@@ -207,6 +207,66 @@ def load_registry(home):
     return policy, sources, layers
 
 
+# --- Model pools ----------------------------------------------------------------------
+
+ANY_KIND = "*"
+MODEL_LABEL = "model:"
+
+
+def pool_for(policy, kind, profile, phase):
+    """``(key, entries)``: the ordered pool for a task kind, profile and phase; a task-kind
+    pool replaces the ``*`` pool of the same profile and phase."""
+    pools = policy["pools"]["pools"]
+    entries = ((pools.get(kind) or {}).get(profile) or {}).get(phase)
+    if entries:
+        return f"{kind}/{profile}/{phase}", entries
+    return f"{ANY_KIND}/{profile}/{phase}", pools[ANY_KIND][profile][phase]
+
+
+def entry_name(entry):
+    return f"{entry['model']}@{entry['effort']}"
+
+
+def match_entry(entries, name):
+    """Index of the first pool entry named by ``<model>`` or ``<model>@<effort>``, else None."""
+    model, _, effort = name.partition("@")
+    return next((i for i, e in enumerate(entries) if e["model"] == model and (not effort or e["effort"] == effort)), None)
+
+
+def pool_entries(policy):
+    """Every ``(key, phase, entry)`` of the registry pools."""
+    for kind, profiles in policy["pools"]["pools"].items():
+        for profile, phases in profiles.items():
+            for phase, entries in phases.items():
+                for entry in entries:
+                    yield f"{kind}/{profile}/{phase}", phase, entry
+
+
+def check_pools(policy):
+    from linear_runner.backends import BACKENDS
+    models, labels, order = policy["models"], policy["labels"], policy["profiles"]["order"]
+    pools = policy["pools"]["pools"]
+    for kind, profiles in pools.items():
+        if kind != ANY_KIND and kind not in labels["task_kinds"]:
+            raise ConfigError(f"registry pools.{kind}: unknown task kind (use a task kind or {ANY_KIND!r})")
+        for profile in profiles:
+            if profile not in order:
+                raise ConfigError(f"registry pools.{kind}.{profile}: unknown profile")
+    missing = [f"{profile}/{phase}" for profile in order for phase in PHASES
+               if not ((pools.get(ANY_KIND) or {}).get(profile) or {}).get(phase)]
+    if missing:
+        raise ConfigError(f"registry pools.{ANY_KIND}: every profile and phase needs a pool; missing {missing}")
+    for key, _, entry in pool_entries(policy):
+        where = f"registry pools {key}"
+        known = models["models"].get(entry["model"])
+        if known is None:
+            raise ConfigError(f"{where}: unknown model {entry['model']!r}")
+        if entry["backend"] != known["backend"] or entry["backend"] not in BACKENDS:
+            raise ConfigError(f"{where}: {entry['model']!r} runs on the {known['backend']!r} backend, not {entry['backend']!r}")
+        if entry["effort"] not in known["efforts"]:
+            raise ConfigError(f"{where}: effort {entry['effort']!r} is not allowed for {entry['model']!r}")
+
+
 def check_policy(policy):
     """Cross-reference checks the schemas cannot express."""
     models, labels, profiles = policy["models"], policy["labels"], policy["profiles"]
@@ -217,13 +277,9 @@ def check_policy(policy):
     if set(labels["task_kinds"]) & set(labels["profiles"]):
         raise ConfigError("registry labels: task-kind and profile labels must be distinct")
     order = profiles["order"]
-    if set(order) != set(profiles["profiles"]) or set(order) != set(labels["profiles"]):
-        raise ConfigError("registry: profiles.order, profiles.profiles and labels.profiles must name the same profiles")
-    for name, entry in profiles["profiles"].items():
-        if entry["model"] not in models["models"]:
-            raise ConfigError(f"registry profiles.{name}: unknown model {entry['model']!r}")
-        if entry["effort"] not in models["models"][entry["model"]]["efforts"]:
-            raise ConfigError(f"registry profiles.{name}: effort {entry['effort']!r} is not allowed for {entry['model']!r}")
+    if set(order) != set(labels["profiles"]):
+        raise ConfigError("registry: profiles.order and labels.profiles must name the same profiles")
+    check_pools(policy)
     floors = profiles["review_floors"]
     references = [("escalation_profile", profiles["escalation_profile"]), ("review_floors.default", floors["default"])]
     references += [(f"review_floors.by_profile.{k}", v) for k, v in floors["by_profile"].items()]
@@ -249,6 +305,20 @@ def check_policy(policy):
         unknown = sorted(set(light["task_kinds"]) - set(labels["task_kinds"]))
         if unknown:
             raise ConfigError(f"{where}.task_kinds: unknown task kind(s) {unknown}")
+
+
+def check_compaction(policy, controls):
+    """A compaction limit (batch or registry phase) needs every backend of that phase's pools
+    to support it; it is refused, never silently ignored."""
+    from linear_runner.backends import backend_class
+    for key, phase, entry in pool_entries(policy):
+        limit = controls.get("compact_token_limit")
+        if limit is None:
+            limit = policy["phases"]["phases"][phase].get("compact_token_limit")
+        cls = backend_class(entry["backend"])
+        if limit is not None and not cls.capabilities["compact_token_limit"]:
+            raise ConfigError(f"compact_token_limit {limit} applies to the {phase} phase, but pool {key} includes "
+                              f"{entry['model']} on the {cls.label} backend, which has no per-call compaction limit")
 
 
 # --- Layers -----------------------------------------------------------------------
@@ -373,6 +443,12 @@ def load_config(batch_path, home=None):
     put("supervision", supervision, batch_label)
     put("context_controls", dict(CONTEXT_CONTROL_DEFAULTS, **copy.deepcopy(batch.get("context_controls", {}))),
         batch_label)
+    check_compaction(policy, config["context_controls"])
+    overrides = copy.deepcopy(batch.get("model_overrides", {}))
+    outside = sorted(set(overrides) - set(config["issues"]))
+    if outside:
+        raise ConfigError(f"{batch_label}.model_overrides: {outside} not in the issue allowlist")
+    put("model_overrides", overrides, batch_label)
     if "worktree" in batch:
         put("worktree", str(_path(batch["worktree"], batch_path.parent, variables, f"{batch_label}.worktree")), batch_label)
     else:
@@ -488,6 +564,11 @@ def load_config(batch_path, home=None):
     # Site: host executables, storage roots and the model catalog.
     builtins = {name: variables[name] for name in ("home", "runner_root")}
     put("codex", variables["codex"], site_label)
+    if "claude" in variables:
+        put("claude", variables["claude"], site_label)
+    used = sorted({entry["backend"] for _, _, entry in pool_entries(policy)})
+    if "claude" in used and "claude" not in variables:
+        raise ConfigError("site.executables.claude: registry pools use the claude backend, so the site must name its executable")
     put("model_catalog", str(_path(site["model_catalog"], site_path.parent, builtins, "site.model_catalog")), site_label)
     put("artifact_root", str(_path(site["artifact_root"], site_path.parent, builtins, "site.artifact_root")), site_label)
     state_root = _path(site["state_root"], site_path.parent, builtins, "site.state_root")

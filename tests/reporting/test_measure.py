@@ -90,3 +90,19 @@ class MeasureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaudeCallTests(unittest.TestCase):
+    """Per-call context of a Claude invocation from its own events (a real recorded sample)."""
+
+    def test_calls_add_up_to_the_result_input(self):
+        path = CHECKOUT / "tests" / "backends" / "claude_samples" / "reviewer-denied-write.jsonl"
+        calls = measure.claude_calls(path)
+        self.assertEqual([c["context"] for c in calls], [5939, 6541])
+        self.assertIn("touch probe-denied.txt", calls[0]["after"][0])
+        self.assertEqual(calls[1]["after"], [])  # the structured-output call is not a tool call
+        growth = measure.context_growth(calls, ["intake.json"])
+        result = [json.loads(line) for line in path.read_text().splitlines()][-1]["usage"]
+        self.assertEqual(growth["input"], sum(result[k] for k in ("input_tokens", "cache_read_input_tokens",
+                                                                  "cache_creation_input_tokens")))
+        self.assertEqual(growth["growth"]["other_commands"], 602)

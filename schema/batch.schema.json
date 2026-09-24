@@ -128,12 +128,38 @@
           "type": "boolean"
         },
         "compact_token_limit": {
-          "description": "Codex auto-compaction threshold in tokens for every model phase (overrides the registry phase value); null leaves Codex's default.",
+          "description": "Auto-compaction threshold in tokens for every model phase (overrides the registry phase value); null leaves the CLI default. Only backends that support it (Codex) may serve a phase with a limit; otherwise the configuration is rejected.",
           "type": [
             "integer",
             "null"
           ],
           "minimum": 1000
+        }
+      }
+    },
+    "model_overrides": {
+      "description": "Explicit pool entries per issue and phase: <model> or <model>@<effort>. The entry must be in the issue's pool for that phase (registry pools); preflight fails otherwise.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/issue"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "implement": {
+            "type": "string",
+            "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+          },
+          "repair": {
+            "type": "string",
+            "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+          },
+          "review": {
+            "type": "string",
+            "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+          }
         }
       }
     }

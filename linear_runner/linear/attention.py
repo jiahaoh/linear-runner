@@ -12,22 +12,27 @@ from __future__ import annotations
 
 import subprocess
 
+from linear_runner.backends import failure_patterns
+
 STOP_CLASSES = ("runner-defect", "environment", "technical-block", "needs-decision")
 # Issue-level blocks (IssueBlocked.event) and their class.
 EVENT_CLASSES = {"worker_blocked": "needs-decision", "review_blocked": "needs-decision",
                  "budget_exceeded": "needs-decision", "checks_failed": "technical-block",
                  "delivery_failed": "technical-block"}
-# Message fragments of batch-level RuntimeErrors raised by the runner, Linear client or
-# Codex wrapper. Environment patterns are checked first.
+# Message fragments of batch-level RuntimeErrors raised by the runner, Linear client or a
+# model backend ("<label> failed"/"<label> exceeded" for every backend, e.g. Codex, Claude).
+# Environment patterns are checked first.
 ENVIRONMENT_PATTERNS = ("Linear HTTP", "Linear OAuth", "credential", "Linear MCP", "MCP redirect", "MCP stream",
                         "MCP protocol", "returned unexpected", "Cannot reconcile paginated", "Cannot read paginated",
-                        "Codex failed", "Codex exceeded", "Missing structured result", "unavailable in host CLI catalog",
-                        "Another controller", "may still be alive", "read-back", "Signal ")
+                        *failure_patterns(), "Missing structured result", "unavailable in host CLI catalog",
+                        "CLI version", "CLI unavailable", "Another controller", "may still be alive", "read-back",
+                        "Signal ")
 DECISION_PATTERNS = ("changed outside", "scope", "Human approval", "is not Done", "Configuration/guidance changed",
                      "already claimed", "branch moved", "changed Git history", "Frozen validated source",
                      "differs from authorized intake", "requires a project milestone", "Incomplete prerequisite",
                      "requires a clean worktree", "interrupted; inspect", "Validation modified source",
-                     "Source changed after validation", "Duplicate", "decision rules", "STOP marker")
+                     "Source changed after validation", "Duplicate", "decision rules", "STOP marker",
+                     "model pool", "model: label", "model_overrides")
 MECHANISMS = ("label", "state", "mention")
 NOTIFIER_BACKENDS = ("none", "command", "linear-mention-only")
 

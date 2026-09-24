@@ -41,7 +41,15 @@ class LayeredConfigTests(unittest.TestCase):
     def test_settled_registry_values(self):
         policy, sources, _ = config.load_registry(self.root / "no-home")
         self.assertEqual(policy["labels"]["task_kinds"], ["Research", "Implementation", "Validation", "Maintenance"])
-        self.assertEqual(policy["profiles"]["profiles"]["Economy"], {"model": "gpt-5.6-luna", "effort": "max"})
+        # The single mappings of earlier batches are each pool's only (first) entry.
+        firsts = {profile: config.pool_for(policy, "Implementation", profile, phase)[1][0]
+                  for profile in ("Deep", "Standard", "Economy") for phase in config.PHASES}
+        self.assertEqual(firsts, {"Deep": {"backend": "codex", "model": "gpt-6-astra", "effort": "high"},
+                                  "Standard": {"backend": "codex", "model": "gpt-6-astra", "effort": "medium"},
+                                  "Economy": {"backend": "codex", "model": "gpt-6-luna", "effort": "max"}})
+        self.assertEqual({len(entries) for kind in policy["pools"]["pools"].values() for phases in kind.values()
+                          for entries in phases.values()}, {1})
+        self.assertNotIn("gpt-5.6-luna", policy["models"]["models"])
         self.assertEqual(policy["linear"]["states"], {"in_progress": "In Progress", "review": "In Review", "done": "Done"})
         phases = policy["phases"]
         budgets = {name: (p["budget"]["input_tokens"], p["budget"]["output_tokens"], p["budget"]["tool_calls"], p["timeout_seconds"])
@@ -56,7 +64,7 @@ class LayeredConfigTests(unittest.TestCase):
 
     def test_private_registry_override_merges_and_records_source(self):
         loaded = self.load()
-        self.assertEqual(loaded["policy"]["profiles"]["profiles"]["Standard"]["model"], "astra")
+        self.assertEqual(config.pool_for(loaded["policy"], "Implementation", "Standard", "implement")[1][0]["model"], "astra")
         self.assertEqual(loaded["policy"]["phases"]["phases"]["review"]["timeout_seconds"], 1800)
         sources = loaded["_sources"]
         self.assertEqual(sources["policy.phases.phases.review.budget.input_tokens"], "private registry/phases.json")
@@ -82,9 +90,20 @@ class LayeredConfigTests(unittest.TestCase):
             value = copy.deepcopy(TEST_REGISTRY)
             value["profiles"] = dict(value["profiles"], **changes)
             return value
+        def pools(**changes):
+            value = copy.deepcopy(TEST_REGISTRY)
+            value["pools"] = {"pools": dict(copy.deepcopy(TEST_REGISTRY["pools"]["pools"]), **changes)}
+            return value
+        star = TEST_REGISTRY["pools"]["pools"]["*"]
+        def entry(**fields):
+            return {"*": dict(star, Economy=dict(star["Economy"], review=[dict({"backend": "codex", "model": "luna",
+                                                                                 "effort": "max"}, **fields)]))}
         cases = [
-            (profiles(profiles={"Economy": {"model": "missing", "effort": "max"}}), "unknown model"),
-            (profiles(profiles={"Economy": {"model": "astra", "effort": "max"}}), "not allowed"),
+            (pools(**entry(model="missing")), "unknown model"),
+            (pools(**entry(model="astra")), "not allowed"),
+            (pools(**entry(backend="claude")), "runs on the 'codex' backend"),
+            (pools(Docs={"Deep": star["Deep"]}), "unknown task kind"),
+            (pools(Research={"Heroic": star["Deep"]}), "unknown profile"),
             (profiles(escalation_profile="Heroic"), "unknown profile"),
             (profiles(review_floors={"default": "Ultra"}), "unknown profile"),
             (profiles(review_floors={"by_task_kind": {"Docs": "Deep"}}), "unknown task kind"),
@@ -93,7 +112,7 @@ class LayeredConfigTests(unittest.TestCase):
             (profiles(order=["Economy", "Standard"]), "same profiles"),
             (dict(TEST_REGISTRY, labels={"profiles": ["Deep", "Standard", "Economy", "Turbo"]}), "same profiles"),
             (dict(TEST_REGISTRY, labels={"task_kinds": ["Deep"]}), "distinct"),
-            (dict(TEST_REGISTRY, models={"models": {"astra": {"efforts": ["warp"]}}}), "unknown effort"),
+            (dict(TEST_REGISTRY, models={"models": {"astra": {"backend": "codex", "efforts": ["warp"]}}}), "unknown effort"),
             (dict(TEST_REGISTRY, phases={"max_repairs": 3}), "<= 2"),
             (dict(TEST_REGISTRY, phases={"phases": {"review": {"timeout_seconds": 0}}}), ">= 1"),
         ]
@@ -256,7 +275,8 @@ class RunnerIdentityTests(unittest.TestCase):
         """Copy the runner sources into a fresh Git repository with a deterministic commit."""
         target = self.root / name
         for relative in ("linear_runner/__init__.py", "linear_runner/config.py", "linear_runner/linear/__init__.py",
-                         "linear_runner/linear/client.py", "prompts/generic.md", *[
+                         "linear_runner/linear/client.py", "linear_runner/backends/__init__.py",
+                         "linear_runner/backends/codex.py", "linear_runner/backends/claude.py", "prompts/generic.md", *[
                 str(p.relative_to(ROOT)) for folder in ("registry", "schema") for p in (ROOT / folder).glob("*.json")]):
             (target / relative).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, target / relative)

@@ -18,13 +18,19 @@ def write(path, value):
     return path
 
 
+def pools_from(mapping, backend="codex"):
+    """A ``*`` pool registry with one entry per profile and phase: {profile: (model, effort)}."""
+    return {"pools": {"*": {profile: {phase: [{"backend": backend, "model": model, "effort": effort}]
+                                      for phase in ("implement", "repair", "review")}
+                            for profile, (model, effort) in mapping.items()}}}
+
+
 # Small private-registry override used by engine tests: fake model IDs and tiny budgets.
 TEST_REGISTRY = {
-    "models": {"models": {"astra": {"efforts": ["medium", "high"]}, "luna": {"efforts": ["max"]}}},
-    "profiles": {"routing_version": "test-1", "phase_overrides": {"repair": "Economy"},
-                 "profiles": {"Economy": {"model": "luna", "effort": "max"},
-                              "Standard": {"model": "astra", "effort": "medium"},
-                              "Deep": {"model": "astra", "effort": "high"}}},
+    "models": {"models": {"astra": {"backend": "codex", "efforts": ["medium", "high"]},
+                          "luna": {"backend": "codex", "efforts": ["max"]}}},
+    "profiles": {"routing_version": "test-1", "phase_overrides": {"repair": "Economy"}},
+    "pools": pools_from({"Economy": ("luna", "max"), "Standard": ("astra", "medium"), "Deep": ("astra", "high")}),
     "phases": {"phases": {p: {"budget": {"input_tokens": 1000, "output_tokens": 1000, "tool_calls": 10}}
                           for p in ("implement", "repair", "review")}},
 }
@@ -141,3 +147,88 @@ class FakeLinear:
     def resolve_user(self, name):
         self.resolutions.append(("user", name))
         return "owner"
+
+
+# A fake `claude` executable for backend and engine tests; no model or network. It answers
+# `--version` and `auth status` (with an email the runner must never record), and for `-p`
+# replays stream-json in the shape of the recorded samples (tests/backends/claude_samples/).
+# Each `-p` call consumes the next step of the JSON plan file and appends its argv to "log".
+# Step keys: write {relative: text} (in the cwd), outbox (a progress draft), acceptance (list
+# overriding the one built from the prompt), status, error (an API error result, exit 1),
+# usage (raw Claude usage).
+FAKE_CLAUDE = r'''
+import json, pathlib, re, sys
+PLAN = pathlib.Path(__PLAN__)
+args = sys.argv[1:]
+plan = json.loads(PLAN.read_text())
+if args == ["--version"]:
+    print(plan.get("version", "2.1.281") + " (Claude Code)"); sys.exit(0)
+if args[:2] == ["auth", "status"]:
+    print(json.dumps(dict({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
+                           "email": "owner@example.invalid", "orgName": "Fixture org"}, **plan.get("auth", {}))))
+    sys.exit(0)
+prompt = sys.stdin.read()
+def opt(name):
+    return args[args.index(name) + 1] if name in args else None
+log = plan.setdefault("log", [])
+step = plan.get("steps", [])[len(log)] if len(log) < len(plan.get("steps", [])) else {}
+session = opt("--resume") or opt("--session-id")
+log.append({"argv": args, "session": session, "resume": opt("--resume"), "model": opt("--model"),
+            "effort": opt("--effort"), "mode": opt("--permission-mode")})
+PLAN.write_text(json.dumps(plan))
+for relative, text in (step.get("write") or {}).items():
+    pathlib.Path(relative).write_text(text)
+if step.get("outbox"):
+    outbox = pathlib.Path(re.search(r"drafts to (\S+)/NNN-", prompt).group(1))
+    (outbox / "001-progress.md").write_text(step["outbox"])
+def emit(event):
+    print(json.dumps(dict(event, session_id=session)), flush=True)
+emit({"type": "system", "subtype": "init", "model": opt("--model"), "permissionMode": opt("--permission-mode"),
+      "tools": opt("--tools").split(","), "mcp_servers": [], "apiKeySource": "none", "claude_code_version": "2.1.281"})
+zero = {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 0}
+if step.get("error"):
+    emit({"type": "assistant", "message": {"model": "<synthetic>", "role": "assistant",
+                                           "content": [{"type": "text", "text": "There's an issue with the selected model."}]}})
+    emit({"type": "result", "subtype": "success", "is_error": True, "terminal_reason": "api_error", "api_error_status": 404,
+          "result": "There's an issue with the selected model.", "usage": zero, "modelUsage": {}, "total_cost_usd": 0})
+    sys.exit(1)
+schema = json.loads(opt("--json-schema"))["properties"]
+marker = "Exact required criteria: "
+criteria = (json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1])[0] if marker in prompt
+            else ["Produce validated output"])
+result = {"issue_id": schema["issue_id"].get("enum", ["DEV-1"])[0], "status": step.get("status", "ready"),
+          "summary": step.get("summary", "Ready"), "commit": schema["commit"].get("enum", [""])[0],
+          "acceptance": step.get("acceptance", [{"criterion": c, "satisfied": True, "evidence": "fixture evidence"}
+                                                for c in criteria]), "limitations": []}
+if "deliverables" in schema:
+    result["deliverables"] = []
+model = opt("--model")
+emit({"type": "assistant", "message": {"model": model, "role": "assistant", "content": [
+    {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "git status"}}]}})
+emit({"type": "user", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "clean"}]}})
+emit({"type": "assistant", "message": {"model": model, "role": "assistant", "content": [
+    {"type": "tool_use", "id": "toolu_2", "name": "StructuredOutput", "input": result}]}})
+emit({"type": "user", "message": {"role": "user", "content": [
+    {"type": "tool_result", "tool_use_id": "toolu_2", "content": "Structured output provided successfully"}]}})
+usage = step.get("usage", {"input_tokens": 2, "cache_read_input_tokens": 60, "cache_creation_input_tokens": 38,
+                           "output_tokens": 5, "output_tokens_details": {"thinking_tokens": 2}})
+emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "result": json.dumps(result),
+      "structured_output": result, "usage": usage, "total_cost_usd": 0.01 * (len(log)),
+      "modelUsage": {model: {"inputTokens": usage["input_tokens"], "outputTokens": usage["output_tokens"]}},
+      "permission_denials": []})
+'''
+
+
+def fake_claude(root, steps=(), **plan):
+    """Write the fake ``claude`` executable and its plan under ``root``; return (executable, plan path)."""
+    root = Path(root)
+    path = write(root / "fake-claude-plan.json", dict(plan, steps=list(steps)))
+    executable = root / "fake-claude"
+    executable.write_text(f"#!{sys.executable}\n" + FAKE_CLAUDE.replace("__PLAN__", repr(str(path))))
+    executable.chmod(0o755)
+    return executable, path
+
+
+def fake_claude_log(path):
+    return json.loads(Path(path).read_text()).get("log", [])

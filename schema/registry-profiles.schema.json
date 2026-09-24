@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Execution profile registry",
-  "description": "Profile to model/effort routing, review floors, phase overrides and the single escalation target.",
+  "description": "Profile order, review floors, phase overrides and the single escalation target (models come from registry pools).",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "routing_version",
     "order",
-    "profiles",
     "escalation_profile",
     "review_floors",
     "phase_overrides"
@@ -30,31 +29,6 @@
       "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/label"
-      }
-    },
-    "profiles": {
-      "type": "object",
-      "minProperties": 1,
-      "propertyNames": {
-        "$ref": "#/$defs/label"
-      },
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "model",
-          "effort"
-        ],
-        "properties": {
-          "model": {
-            "type": "string",
-            "pattern": "^\\S+$"
-          },
-          "effort": {
-            "type": "string",
-            "pattern": "^\\S+$"
-          }
-        }
       }
     },
     "escalation_profile": {

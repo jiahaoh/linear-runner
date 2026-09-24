@@ -100,7 +100,13 @@ def _check_worktree(runner):
 
 
 def _check_catalog(config):
-    return backends.create(config).catalog_report(config["policy"]["profiles"]["profiles"])
+    """Each backend's catalog report for the distinct pool entries it serves."""
+    from linear_runner.config import pool_entries
+    entries = {}
+    for _, _, entry in pool_entries(config["policy"]):
+        entries.setdefault(entry["backend"], {})[(entry["model"], entry["effort"])] = entry
+    return {name: backends.create(config, name).catalog_report(list(items.values()))
+            for name, items in sorted(entries.items())}
 
 
 def _baseline_checks(runner, directory):

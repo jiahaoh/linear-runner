@@ -33,7 +33,7 @@ Template `claim.md`, written by the runner, posted when work on an issue starts.
 Work on TEAM-12 has started; no action is needed.
 
 **Plan**
-The worker implements TEAM-12 with the Standard profile (model-a, medium effort). The runner then runs 2 configured checks, commits, and asks an independent reviewer to assess all 3 acceptance criteria. Worker progress notes will appear here as separate comments.
+The worker implements TEAM-12 with the Standard profile (model-a on Codex, medium effort). The runner then runs 2 configured checks, commits, and asks an independent reviewer to assess all 3 acceptance criteria. Worker progress notes will appear here as separate comments.
 
 Evidence: /absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d
 

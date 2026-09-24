@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Model pool registry",
+  "description": "Ordered {backend, model, effort} pools per task kind (or * for every kind), profile and phase. The first entry is the default; another entry only by an issue model: label or a batch model_overrides entry naming it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pools"
+  ],
+  "properties": {
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pools": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/label"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": {
+          "$ref": "#/$defs/label"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "implement": {
+              "$ref": "#/$defs/pool"
+            },
+            "repair": {
+              "$ref": "#/$defs/pool"
+            },
+            "review": {
+              "$ref": "#/$defs/pool"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "label": {
+      "type": "string",
+      "pattern": "^\\S(.*\\S)?$"
+    },
+    "pool": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "model",
+        "effort"
+      ],
+      "properties": {
+        "backend": {
+          "enum": [
+            "codex",
+            "claude"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^[^\\s@]+$"
+        },
+        "effort": {
+          "type": "string",
+          "pattern": "^\\S+$"
+        }
+      }
+    }
+  }
+}

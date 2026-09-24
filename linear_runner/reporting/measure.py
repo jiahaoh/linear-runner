@@ -8,7 +8,8 @@ For each issue run it reports:
 * for each model invocation: prompt bytes, tool-output bytes, the session's cumulative input
   after it and the input the invocation added (the same dedup and counter rules as
   ``trajectory``);
-* with ``--rollouts`` (the Codex session rollout directory), the per-call context of each
+* with ``--rollouts`` (the Codex session rollout directory) for Codex invocations, and from
+  the invocation's own ``events.jsonl`` for Claude invocations, the per-call context of each
   invocation: calls, first/last/max context, the part of input spent re-sending the
   starting context (``prefix``) and the part spent on context added during the invocation
   (``growth``), split by what the tool calls in between did: reading the intake packet or
@@ -18,7 +19,7 @@ For each issue run it reports:
 
 The growth split is exact bookkeeping, not a model: with per-call context ``c_0..c_{n-1}``,
 total input is ``n*c_0 + sum_j (c_{j+1}-c_j)*(n-j-1)``; each jump is charged to the tool calls
-made between those two calls. Nothing here contacts Linear or Codex.
+made between those two calls. Nothing here contacts Linear or a model CLI.
 """
 from __future__ import annotations
 
@@ -151,6 +152,35 @@ def rollout_calls(path):
     return calls
 
 
+def claude_calls(path):
+    """The ``rollout_calls`` shape from a Claude invocation's ``events.jsonl``: one entry per API
+    call (assistant message ID), its context (input + cache read + cache creation), the tool
+    calls it made and the bytes of their results."""
+    calls, index = [], {}
+    for line in Path(path).read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        content = [b for b in message.get("content") or [] if isinstance(b, dict)]
+        if event.get("type") == "assistant" and isinstance(message.get("usage"), dict) and message.get("id"):
+            if message["id"] not in index:
+                usage = message["usage"]
+                context = sum(usage.get(k) or 0 for k in ("input_tokens", "cache_read_input_tokens",
+                                                          "cache_creation_input_tokens"))
+                index[message["id"]] = len(calls)
+                calls.append({"at": parse_time(event.get("timestamp")), "context": context, "after": [],
+                              "after_output_bytes": 0})
+            call = calls[index[message["id"]]]
+            call["after"] += [json.dumps(b.get("input", {})) for b in content
+                              if b.get("type") == "tool_use" and b.get("name") != "StructuredOutput"]
+        elif event.get("type") == "user" and calls:
+            calls[-1]["after_output_bytes"] += sum(len(json.dumps(b.get("content", "")).encode())
+                                                   for b in content if b.get("type") == "tool_result")
+    return calls
+
+
 GROWTH_KINDS = ("intake_or_context_reads", "test_and_check_runs", "file_reads_and_search", "other_commands",
                 "model_turns_without_tools", "context_compaction")
 _TESTS = re.compile(r"\b(pytest|unittest|sphinx-build|check_reference|ruff|mypy|tox|nox)\b")
@@ -234,10 +264,12 @@ def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=N
         if item["prompt_bytes"] is None:
             prompt = Path(item["source"]).parent / "prompt.txt"
             row["prompt_bytes"] = prompt.stat().st_size if prompt.is_file() else None
-        path = find_rollout(rollouts, item["session_id"])
+        events = Path(item["source"]).parent / "events.jsonl"
+        path = events if item.get("backend") == "claude" and events.is_file() else find_rollout(rollouts, item["session_id"])
         if path is not None:
             start, end = parse_time(item["start"]), parse_time(item["end"])
-            calls = [c for c in rollout_calls(path) if c["at"] and c["at"] >= start and (end is None or c["at"] <= end)]
+            calls = (claude_calls(path) if path == events else
+                     [c for c in rollout_calls(path) if c["at"] and c["at"] >= start and (end is None or c["at"] <= end)])
             intake = next((json.loads(Path(e["path"]).read_text()) for k, e in intakes.items()
                            if k == (item["issue"], item["run_id"])), {})
             growth = context_growth(calls, read_markers(intake))
@@ -283,6 +315,7 @@ def render_markdown(report):
     status = report.get("rollouts") or {}
     logs = (f"Codex session logs: {status['location']}." if status.get("found")
             else status.get("note") or "Codex session logs were not read.")
+    logs += " Claude invocations use their own events.jsonl."
     lines = ["# Context-cost measurement", "", "Offline, from saved runner records; no model was used. " + logs, "",
              "## Intake packets", "",
              "| Issue | Run | Total | Description | Other issue fields | Guidance | Context files | Checks | Other "

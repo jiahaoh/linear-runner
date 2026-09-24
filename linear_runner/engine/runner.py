@@ -1,7 +1,7 @@
-"""Sequential, allowlisted Linear issue execution through the installed Codex CLI.
+"""Sequential, allowlisted Linear issue execution through an installed model CLI (Codex or Claude Code).
 
 Deterministic Python owns scheduling, Linear synchronization, checks, commits and
-publication. Only implementation, bounded repair and independent review invoke Codex.
+publication. Only implementation, bounded repair and independent review invoke a model.
 """
 from __future__ import annotations
 
@@ -25,7 +25,8 @@ import uuid
 
 from linear_runner import backends
 from linear_runner.linear import attention
-from linear_runner.config import ATTENTION_DEFAULTS, PHASES, ConfigError, config_fingerprint, read_json, write_json
+from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
+                                  match_entry, pool_for, read_json, write_json)
 from linear_runner.engine.delivery import EMPTY_NOTE, check_outcome, check_passed
 from linear_runner.linear.client import LinearClient
 from linear_runner.linear import messages
@@ -105,20 +106,56 @@ RESULT_SCHEMA = {
 }
 
 
+# Worker phases an issue ``model:`` label applies to; the review follows its pool unless the
+# batch names a review entry (model_overrides), which keeps the reviewer independent.
+LABEL_PHASES = ("implement", "repair")
+
+
+def issue_labels(issue):
+    return [v.get("name") if isinstance(v, dict) else v for v in issue.get("labels", [])]
+
+
+def requested_model(config, issue, phase):
+    """``(name, source)`` of an explicitly named pool entry for ``phase``, else ``(None, None)``."""
+    names = [label[len(MODEL_LABEL):].strip() for label in issue_labels(issue)
+             if isinstance(label, str) and label.startswith(MODEL_LABEL)]
+    if len(names) > 1:
+        raise RuntimeError(f"{issue['id']}: at most one {MODEL_LABEL}<name> label is allowed; found {len(names)}")
+    label = names[0] if names and phase in LABEL_PHASES else None
+    batch = ((config.get("model_overrides") or {}).get(issue["id"]) or {}).get(phase)
+    if label and batch and label != batch:
+        raise RuntimeError(f"{issue['id']}: label {MODEL_LABEL}{label} conflicts with the batch model_overrides "
+                           f"{phase} entry {batch!r}")
+    if batch:
+        return batch, "batch model_overrides"
+    if label:
+        return label, f"issue label {MODEL_LABEL}{label}"
+    return None, None
+
+
 def resolve_profile(config, issue, phase, escalation=None, light=None):
-    """Registry-driven routing: issue labels, approved phase overrides, review floors, escalation.
+    """Registry-driven routing: issue labels, approved phase overrides, review floors, escalation,
+    then the model pool of (task kind, profile, phase) and an explicitly named entry.
 
     ``light`` is the lighter review profile allowed by the low-risk review rule (see
     ``Runner.review_risk``); it replaces the issue's profile and the default review floor, but
-    the task-kind and profile floors still apply, and an escalation ignores it.
+    the task-kind and profile floors still apply, and an escalation ignores it. A named entry
+    must be in the pool (RuntimeError otherwise; never substituted), except that an escalation
+    uses the escalation pool's first entry when that pool lacks it, and a batch-named review
+    entry missing from the lighter pool keeps the normal review.
     """
     policy = config["policy"]
     routing = policy["profiles"]
-    labels = [v.get("name") if isinstance(v, dict) else v for v in issue.get("labels", [])]
+    labels = issue_labels(issue)
     types = [v for v in policy["labels"]["task_kinds"] if v in labels]
     profiles = [v for v in policy["labels"]["profiles"] if v in labels]
     if len(types) != 1 or len(profiles) != 1:
         raise RuntimeError(f"{issue['id']}: require exactly one task-type and execution-profile label")
+    requested, source = requested_model(config, issue, phase)
+    if phase == "review" and light and not escalation and requested:
+        _, light_pool = pool_for(policy, types[0], light, phase)
+        if match_entry(light_pool, requested) is None:
+            light = None
     overrides = routing["phase_overrides"]
     selected = escalation or overrides.get(phase, profiles[0])
     lighter = False
@@ -131,12 +168,46 @@ def resolve_profile(config, issue, phase, escalation=None, light=None):
                           floors["by_profile"].get(profiles[0])]
         selected = max((c for c in candidates if c), key=routing["order"].index)
         lighter = bool(light and not escalation and selected == light)
-    value = routing["profiles"][selected]
+    key, pool = pool_for(policy, types[0], selected, phase)
+    index, model_source = 0, "pool default"
+    if requested:
+        index = match_entry(pool, requested)
+        if index is not None:
+            model_source = source
+        elif escalation:
+            index, model_source = 0, f"pool default ({source} names {requested!r}, not in the escalation pool)"
+        else:
+            raise RuntimeError(f"{issue['id']}: {source} names {requested!r}, which is not in the {key} model pool "
+                               f"[{', '.join(entry_name(e) for e in pool)}]; name an entry of that pool or remove it "
+                               "(no substitution)")
+    value = pool[index]
     return {"task_type": types[0], "issue_profile": profiles[0], "profile": selected,
-            "model": value["model"], "effort": value["effort"], "phase": phase,
+            "backend": value["backend"], "model": value["model"], "effort": value["effort"], "phase": phase,
+            "pool": key, "pool_entries": [f"{e['backend']}:{entry_name(e)}" for e in pool], "pool_index": index,
+            "model_source": model_source, "requested_entry": requested,
             "routing_version": routing["routing_version"],
             "selection_source": "escalation" if escalation else "low-risk review rule" if lighter else
                 "approved phase override/review floor" if phase in overrides or selected != profiles[0] else "issue labels"}
+
+
+def cumulative_usage(directory, session, usage_events):
+    """Make an invocation-scoped CLI's counters cumulative over its session, as the reports
+    expect: add the session's latest cumulative counter from the sibling attempts of this run."""
+    previous = None
+    for path in Path(directory).parent.glob("*/session.json"):
+        if path.parent == Path(directory):
+            continue
+        meta = read_json(path)
+        if meta.get("session_id") != session:
+            continue
+        events = (meta.get("execution_evidence") or {}).get("usage_events") or []
+        counter = events[-1]["usage"] if events else None
+        if counter and (previous is None or counter.get("input_tokens", 0) > previous.get("input_tokens", 0)):
+            previous = counter
+    if not previous:
+        return usage_events, None
+    return [dict(e, usage={k: v + previous.get(k, 0) if isinstance(v, int) else v for k, v in e["usage"].items()})
+            for e in usage_events], previous
 
 
 def usage_totals(records):
@@ -239,7 +310,7 @@ class Runner:
         self.state["identity"] = identity
         self.child = None
         self.linear = linear or LinearClient(config["linear"])
-        self.model_backend = backends.create(config)  # the agent CLI that runs model sessions
+        self.model_backends = {}  # the agent CLIs that run model sessions, by backend name
         # A recovery may restrict which model phases this process can start (None: all).
         self.allowed_phases = None
         self.attention = config.get("attention") or copy.deepcopy(ATTENTION_DEFAULTS)
@@ -287,10 +358,21 @@ class Runner:
 
     # --- Model sessions and check subprocesses ---------------------------------------
 
+    def backend(self, name=None):
+        """The model backend ``name`` (default Codex), created once per runner."""
+        name = name or backends.DEFAULT
+        if name not in self.model_backends:
+            self.model_backends[name] = backends.create(self.config, name)
+        return self.model_backends[name]
+
+    @property
+    def model_backend(self):
+        return self.backend()
+
     def run_session(self, prompt, directory, *, phase, model, effort, writable=False, resume=None, schema=None,
-                    watch=None, compact_limit=None):
-        """Run one model session through the model backend; the result must match ``schema``
-        (default RESULT_SCHEMA).
+                    watch=None, compact_limit=None, backend=None):
+        """Run one model session through the model backend ``backend`` (default Codex); the
+        result must match ``schema`` (default RESULT_SCHEMA).
 
         ``compact_limit`` (tokens) is the backend's auto-compaction threshold on fresh and
         resumed calls; ``None`` leaves the backend default.
@@ -298,7 +380,7 @@ class Runner:
         ``watch`` is called about every ``attention.outbox.poll_seconds`` while the process
         runs (the outbox poll); its errors are logged, never fatal to the session.
         """
-        backend = self.model_backend
+        backend = self.backend(backend)
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=False)
         (directory / "outbox").mkdir()
@@ -307,11 +389,12 @@ class Runner:
         request = backends.SessionRequest(prompt=prompt, directory=directory, cwd=self.repo, model=model, effort=effort,
                                           writable=writable, resume=resume, schema_path=schema_path,
                                           compact_limit=compact_limit)
-        command = backend.command(request)
         write_json(schema_path, schema if schema is not None else RESULT_SCHEMA)
-        meta = {"phase": phase, "requested_model": model, "requested_reasoning_effort": effort,
+        command = backend.command(request)
+        meta = {"phase": phase, "backend": backend.name, "requested_model": model, "requested_reasoning_effort": effort,
                 "compact_token_limit": compact_limit,
                 "started_at": now(), "command": command, "cwd": str(self.repo), "session_id": resume,
+                "backend_details": backend.describe(request),
                 "environment_overrides": self.config["check_environment"],
                 "host": os.uname().nodename, "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
         timeout = self.policy["phases"]["phases"][phase]["timeout_seconds"]
@@ -321,7 +404,7 @@ class Runner:
             with (directory / "stderr.log").open("wb") as stderr, (directory / "events.jsonl").open("w") as output:
                 self.child = subprocess.Popen(command, cwd=self.repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                               stderr=stderr, start_new_session=True, text=True, bufsize=1,
-                                              env=dict(os.environ, **self.config["check_environment"]))
+                                              env=backend.environment(dict(os.environ, **self.config["check_environment"])))
                 meta["pid"] = self.child.pid
                 write_json(directory / "session.json", meta)
                 self.save(child_pid=self.child.pid)
@@ -370,13 +453,21 @@ class Runner:
                 self.child.stdout.close()
             meta["finished_at"] = now()
             meta["wall_seconds"] = time.monotonic() - started
-            meta["execution_evidence"] = backend.evidence(events)
+            evidence = backend.evidence(events)
+            if backend.capabilities["usage_scope"] == "invocation" and evidence.get("usage_events") and meta["session_id"]:
+                # Reports treat a session's counters as cumulative; keep this call's own counters too.
+                cumulative, previous = cumulative_usage(directory, meta["session_id"], evidence["usage_events"])
+                evidence["invocation_usage_events"] = evidence["usage_events"]
+                evidence["usage_events"], evidence["usage_carried_from_session"] = cumulative, previous
+            meta["execution_evidence"] = evidence
             meta["exit_code"] = self.child.returncode if self.child else None
             write_json(directory / "session.json", meta)
             self.child = None
             self.save(child_pid=None)
         if returncode != 0 or not backend.finished(events):
-            raise RuntimeError(f"{backend.label} failed or did not finish a turn; see {directory}")
+            detail = backend.failure(events)
+            raise RuntimeError(f"{backend.label} failed or did not finish a turn{': ' + detail if detail else ''}; "
+                               f"see {directory}")
         return backend.result(request, events), events, meta["session_id"]
 
     def validate(self, directory, checks, environment):
@@ -453,8 +544,8 @@ class Runner:
     # --- Deterministic gates and Linear read-back -------------------------------
 
     def verify_model(self, selection):
-        """The selected model/effort must be in the backend's host CLI catalog; never substituted."""
-        self.model_backend.check_selection(selection)
+        """The selected model/effort must be available to its backend; never substituted."""
+        self.backend(selection.get("backend")).check_selection(selection)
 
     def check_gates(self):
         for identity in self.config["required_done"]:
@@ -756,7 +847,8 @@ class Runner:
             result, events, session = self.run_session(prompt, attempt, phase=phase, model=selection["model"],
                                                        effort=selection["effort"], writable=writable, resume=resume,
                                                        schema=result_schema, compact_limit=self.compact_limit(phase),
-                                                       watch=lambda: self.poll_outbox(active, phase, attempt))
+                                                       watch=lambda: self.poll_outbox(active, phase, attempt),
+                                                       backend=selection["backend"])
         finally:
             try:  # progress drafts written before a failed or timed-out session are still posted
                 self.poll_outbox(active, phase, attempt, final=True)
@@ -772,11 +864,12 @@ class Runner:
                 captured = locals().get("events")
                 if captured is None and (attempt / "events.jsonl").exists():
                     captured = [json.loads(line) for line in (attempt / "events.jsonl").read_text().splitlines() if line.strip()]
-                meta["tool_output_bytes"] = self.model_backend.tool_output_bytes(captured or [])
+                meta["tool_output_bytes"] = self.backend(selection["backend"]).tool_output_bytes(captured or [])
                 write_json(attempt / "session.json", meta)
         write_json(attempt / "phase-result.json", result)
         if writable:
             active["session_id"] = session
+            active["session_backend"] = selection["backend"]
             active["session_last_phase"] = phase
             active.pop("pending_handoff", None)
         active["last_result"] = result
@@ -786,7 +879,7 @@ class Runner:
         self.reconcile_events()
         after = usage_totals([read_json(p) for p in Path(active["run_dir"]).glob("*/session.json")])["totals"]
         delta = {k: after[k] - before[k] if after[k] is not None and before[k] is not None else None for k in after}
-        delta["tool_calls"] = self.model_backend.tool_calls(events)
+        delta["tool_calls"] = self.backend(selection["backend"]).tool_calls(events)
         write_json(attempt / "phase-usage.json", delta)
         # An explicitly reconciled allowance (recover budget) replaces the registry budget
         # for this issue's phase; it is recorded in state and never reset by resume.
@@ -891,6 +984,14 @@ class Runner:
         pending = active.get("pending_handoff")
         if pending and not session:  # interrupted after the switch was recorded
             return None, self.handoff_seed(active, pending), pending
+        if session:
+            # A session cannot move between CLIs (an escalation or override may change the backend).
+            before = active.get("session_backend") or backends.DEFAULT
+            after = resolve_profile(self.config, active["issue"], phase, active.get("escalation"))["backend"]
+            if after != before:
+                policy = self.policy["phases"].get("bounded_sessions") or {"max_handoff_bytes": 12000}
+                return self.switch_session(active, session, phase, policy,
+                                           f"the {phase} model runs on the {after} backend, not {before}", None)
         policy = self.bounded_policy()
         if not policy or not session:
             return session, "", None
@@ -902,6 +1003,10 @@ class Runner:
             reason = "implement to self-check boundary"
         if reason is None:
             return session, "", None
+        return self.switch_session(active, session, phase, policy, reason, used)
+
+    def switch_session(self, active, session, phase, policy, reason, used):
+        """Record a switch to a fresh worker session seeded with a handoff; return its seed."""
         record = dict(self.take_handoff(active, session, phase, policy), from_session=session, reason=reason,
                       session_input=used, at=now(), next_phase=phase)
         active.setdefault("session_switches", []).append(record)

@@ -90,7 +90,9 @@ def draft_post(text, who, phase):
 # --- Runner-authored events -------------------------------------------------------------
 
 def claim(ctx, *, issue, selection, check_count, criteria_count, run_dir):
+    from linear_runner.backends import backend_class
     return render("claim", {"issue": issue, "profile": selection["profile"], "model": selection["model"],
+                            "backend": backend_class(selection.get("backend") or "codex").label,
                             "effort": selection["effort"], "check_count": plural(check_count, "configured check"),
                             "criteria_count": criteria_phrase(criteria_count), "evidence": evidence(run_dir)})
 

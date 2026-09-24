@@ -1,6 +1,6 @@
 {
   "notes": [
-    "Settled policy: the model/effort pairs used by earlier batches.",
+    "Settled policy: profile order, review floors and the single escalation; registry/pools.json maps each task kind, profile and phase to its ordered model pool.",
     "Review floor: Deep for Research, Validation and Deep-labelled issues; Standard otherwise.",
     "No phase overrides; one escalation to Deep after an unsuccessful repair.",
     "review_routing.light_review defines the low-risk review; a batch turns it on with context_controls.low_risk_review (off by default). The review may then use the lighter profile only if every deterministic check passed on the first validation (no repair or escalation), delivery checks passed, the issue has an allowed profile and task-kind label, no opt-out or gate label, is not blocked by a batch human-gate issue, and the committed diff is small. The Research, Validation and Deep review floors still apply, and the 'Full review' label restores the normal review."
@@ -11,20 +11,6 @@
     "Standard",
     "Deep"
   ],
-  "profiles": {
-    "Deep": {
-      "model": "gpt-6-astra",
-      "effort": "high"
-    },
-    "Standard": {
-      "model": "gpt-6-astra",
-      "effort": "medium"
-    },
-    "Economy": {
-      "model": "gpt-5.6-luna",
-      "effort": "max"
-    }
-  },
   "escalation_profile": "Deep",
   "review_floors": {
     "default": "Standard",

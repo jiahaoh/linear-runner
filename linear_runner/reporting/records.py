@@ -9,8 +9,8 @@ every copy under the given roots and keeps one record per identity:
 * an invocation is identified by its session ID, start time and role (worker/reviewer);
 * a check record by its issue, run, validation directory, name and start time.
 
-Usage semantics (the same as ``runner.usage_totals``): Codex counters are cumulative within
-a session, so the latest observed counter of each unique session counts once; cached input
+Usage semantics (the same as ``runner.usage_totals``): counters are cumulative within a
+session (Codex reports them so; the runner accumulates Claude's per-invocation counters), so the latest observed counter of each unique session counts once; cached input
 is a subset of input and reasoning output a subset of output; a missing counter is unknown,
 never zero. No model, network or Linear access.
 """
@@ -96,7 +96,8 @@ def read_invocation(path):
     selection = meta.get("selection") or {}
     return {
         "issue": issue, "run_id": run, "attempt": path.parent.name, "phase": phase, "role": ROLE[phase],
-        "session_id": meta.get("session_id"), "start": meta["started_at"], "end": meta.get("finished_at"),
+        "session_id": meta.get("session_id"), "backend": meta.get("backend") or "codex",
+        "start": meta["started_at"], "end": meta.get("finished_at"),
         "wall_seconds": meta.get("wall_seconds") if meta.get("finished_at") else None,
         "exit_code": meta.get("exit_code"),
         "status": result.get("status") if isinstance(result, dict) else None,
