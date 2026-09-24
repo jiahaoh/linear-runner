@@ -1,0 +1,14 @@
+[
+  {
+    "command": [
+      "python3",
+      "-m",
+      "unittest"
+    ],
+    "started_at": "2026-01-01T00:09:40+00:00",
+    "finished_at": "2026-01-01T00:09:45+00:00",
+    "exit_code": 0,
+    "log": "/absolute/path/to/runs/TEAM-1/20260101T000000Z-0000000a/delivery/0/check-0.log",
+    "sha256": "5871a0b5f9e32c9a888bbffe91b5e93984cf03cfb750ff4b9e4d0fb26a43d6ed"
+  }
+]

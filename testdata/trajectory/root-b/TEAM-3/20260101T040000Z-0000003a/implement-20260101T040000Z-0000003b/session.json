@@ -1,0 +1,21 @@
+{
+  "session_id": "sess-t3-impl",
+  "started_at": "2026-01-01T04:00:00+00:00",
+  "requested_model": "model-a",
+  "requested_reasoning_effort": "medium",
+  "exit_code": 0,
+  "selection": {
+    "profile": "Standard",
+    "model": "model-a",
+    "effort": "medium",
+    "selection_source": "issue labels"
+  },
+  "prompt_bytes": 850,
+  "tool_output_bytes": 12000,
+  "phase": "implement",
+  "finished_at": "2026-01-01T04:05:00+00:00",
+  "wall_seconds": 300.0,
+  "execution_evidence": {
+    "usage_events": null
+  }
+}

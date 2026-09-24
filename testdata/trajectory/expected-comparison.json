@@ -1,0 +1,28 @@
+[
+  {
+    "batch": "complete",
+    "issues": 2,
+    "recorded_invocations": 7,
+    "sessions": 5,
+    "covered": 5,
+    "active_seconds": 3420.0,
+    "recorded_check_seconds": 185.0,
+    "input_tokens": 4030000,
+    "cached_subset": 3680000,
+    "output_tokens": 25000,
+    "reasoning_subset": 5100
+  },
+  {
+    "batch": "with unknown",
+    "issues": 3,
+    "recorded_invocations": 8,
+    "sessions": 6,
+    "covered": 5,
+    "active_seconds": 3720.0,
+    "recorded_check_seconds": 185.0,
+    "input_tokens": null,
+    "cached_subset": null,
+    "output_tokens": null,
+    "reasoning_subset": null
+  }
+]

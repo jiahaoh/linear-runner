@@ -1,0 +1,16 @@
+[
+  {
+    "name": "unit",
+    "command": [
+      "python3",
+      "-m",
+      "unittest"
+    ],
+    "started_at": "2026-01-01T03:20:10+00:00",
+    "finished_at": "2026-01-01T03:21:10+00:00",
+    "exit_code": 1,
+    "reused": false,
+    "log": "/absolute/path/to/runs/TEAM-2/20260101T020000Z-0000001a/validation-20260101T032010Z-0000001d/0/check-0.log",
+    "sha256": "e93b97da809b0d2582d467fcf53eda3ae303e20632f4065b710e95fb5c99b7c0"
+  }
+]

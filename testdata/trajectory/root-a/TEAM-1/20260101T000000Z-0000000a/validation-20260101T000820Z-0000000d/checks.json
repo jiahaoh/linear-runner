@@ -1,0 +1,30 @@
+[
+  {
+    "name": "unit",
+    "command": [
+      "python3",
+      "-m",
+      "unittest"
+    ],
+    "started_at": "2026-01-01T00:08:20+00:00",
+    "finished_at": "2026-01-01T00:09:20+00:00",
+    "exit_code": 0,
+    "reused": false,
+    "log": "/absolute/path/to/runs/TEAM-1/20260101T000000Z-0000000a/validation-20260101T000820Z-0000000d/0/check-0.log",
+    "sha256": "8819e2758549ac7c5567b3a8aab1677060ac3cdfc850187b059fe673148814ad"
+  },
+  {
+    "name": "docs",
+    "command": [
+      "python3",
+      "-m",
+      "unittest"
+    ],
+    "started_at": "2026-01-01T00:09:20+00:00",
+    "finished_at": "2026-01-01T00:09:30+00:00",
+    "exit_code": 0,
+    "reused": false,
+    "log": "/absolute/path/to/runs/TEAM-1/20260101T000000Z-0000000a/validation-20260101T000820Z-0000000d/1/check-0.log",
+    "sha256": "e5284c5c692fd22972749df2809ede2ec5fd795c17bfb7174ef6339b76291c64"
+  }
+]

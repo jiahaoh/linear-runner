@@ -1,0 +1,52 @@
+{
+  "summaries": [
+    {
+      "issue": "TEAM-1",
+      "attempts": 3,
+      "sessions": 3,
+      "covered_sessions": 3,
+      "active_agent_wall_seconds": 1020.0,
+      "issue_elapsed_seconds": 3830.0,
+      "validation_seconds": 70.0,
+      "max_recorded_check_rss_kib": 1000,
+      "usage": {
+        "input_tokens": 1450000,
+        "cached_input_tokens": 1250000,
+        "output_tokens": 9500,
+        "reasoning_output_tokens": 2200
+      }
+    },
+    {
+      "issue": "TEAM-2",
+      "attempts": 4,
+      "sessions": 2,
+      "covered_sessions": 2,
+      "active_agent_wall_seconds": 2400.0,
+      "issue_elapsed_seconds": 6300.0,
+      "validation_seconds": 110.0,
+      "max_recorded_check_rss_kib": 2000,
+      "usage": {
+        "input_tokens": 2580000,
+        "cached_input_tokens": 2430000,
+        "output_tokens": 15500,
+        "reasoning_output_tokens": 2900
+      }
+    },
+    {
+      "issue": "TEAM-3",
+      "attempts": 1,
+      "sessions": 1,
+      "covered_sessions": 0,
+      "active_agent_wall_seconds": 300.0,
+      "issue_elapsed_seconds": 300.0,
+      "validation_seconds": null,
+      "max_recorded_check_rss_kib": null,
+      "usage": {
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "output_tokens": null,
+        "reasoning_output_tokens": null
+      }
+    }
+  ]
+}

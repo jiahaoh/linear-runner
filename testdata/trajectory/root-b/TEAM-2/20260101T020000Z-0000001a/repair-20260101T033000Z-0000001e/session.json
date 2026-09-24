@@ -1,0 +1,34 @@
+{
+  "session_id": "sess-t2-impl",
+  "started_at": "2026-01-01T03:30:00+00:00",
+  "requested_model": "model-a",
+  "requested_reasoning_effort": "medium",
+  "exit_code": 0,
+  "selection": {
+    "profile": "Standard",
+    "model": "model-a",
+    "effort": "medium",
+    "selection_source": "issue labels"
+  },
+  "prompt_bytes": 850,
+  "tool_output_bytes": 12000,
+  "phase": "repair",
+  "finished_at": "2026-01-01T03:35:00+00:00",
+  "wall_seconds": 300.0,
+  "execution_evidence": {
+    "usage_events": [
+      {
+        "event_index": 3,
+        "usage": {
+          "input_tokens": 2400000,
+          "cached_input_tokens": 2280000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 14000,
+          "reasoning_output_tokens": 2600
+        }
+      }
+    ],
+    "completed_tool_calls": 4,
+    "failed_tool_calls": 0
+  }
+}

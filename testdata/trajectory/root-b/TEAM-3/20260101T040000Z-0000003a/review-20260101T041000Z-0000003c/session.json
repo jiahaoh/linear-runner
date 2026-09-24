@@ -1,0 +1,16 @@
+{
+  "session_id": "sess-t3-rev",
+  "started_at": "2026-01-01T04:10:00+00:00",
+  "requested_model": "model-a",
+  "requested_reasoning_effort": "medium",
+  "exit_code": null,
+  "selection": {
+    "profile": "Standard",
+    "model": "model-a",
+    "effort": "medium",
+    "selection_source": "issue labels"
+  },
+  "prompt_bytes": 850,
+  "tool_output_bytes": 12000,
+  "phase": "review"
+}

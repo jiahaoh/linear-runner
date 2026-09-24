@@ -1279,6 +1279,20 @@ def build_parser():
                          help="planned checkpoint: stop after this issue is accepted (repeatable)")
         sub.add_argument("--scope", choices=["queue", "active"], default="queue",
                          help="active: finish only the saved active issue, then stop")
+    offline = argparse.ArgumentParser(add_help=False)
+    offline.add_argument("--runs", nargs="+", required=True, metavar="DIR",
+                         help="artifact roots or run directories to read (copies are deduplicated)")
+    offline.add_argument("--issues", nargs="+", metavar="ISSUE", help="only these issues (default: all found)")
+    report = commands.add_parser("report", parents=[offline],
+                                 help="offline: render trajectory, usage, attempts and validation audit from saved records")
+    report.add_argument("--out", help="directory for trajectory.json/.md/.html (default: print Markdown)")
+    report.add_argument("--until", help="ignore invocations starting after this ISO time (a recorded capture time)")
+    report.add_argument("--group", action="append", default=[], metavar="LABEL=ISSUE,ISSUE",
+                        help="batch comparison row (repeatable; default: one row for all issues)")
+    report.add_argument("--format", choices=["md", "html", "both"], default="both")
+    report.add_argument("--check-trajectory", metavar="JSON", help="recorded trajectory whose summaries must match")
+    report.add_argument("--check-comparison", metavar="JSON", help="recorded comparison rows to match")
+    report.add_argument("--check-label", help="compare only the recorded comparison row with this batch label")
     recover = commands.add_parser("recover", help="record an authorized recovery for the next launch")
     kinds = recover.add_subparsers(dest="kind", required=True, metavar="kind")
     authority = argparse.ArgumentParser(add_help=False)
@@ -1367,9 +1381,35 @@ def recover(args, runner):
                                   keep_commit=args.keep_commit, **common)
 
 
+def offline_report(args):
+    """``report``: model-free trajectory/usage rendering from saved records; no config or Linear."""
+    import trajectory
+    groups = {}
+    for value in args.group:
+        label, _, members = value.partition("=")
+        groups[label.strip()] = [m.strip() for m in members.split(",") if m.strip()]
+    result = trajectory.from_roots(args.runs, issues=args.issues, until=args.until, groups=groups or None,
+                                   captured_at=now())
+    reproduction = None
+    if args.check_trajectory or args.check_comparison:
+        reproduction = trajectory.compare_recorded(
+            result, read_json(args.check_trajectory) if args.check_trajectory else None,
+            read_json(args.check_comparison) if args.check_comparison else None, args.check_label)
+    if not args.out:
+        print(trajectory.render_markdown(result, reproduction))
+        return
+    formats = ("md", "html") if args.format == "both" else (args.format,)
+    paths = trajectory.write(args.out, result, formats=formats, reproduction=reproduction)
+    print(json.dumps({"written": paths, "issues": result["issues"], "pending": len(result["pending"]),
+                      "reproduction": None if reproduction is None else
+                      {"matched": sum(r["match"] for r in reproduction), "compared": len(reproduction)}}, indent=2))
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "report":
+        return offline_report(args)
     try:
         config = load_config(args.batch, args.home)
     except (ConfigError, OSError) as error:
