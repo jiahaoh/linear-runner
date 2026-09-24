@@ -268,7 +268,7 @@ print(json.dumps({{'type': 'turn.completed', 'usage': {{'input_tokens': 1, 'outp
             seen.append((issue, runner.child is not None and runner.child.poll() is None))
             (attempt / "released").write_text("posted")
         self.linear.on_post = released
-        result, _, _ = runner.codex("prompt", attempt, phase="implement", model="astra", effort="medium",
+        result, _, _ = runner.run_session("prompt", attempt, phase="implement", model="astra", effort="medium",
                                     writable=True, watch=lambda: runner.poll_outbox(active, "implement", attempt))
         self.assertEqual(seen, [("DEV-1", True)])  # posted while the Codex process was still running
         self.assertEqual(result, {"released": True})

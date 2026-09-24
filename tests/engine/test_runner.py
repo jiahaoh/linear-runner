@@ -15,9 +15,10 @@ from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
 from linear_runner.engine import runner as runner_module
 from linear_runner.cli import main
-from linear_runner.engine.runner import (RESULT_SCHEMA, Runner, execution_evidence, fingerprint, git, issue_contract,
-                                         project_lock, published_contract_matches, published_issue, resolve_profile,
-                                         review_criteria, review_schema, usage_totals, write_json)
+from linear_runner.backends.codex import execution_evidence
+from linear_runner.engine.runner import (RESULT_SCHEMA, Runner, fingerprint, git, issue_contract, project_lock,
+                                         published_contract_matches, published_issue, resolve_profile, review_criteria,
+                                         review_schema, usage_totals, write_json)
 
 
 class EngineTests(unittest.TestCase):
@@ -47,7 +48,7 @@ class EngineTests(unittest.TestCase):
                       "summary": "Ready", "acceptance": [{"criterion": "Produce validated output", "satisfied": True, "evidence": "result.txt and successful output check"}],
                       "limitations": []}
             return result, [], session
-        self.runner.codex = codex
+        self.runner.run_session = codex
 
     # --- End-to-end lifecycle and controller-owned commit ------------------------
 
@@ -69,13 +70,13 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("_sources", manifest["config"])
 
     def test_worker_commit_is_rejected_before_controller_commit(self):
-        original = self.runner.codex
+        original = self.runner.run_session
         def committing(prompt, directory, **kwargs):
             value = original(prompt, directory, **kwargs)
             if kwargs.get("writable"):
                 git(self.repo, "add", "--all"); git(self.repo, "commit", "-qm", "worker commit")
             return value
-        self.runner.codex = committing
+        self.runner.run_session = committing
         with self.assertRaisesRegex(RuntimeError, "changed Git history"):
             self.runner.execute(limit=1)
         self.assertNotEqual(self.linear.data["statusType"], "completed")
@@ -95,12 +96,12 @@ class EngineTests(unittest.TestCase):
     # --- Linear workflow states ---------------------------------------------------
 
     def test_review_phase_moves_issue_to_in_review_with_readback(self):
-        original = self.runner.codex
+        original = self.runner.run_session
         seen = []
         def observe(prompt, directory, **kwargs):
             seen.append((Path(directory).name.split("-")[0], self.linear.data["status"]))
             return original(prompt, directory, **kwargs)
-        self.runner.codex = observe
+        self.runner.run_session = observe
         self.runner.execute(limit=1)
         self.assertEqual(self.linear.writes, ["In Progress", "In Review", "Done"])
         self.assertEqual(seen, [("implement", "In Progress"), ("review", "In Review")])
@@ -109,7 +110,7 @@ class EngineTests(unittest.TestCase):
     def test_repairs_and_validation_stay_in_progress(self):
         self.runner.config["checks"][0]["command"] = [sys.executable, "-c", "import sys; from pathlib import Path; "
                                                       "sys.exit(0 if Path('result.txt').read_text() == 'fixed' else 1)"]
-        original = self.runner.codex
+        original = self.runner.run_session
         statuses = []
         def repairing(prompt, directory, **kwargs):
             value = original(prompt, directory, **kwargs)
@@ -117,7 +118,7 @@ class EngineTests(unittest.TestCase):
             if Path(directory).name.startswith("repair"):
                 (self.repo / "result.txt").write_text("fixed")
             return value
-        self.runner.codex = repairing
+        self.runner.run_session = repairing
         self.runner.execute(limit=1)
         self.assertEqual(statuses, ["In Progress", "In Progress", "In Review"])
         self.assertEqual(self.linear.writes, ["In Progress", "In Review", "Done"])
@@ -157,17 +158,17 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.calls, ["implement", "review"])
 
     def test_failed_review_resumes_from_in_review(self):
-        original = self.runner.codex
+        original = self.runner.run_session
         def blocked(prompt, directory, **kwargs):
             result, events, session = original(prompt, directory, **kwargs)
             if not kwargs.get("writable"):
                 result["status"] = "blocked"
             return result, events, session
-        self.runner.codex = blocked
+        self.runner.run_session = blocked
         with self.assertRaisesRegex(RuntimeError, "incomplete"):
             self.runner.execute(limit=1)
         self.assertEqual(self.linear.data["status"], "In Review")
-        self.runner.codex = original
+        self.runner.run_session = original
         self.runner.execute(limit=1, resume=True)
         self.assertEqual(self.linear.writes, ["In Progress", "In Review", "Done"])
         self.assertEqual(self.calls, ["implement", "review", "review"])
@@ -258,7 +259,7 @@ class EngineTests(unittest.TestCase):
     def test_two_repairs_share_one_escalation_and_survive_resume(self):
         self.linear.data["labels"] = ["Maintenance", "Economy"]
         self.config["checks"][0]["command"] = [sys.executable, "-c", "raise SystemExit(1)"]
-        original = self.runner.codex
+        original = self.runner.run_session
         models = []
         def changing(*args, **kwargs):
             value = original(*args, **kwargs)
@@ -266,7 +267,7 @@ class EngineTests(unittest.TestCase):
             if kwargs.get("writable"):
                 (self.repo / "result.txt").write_text(str(len(self.calls)))
             return value
-        self.runner.codex = changing
+        self.runner.run_session = changing
         with self.assertRaisesRegex(RuntimeError, "repair limit"):
             self.runner.execute(limit=1)
         active = self.runner.state["active"]
@@ -287,7 +288,7 @@ class EngineTests(unittest.TestCase):
         # A listed model without the requested effort is also unavailable (fresh state: config changed).
         config = copy.deepcopy(self.config); config["state_dir"] = str(self.root / "state-effort")
         config["policy"]["profiles"]["profiles"]["Standard"] = {"model": "luna", "effort": "medium"}
-        runner = Runner(config, self.linear); runner.codex = self.runner.codex
+        runner = Runner(config, self.linear); runner.run_session = self.runner.run_session
         write_json(self.root / "models.json", {"models": [{"slug": "luna", "supported_reasoning_levels": [{"effort": "max"}]}]})
         with self.assertRaisesRegex(RuntimeError, "unavailable"):
             runner.execute(limit=1)
@@ -413,13 +414,13 @@ class EngineTests(unittest.TestCase):
         self.assertIn("| pytest-extended | 5 | empty (no tests selected; allowed) | no |", measure.render_markdown(report))
 
     def test_review_cannot_change_validated_source(self):
-        original = self.runner.codex
+        original = self.runner.run_session
         def corrupt(prompt, directory, **kwargs):
             result = original(prompt, directory, **kwargs)
             if not kwargs.get("writable"):
                 (self.repo / "result.txt").write_text("unvalidated")
             return result
-        self.runner.codex = corrupt
+        self.runner.run_session = corrupt
         with self.assertRaisesRegex(RuntimeError, "Frozen"):
             self.runner.execute(limit=1)
         self.assertNotEqual(self.linear.data["statusType"], "completed")
@@ -427,13 +428,13 @@ class EngineTests(unittest.TestCase):
     # --- Criterion-level review --------------------------------------------------
 
     def test_checklist_omission_blocks_done(self):
-        original = self.runner.codex
+        original = self.runner.run_session
         def omission(*args, **kwargs):
             result, events, session = original(*args, **kwargs)
             if not kwargs.get("writable"):
                 result["acceptance"][0]["criterion"] = "Some other criterion"
             return result, events, session
-        self.runner.codex = omission
+        self.runner.run_session = omission
         with self.assertRaisesRegex(RuntimeError, "omitted"):
             self.runner.execute(limit=1)
         self.assertEqual(self.linear.data["statusType"], "started")
@@ -453,7 +454,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(review_schema(dict(issue, description="No checkbox"), "sha")["properties"]["acceptance"]["minItems"], 1)
 
     def test_invalid_review_results_never_publish_and_resume_without_reimplementation(self):
-        original = self.runner.codex
+        original = self.runner.run_session
         cases = [
             ({"issue_id": "invalid generated identity", "acceptance": []}, "identity"),
             ({"commit": "wrong-revision"}, "identity"),
@@ -475,13 +476,13 @@ class EngineTests(unittest.TestCase):
                     self.assertIn("Exact required criteria:", prompt)
                     result.update(changes)
                 return result, events, session
-            self.runner.codex = invalid
+            self.runner.run_session = invalid
             with self.subTest(changes=changes), self.assertRaisesRegex(RuntimeError, error):
                 self.runner.execute(limit=1, resume=index > 0)
             self.assertEqual(self.linear.data["statusType"], "started")
             self.assertEqual(self.runner.state["active"]["step"], "review")
             self.assertEqual(self.runner.state["history"], [])
-        self.runner.codex = original
+        self.runner.run_session = original
         self.runner.execute(limit=1, resume=True)
         self.assertEqual(self.calls.count("implement"), 1)
         self.assertEqual(self.linear.data["statusType"], "completed")
@@ -684,56 +685,6 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(self.calls)
 
 
-class CodexCommandTests(unittest.TestCase):
-    """Exercise the real subprocess argv/logging with a fake executable; no Codex or model."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        fake = self.root / "fake-codex"
-        fake.write_text(f"#!{sys.executable}\n" +
-                        "import json, pathlib, sys\n"
-                        "sys.stdin.read()\n"
-                        "schema=json.loads(pathlib.Path(sys.argv[sys.argv.index('--output-schema')+1]).read_text())\n"
-                        "pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({'received_schema': schema}))\n"
-                        "print(json.dumps({'type':'thread.started','thread_id':'fixture-session'}),flush=True)\n"
-                        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'output_tokens':2}}),flush=True)\n")
-        fake.chmod(0o755)
-        self.repo = self.root / "repo"; self.repo.mkdir()
-        home, batch = make_home(self.root, self.repo, site={"executables": {"codex": str(fake), "python": sys.executable}})
-        self.config, _ = pin_resolution(load_config(batch, home), FakeLinear())
-        self.runner = Runner(self.config, FakeLinear())
-
-    def test_selection_and_sandbox_are_forwarded_on_fresh_and_resumed_calls(self):
-        cases = [("implement", {"writable": True}), ("repair", {"writable": True, "resume": "original-session"}),
-                 ("review", {"writable": False})]
-        for phase, kwargs in cases:
-            with self.subTest(phase=phase):
-                directory = self.root / phase
-                result, _, session = self.runner.codex("test only", directory, phase=phase, model="astra", effort="high", **kwargs)
-                self.assertEqual(result["received_schema"], RESULT_SCHEMA)
-                self.assertEqual(session, "fixture-session")
-                meta = json.loads((directory / "session.json").read_text())
-                command = meta["command"]
-                self.assertEqual((meta["phase"], meta["requested_model"], meta["requested_reasoning_effort"]), (phase, "astra", "high"))
-                self.assertEqual(command[command.index("--model") + 1], "astra")
-                self.assertIn('model_reasoning_effort="high"', command)
-                self.assertIn("mcp_servers.linear.enabled=false", command)
-                if kwargs.get("resume"):
-                    self.assertGreater(command.index("--model"), command.index("resume"))
-                if kwargs["writable"]:
-                    self.assertIn("--approve-for-me", command)
-                else:
-                    self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-                self.assertEqual(meta["execution_evidence"]["usage_events"][0]["usage"]["input_tokens"], 10)
-                self.assertIsNone(meta["execution_evidence"]["observed_models"])
-
-    def test_custom_schema_reaches_cli_unchanged(self):
-        custom = {"type": "object", "properties": {"issue_id": {"type": "string", "enum": ["DEV-1"]}}, "required": ["issue_id"], "additionalProperties": False}
-        result, _, _ = self.runner.codex("schema fixture", self.root / "custom", phase="review", model="astra", effort="high", schema=custom)
-        self.assertEqual(result["received_schema"], custom)
-
-
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
@@ -807,7 +758,7 @@ class ControllerTests(unittest.TestCase):
         write_json(state, {"phase": "queue_complete", "history": [{"issue_id": "DEV-1"}]})
         before = state.read_bytes()
         with patch.object(cli_module, "pin_resolution", side_effect=lambda config, linear: pin_resolution(config, FakeLinear())), \
-                patch.object(Runner, "codex") as codex, patch.object(Runner, "report_pause") as report, patch("sys.stderr"):
+                patch.object(Runner, "run_session") as codex, patch.object(Runner, "report_pause") as report, patch("sys.stderr"):
             with self.assertRaises(SystemExit):
                 main(["run", *self.args])
             codex.assert_not_called(); report.assert_not_called()

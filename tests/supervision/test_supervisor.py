@@ -91,7 +91,7 @@ class Harness(unittest.TestCase):
         if fresh:
             write_resolved(config)
         runner = Runner(config, self.linear)
-        runner.codex = self.codex
+        runner.run_session = self.codex
         return runner
 
     def launch(self, **kwargs):
@@ -236,7 +236,7 @@ class SupervisorExitTests(Harness):
         class Engine(Runner):
             def __init__(self, config, linear=None):
                 super().__init__(config, fake.linear)
-                self.codex = fake.codex
+                self.run_session = fake.codex
         with patch("linear_runner.supervision.supervisor.Runner", Engine), patch.object(cli_module, "LinearClient", lambda *a, **k: self.linear), \
                 patch.object(cli_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
                 patch("signal.signal"), patch("sys.stderr"):

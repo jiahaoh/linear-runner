@@ -23,6 +23,7 @@ import tarfile
 import time
 import uuid
 
+from linear_runner import backends
 from linear_runner.linear import attention
 from linear_runner.config import ATTENTION_DEFAULTS, PHASES, ConfigError, config_fingerprint, read_json, write_json
 from linear_runner.engine.delivery import EMPTY_NOTE, check_outcome, check_passed
@@ -78,34 +79,6 @@ def project_lock(path):
         except BlockingIOError as error:
             raise RuntimeError("Another controller holds this project's lock") from error
         yield
-
-
-def execution_evidence(events):
-    """Summarize CLI evidence, never model-authored claims or inferred billing."""
-    usage, models, efforts = [], [], []
-    tool_calls = tool_failures = 0
-    for index, event in enumerate(events):
-        kind = event.get("type")
-        if kind == "turn.completed" and isinstance(event.get("usage"), dict):
-            usage.append({"event_index": index, "usage": event["usage"]})
-        # Some CLI versions expose model metadata; 0.154.0 may not.
-        if kind in {"thread.started", "turn.started", "turn.completed"} and isinstance(event.get("model"), str):
-            models.append({"event_index": index, "event_type": kind, "model": event["model"]})
-        if kind in {"thread.started", "turn.started", "turn.completed"} and isinstance(event.get("reasoning_effort"), str):
-            efforts.append({"event_index": index, "event_type": kind, "reasoning_effort": event["reasoning_effort"]})
-        item = event.get("item", {})
-        if kind == "item.completed" and item.get("type") in {"mcp_tool_call", "command_execution"}:
-            tool_calls += 1
-            result = item.get("result") or {}
-            if (item.get("error") or item.get("status") in {"failed", "declined"}
-                    or item.get("exit_code") not in (None, 0)
-                    or isinstance(result, dict) and result.get("isError")):
-                tool_failures += 1
-    return {"observed_models": models or None, "observed_reasoning_efforts": efforts or None, "usage_events": usage or None,
-            "completed_tool_calls": tool_calls, "failed_tool_calls": tool_failures,
-            "error_events": sum(e.get("type") in {"error", "turn.failed"} for e in events),
-            "provider_retries": None, "billed_cost": None,
-            "unverified": "Missing model/effort/usage evidence, provider retries and billed cost are not inferred; raw events/stderr retained."}
 
 
 RESULT_SCHEMA = {
@@ -266,6 +239,7 @@ class Runner:
         self.state["identity"] = identity
         self.child = None
         self.linear = linear or LinearClient(config["linear"])
+        self.model_backend = backends.create(config)  # the agent CLI that runs model sessions
         # A recovery may restrict which model phases this process can start (None: all).
         self.allowed_phases = None
         self.attention = config.get("attention") or copy.deepcopy(ATTENTION_DEFAULTS)
@@ -311,43 +285,30 @@ class Runner:
                 os.killpg(self.child.pid, signal.SIGKILL)
                 self.child.wait()
 
-    # --- Codex and check subprocesses -------------------------------------------
+    # --- Model sessions and check subprocesses ---------------------------------------
 
-    def codex(self, prompt, directory, *, phase, model, effort, writable=False, resume=None, schema=None, watch=None,
-              compact_limit=None):
-        """Run one ``codex exec`` turn; the result must match ``schema`` (default RESULT_SCHEMA).
+    def run_session(self, prompt, directory, *, phase, model, effort, writable=False, resume=None, schema=None,
+                    watch=None, compact_limit=None):
+        """Run one model session through the model backend; the result must match ``schema``
+        (default RESULT_SCHEMA).
 
-        ``compact_limit`` (tokens) is passed as ``-c model_auto_compact_token_limit=<N>`` on
-        fresh and resumed calls; ``None`` leaves the Codex default.
+        ``compact_limit`` (tokens) is the backend's auto-compaction threshold on fresh and
+        resumed calls; ``None`` leaves the backend default.
 
         ``watch`` is called about every ``attention.outbox.poll_seconds`` while the process
         runs (the outbox poll); its errors are logged, never fatal to the session.
         """
+        backend = self.model_backend
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=False)
         (directory / "outbox").mkdir()
         (directory / "prompt.txt").write_text(prompt)
-        result_path = directory / "result.json"
-        command = [self.config["codex"], "exec"]
-        # Parent options precede the subcommand so resumed turns keep the same approvals.
-        if writable or resume:
-            command += ["--approve-for-me", "--add-dir", self.config["artifact_root"]]
-        else:
-            command += ["--sandbox", "read-only", "-c", 'approval_policy="on-request"',
-                        "-c", 'approvals_reviewer="auto_review"']
-        if resume:
-            command += ["resume", resume]
-        else:
-            command += ["-C", str(self.repo)]
-        # Resume has its own --model option; pass selections after the subcommand.
-        command += ["--model", model, "-c", "model_reasoning_effort=" + json.dumps(effort)]
-        if compact_limit is not None:
-            command += ["-c", f"model_auto_compact_token_limit={int(compact_limit)}"]
-        # The controller owns every Linear read and write.
-        command += ["-c", "mcp_servers.linear.enabled=false", "--json", "-o", str(result_path)]
         schema_path = directory / "schema.json"
+        request = backends.SessionRequest(prompt=prompt, directory=directory, cwd=self.repo, model=model, effort=effort,
+                                          writable=writable, resume=resume, schema_path=schema_path,
+                                          compact_limit=compact_limit)
+        command = backend.command(request)
         write_json(schema_path, schema if schema is not None else RESULT_SCHEMA)
-        command += ["--output-schema", str(schema_path), "-"]
         meta = {"phase": phase, "requested_model": model, "requested_reasoning_effort": effort,
                 "compact_token_limit": compact_limit,
                 "started_at": now(), "command": command, "cwd": str(self.repo), "session_id": resume,
@@ -372,7 +333,7 @@ class Runner:
                     next_poll = time.monotonic()
                     while True:
                         if time.monotonic() >= deadline:
-                            raise TimeoutError(f"Codex exceeded {timeout} seconds; see {directory}")
+                            raise TimeoutError(f"{backend.label} exceeded {timeout} seconds; see {directory}")
                         if watch and time.monotonic() >= next_poll:
                             next_poll = time.monotonic() + self.attention["outbox"]["poll_seconds"]
                             try:
@@ -391,13 +352,14 @@ class Runner:
                             except ValueError:
                                 continue
                             events.append(event)
-                            if event.get("type") == "thread.started":
-                                meta["session_id"] = event["thread_id"]
+                            if backend.session_started(event):
+                                session = backend.session_id(event)
+                                meta["session_id"] = session
                                 write_json(directory / "session.json", meta)
                                 if (writable or resume) and self.state.get("active"):
-                                    self.state["active"]["session_id"] = event["thread_id"]
+                                    self.state["active"]["session_id"] = session
                                     self.save()
-                                self.log(f"session {event['thread_id']} ({directory.name})")
+                                self.log(f"session {session} ({directory.name})")
                         elif self.child.poll() is not None:
                             # Read remaining buffered lines before reaching EOF.
                             continue
@@ -408,16 +370,14 @@ class Runner:
                 self.child.stdout.close()
             meta["finished_at"] = now()
             meta["wall_seconds"] = time.monotonic() - started
-            meta["execution_evidence"] = execution_evidence(events)
+            meta["execution_evidence"] = backend.evidence(events)
             meta["exit_code"] = self.child.returncode if self.child else None
             write_json(directory / "session.json", meta)
             self.child = None
             self.save(child_pid=None)
-        if returncode != 0 or not any(e.get("type") == "turn.completed" for e in events):
-            raise RuntimeError(f"Codex failed or did not finish a turn; see {directory}")
-        if not result_path.exists():
-            raise RuntimeError(f"Missing structured result: {result_path}")
-        return read_json(result_path), events, meta["session_id"]
+        if returncode != 0 or not backend.finished(events):
+            raise RuntimeError(f"{backend.label} failed or did not finish a turn; see {directory}")
+        return backend.result(request, events), events, meta["session_id"]
 
     def validate(self, directory, checks, environment):
         """Run argv checks (no shell) with ``{run_dir}`` substitution; record logs and hashes.
@@ -493,12 +453,8 @@ class Runner:
     # --- Deterministic gates and Linear read-back -------------------------------
 
     def verify_model(self, selection):
-        catalog = read_json(Path(self.config["model_catalog"]).expanduser())
-        models = [m for m in catalog.get("models", []) if m.get("slug") == selection["model"]]
-        if len(models) != 1 or selection["effort"] not in {
-                level["effort"] for level in models[0].get("supported_reasoning_levels", [])}:
-            raise RuntimeError("Requested model/effort unavailable in host CLI catalog; no substitution")
-        # Catalog support is not a guarantee of remote quota/entitlement at call time.
+        """The selected model/effort must be in the backend's host CLI catalog; never substituted."""
+        self.model_backend.check_selection(selection)
 
     def check_gates(self):
         for identity in self.config["required_done"]:
@@ -797,10 +753,10 @@ class Runner:
         before_records = [read_json(p) for p in Path(active["run_dir"]).glob("*/session.json")]
         before = usage_totals(before_records)["totals"]
         try:
-            result, events, session = self.codex(prompt, attempt, phase=phase, model=selection["model"],
-                                                 effort=selection["effort"], writable=writable, resume=resume,
-                                                 schema=result_schema, compact_limit=self.compact_limit(phase),
-                                                 watch=lambda: self.poll_outbox(active, phase, attempt))
+            result, events, session = self.run_session(prompt, attempt, phase=phase, model=selection["model"],
+                                                       effort=selection["effort"], writable=writable, resume=resume,
+                                                       schema=result_schema, compact_limit=self.compact_limit(phase),
+                                                       watch=lambda: self.poll_outbox(active, phase, attempt))
         finally:
             try:  # progress drafts written before a failed or timed-out session are still posted
                 self.poll_outbox(active, phase, attempt, final=True)
@@ -816,7 +772,7 @@ class Runner:
                 captured = locals().get("events")
                 if captured is None and (attempt / "events.jsonl").exists():
                     captured = [json.loads(line) for line in (attempt / "events.jsonl").read_text().splitlines() if line.strip()]
-                meta["tool_output_bytes"] = sum(len(json.dumps(e.get("item", {}).get("result", e.get("item", {}).get("aggregated_output", ""))).encode()) for e in (captured or []) if e.get("type") == "item.completed")
+                meta["tool_output_bytes"] = self.model_backend.tool_output_bytes(captured or [])
                 write_json(attempt / "session.json", meta)
         write_json(attempt / "phase-result.json", result)
         if writable:
@@ -830,9 +786,7 @@ class Runner:
         self.reconcile_events()
         after = usage_totals([read_json(p) for p in Path(active["run_dir"]).glob("*/session.json")])["totals"]
         delta = {k: after[k] - before[k] if after[k] is not None and before[k] is not None else None for k in after}
-        tool_calls = sum(e.get("type") == "item.completed" and e.get("item", {}).get("type") in
-                         {"mcp_tool_call", "command_execution"} for e in events)
-        delta["tool_calls"] = tool_calls
+        delta["tool_calls"] = self.model_backend.tool_calls(events)
         write_json(attempt / "phase-usage.json", delta)
         # An explicitly reconciled allowance (recover budget) replaces the registry budget
         # for this issue's phase; it is recorded in state and never reset by resume.
@@ -898,7 +852,7 @@ class Runner:
     # --- Bounded worker sessions (batch opt-in; thresholds in registry phases.bounded_sessions)
 
     def compact_limit(self, phase):
-        """Codex auto-compaction threshold: the batch override, else the registry phase value, else None."""
+        """Auto-compaction threshold: the batch override, else the registry phase value, else None."""
         override = (self.config.get("context_controls") or {}).get("compact_token_limit")
         return override if override is not None else self.policy["phases"]["phases"][phase].get("compact_token_limit")
 

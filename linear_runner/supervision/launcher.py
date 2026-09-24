@@ -41,6 +41,7 @@ import subprocess
 import sys
 import time
 
+from linear_runner import backends
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
 from linear_runner.supervision.recovery import expected_state
 from linear_runner.engine.runner import (PHASES, Runner, fingerprint, git, issue_contract, now, project_lock,
@@ -99,12 +100,7 @@ def _check_worktree(runner):
 
 
 def _check_catalog(config):
-    catalog = read_json(Path(config["model_catalog"]).expanduser())
-    available = {m.get("slug"): sorted(level.get("effort") for level in m.get("supported_reasoning_levels", []))
-                 for m in catalog.get("models", []) if isinstance(m, dict)}
-    profiles = {name: value["model"] in available and value["effort"] in available[value["model"]]
-                for name, value in config["policy"]["profiles"]["profiles"].items()}
-    return {"models": len(available), "registry_profiles_available": profiles}
+    return backends.create(config).catalog_report(config["policy"]["profiles"]["profiles"])
 
 
 def _baseline_checks(runner, directory):

@@ -8,10 +8,9 @@ import unittest
 
 from linear_runner.engine import intake
 from linear_runner.reporting import measure
-from tests.fixtures import CHECKOUT, FakeLinear, TEST_REGISTRY, make_home
-from linear_runner.config import load_config, pin_resolution
-from linear_runner.engine.runner import Runner, git, usage_totals, write_json
-import tempfile
+from tests.fixtures import CHECKOUT, TEST_REGISTRY
+from linear_runner.config import load_config
+from linear_runner.engine.runner import git, usage_totals, write_json
 from tests.supervision.test_supervisor import Harness
 from linear_runner.reporting import trajectory
 
@@ -424,72 +423,6 @@ class TerminalTrajectoryTests(Harness):
                          {"error": "broken records"})
 
 
-class CompactionArgvTests(unittest.TestCase):
-    """The real subprocess argv with a fake Codex executable; no model is called."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        fake = self.root / "fake-codex"
-        fake.write_text(f"#!{sys.executable}\n" +
-                        "import json, pathlib, sys\n"
-                        "sys.stdin.read()\n"
-                        "pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps({'argv': sys.argv[1:]}))\n"
-                        "print(json.dumps({'type':'thread.started','thread_id':'fixture-session'}),flush=True)\n"
-                        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'output_tokens':2}}),flush=True)\n")
-        fake.chmod(0o755)
-        self.repo = self.root / "repo"; self.repo.mkdir()
-        self.home, self.batch = make_home(self.root, self.repo,
-                                          site={"executables": {"codex": str(fake), "python": sys.executable}})
-
-    def runner(self, controls=None, registry=None):
-        if controls is not None:
-            batch = json.loads(self.batch.read_text())
-            self.batch.write_text(json.dumps(dict(batch, context_controls=controls)))
-        if registry is not None:
-            write_json(self.home / "registry" / "phases.json", registry)
-        config, _ = pin_resolution(load_config(self.batch, self.home), FakeLinear())
-        return Runner(config, FakeLinear())
-
-    def argv(self, runner, phase, **kwargs):
-        directory = self.root / f"{phase}-{len(list(self.root.iterdir()))}"
-        result, _, _ = runner.codex("test only", directory, phase=phase, model="astra", effort="high",
-                                    compact_limit=runner.compact_limit(phase), **kwargs)
-        meta = json.loads((directory / "session.json").read_text())
-        return result["argv"], meta["compact_token_limit"]
-
-    def test_limit_is_passed_on_fresh_and_resumed_calls_only_when_set(self):
-        runner = self.runner()
-        for kwargs in ({"writable": True}, {"writable": True, "resume": "s-1"}, {"writable": False}):
-            argv, recorded = self.argv(runner, "implement", **kwargs)
-            self.assertFalse([a for a in argv if "auto_compact" in a])
-            self.assertIsNone(recorded)
-        runner = self.runner({"compact_token_limit": 150000})
-        for kwargs in ({"writable": True}, {"writable": True, "resume": "s-1"}, {"writable": False}):
-            with self.subTest(**kwargs):
-                argv, recorded = self.argv(runner, "review", **kwargs)
-                index = argv.index("model_auto_compact_token_limit=150000")
-                self.assertEqual(argv[index - 1], "-c")
-                if kwargs.get("resume"):
-                    self.assertGreater(index, argv.index("resume"))
-                self.assertEqual(recorded, 150000)
-
-    def test_registry_phase_value_and_batch_override(self):
-        registry = copy.deepcopy(TEST_REGISTRY["phases"])
-        registry["phases"]["implement"]["compact_token_limit"] = 120000
-        runner = self.runner(registry=registry)
-        self.assertEqual((runner.compact_limit("implement"), runner.compact_limit("review")), (120000, None))
-        self.assertIn("model_auto_compact_token_limit=120000", self.argv(runner, "implement", writable=True)[0])
-        runner = self.runner({"compact_token_limit": 90000})
-        self.assertEqual((runner.compact_limit("implement"), runner.compact_limit("review")), (90000, 90000))
-
-    def test_schema_rejects_a_tiny_or_non_integer_limit(self):
-        from linear_runner.config import ConfigError
-        for bad in (10, "150000"):
-            with self.assertRaises(ConfigError):
-                self.runner({"compact_token_limit": bad})
-
-
 class CompactionRecordTests(Harness):
     BATCH = {"context_controls": {"compact_token_limit": 150000}}
 
@@ -505,7 +438,7 @@ class CompactionRecordTests(Harness):
                                        finished_at="2026-01-01T00:01:00+00:00", wall_seconds=60.0))
             return value
         runner = self.make_runner()
-        runner.codex = codex
+        runner.run_session = codex
         runner.execute(limit=1)
         self.assertEqual(seen, [150000, 150000])
         run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())
