@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import shlex
 
-from updates import first_sentence, plain, quote, render, variant
+from linear_runner.linear.updates import first_sentence, plain, quote, render, variant
 
 AUTH = '--reason "<why>" --authorized-by "<your name>"'
 
 
 def context(config):
     """Values every message needs, from a resolved configuration."""
-    from config import DEFAULT_HOME, batch_argument, find_home
+    from linear_runner.config import DEFAULT_HOME, batch_argument, find_home
     home = config.get("variables", {}).get("home")
     attention = config.get("attention", {})
     return {"batch": config["batch_id"], "batch_arg": batch_argument(config),
@@ -112,7 +112,7 @@ def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), m
 
 
 def validation(ctx, *, issue, records, passed, repair=None, directory=None):
-    from delivery import check_passed
+    from linear_runner.engine.delivery import check_passed
     failing = [r for r in records if not check_passed(r)]
     empty = [r for r in records if r.get("status") == "empty" and check_passed(r)]
     reused = sum(bool(r.get("reused")) for r in records)

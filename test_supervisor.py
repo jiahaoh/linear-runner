@@ -13,16 +13,19 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from config import load_config, pin_resolution, write_resolved
+from linear_runner.config import load_config, pin_resolution, write_resolved
 from fixtures import TEST_REGISTRY, FakeLinear, make_home
-from launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
-import recovery
-from recovery import RecoveryError, verify_log
-from rules import RuleError, evaluate, parse_rules
-import runner as runner_module
-from runner import Runner, git, main, project_lock, review_criteria, write_json
-from supervisor import SupervisorRefused, supervise
+from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
+from linear_runner.supervision import recovery
+from linear_runner.supervision.recovery import RecoveryError, verify_log
+from linear_runner.supervision.rules import RuleError, evaluate, parse_rules
+from linear_runner import cli as cli_module
+from linear_runner.engine import runner as runner_module
+from linear_runner.cli import main
+from linear_runner.engine.runner import Runner, git, project_lock, review_criteria, write_json
+from linear_runner.supervision.supervisor import SupervisorRefused, supervise
 
+CHECKOUT = Path(__file__).resolve().parent  # the runner checkout: runner.py, registry/, schema/, templates/
 RULES = "# defer this issue instead of stopping everything\ndefer issue when worker blocked 2 times on the same criterion"
 
 
@@ -235,8 +238,8 @@ class SupervisorExitTests(Harness):
             def __init__(self, config, linear=None):
                 super().__init__(config, fake.linear)
                 self.codex = fake.codex
-        with patch("supervisor.Runner", Engine), patch.object(runner_module, "LinearClient", lambda *a, **k: self.linear), \
-                patch.object(runner_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
+        with patch("linear_runner.supervision.supervisor.Runner", Engine), patch.object(cli_module, "LinearClient", lambda *a, **k: self.linear), \
+                patch.object(cli_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
                 patch("signal.signal"), patch("sys.stderr"):
             try:
                 main(args)
@@ -299,13 +302,14 @@ class SystemdBackendTests(Harness):
         self.assertTrue(unit.startswith("linear-runner-fixture-L-") and unit.endswith(".service"))
         for expected in ("--property=Restart=no", "--property=KillMode=control-group",
                          f"--property=StandardOutput=append:{self.state_dir / 'supervisor.log'}",
-                         f"--property=WorkingDirectory={Path(runner_module.__file__).parent}",
+                         f"--property=WorkingDirectory={CHECKOUT}",
                          "--setenv=PATH=/usr/bin:/bin", "--setenv=TEST_LINEAR_TOKEN"):
             self.assertIn(expected, argv)
         self.assertTrue(any(a.startswith("--property=ExecStopPost=") and a.endswith(str(self.state_dir / "STOP")) for a in argv))
         command = argv[argv.index("-c") - 1:]
         self.assertTrue(command[0].endswith("taskset")); self.assertEqual(command[1:3], ["-c", "0"])
-        self.assertEqual(command[3:6], [sys.executable, str(Path(runner_module.__file__).parent / "runner.py"), "supervise"])
+        self.assertEqual(command[3:6], [sys.executable, str(CHECKOUT / "runner.py"), "supervise"])
+        self.assertTrue(Path(command[4]).is_file())  # ExecStart runs the checkout's runner.py entry point
         self.assertEqual(command[-2:], ["--stop-after", "DEV-1"])
         self.assertEqual(calls[2][:3], ["systemctl", "--user", "show"])
         self.assertEqual(entry["confirmation"]["supervisor"]["pid"], 4242)
@@ -321,10 +325,10 @@ class SystemdBackendTests(Harness):
         unit = f"linear-runner-fixture-{entry['launch_id']}-watchdog"
         self.assertEqual(timer_argv[:7], ["systemd-run", "--user", f"--unit={unit}", "--on-active=10min",
                                           "--on-unit-active=10min", "--timer-property=AccuracySec=30s",
-                                          f"--property=WorkingDirectory={Path(runner_module.__file__).parent}"])
+                                          f"--property=WorkingDirectory={CHECKOUT}"])
         self.assertIn("--setenv=PATH=/usr/bin:/bin", timer_argv)
         command = timer_argv[timer_argv.index(sys.executable):]
-        self.assertEqual(command, [sys.executable, str(Path(runner_module.__file__).parent / "runner.py"), "watchdog",
+        self.assertEqual(command, [sys.executable, str(CHECKOUT / "runner.py"), "watchdog",
                                    "--batch", "fixture", "--home", str(self.home), "--launch-id", entry["launch_id"],
                                    "--timer", unit + ".timer"])
         self.assertIn("supervise", calls[1])  # the supervisor starts only after the timer
@@ -806,7 +810,7 @@ class RepinConfigTests(Harness):
     def setUp(self):
         super().setUp()
         self.identity = {"commit": "a" * 40, "dirty": False}
-        patcher = patch("config.runner_identity", side_effect=lambda *args: dict(self.identity))
+        patcher = patch("linear_runner.config.runner_identity", side_effect=lambda *args: dict(self.identity))
         patcher.start(); self.addCleanup(patcher.stop)
         self.edit_project(lambda project: project["checks"].append(dict(EMPTY_CHECK)))
 
@@ -841,7 +845,7 @@ class RepinConfigTests(Harness):
             self.recover("revalidate")
         args = ["--batch", str(self.batch), "--home", str(self.home), "--reason", "allow the empty extended tier",
                 "--authorized-by", "Owner"]
-        with patch.object(runner_module, "LinearClient", lambda *a, **k: self.linear), \
+        with patch.object(cli_module, "LinearClient", lambda *a, **k: self.linear), \
                 patch("sys.stdout") as stdout:
             main(["recover", "repin-config", *args])
         record = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
@@ -1143,7 +1147,7 @@ class DeliveryIntegrityTests(Harness):
         self.assertNotIn(("DEV-1", "review"), self.calls)
 
     def test_verify_delivery_rejects_each_integrity_failure(self):
-        from delivery import DeliveryError, sha256, verify_delivery
+        from linear_runner.engine.delivery import DeliveryError, sha256, verify_delivery
         directory = self.root / "delivery"; (directory / "packet").mkdir(parents=True)
         log = self.root / "check.log"; log.write_text("ok")
         records = [{"name": "output", "exit_code": 0, "log": str(log), "sha256": sha256(log)}]
@@ -1208,8 +1212,8 @@ class CommandLineTests(Harness):
         args = ["--batch", str(self.batch), "--home", str(self.home)]
         self.state_dir.mkdir(parents=True); (self.state_dir / "STOP").write_text("held")
         fake = FakeLinear()
-        with patch.object(runner_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, fake)), \
-                patch.object(runner_module.LinearClient, "call", side_effect=AssertionError("no Linear")), \
+        with patch.object(cli_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, fake)), \
+                patch.object(cli_module.LinearClient, "call", side_effect=AssertionError("no Linear")), \
                 patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
             main(["launch", *args, "--backend", "foreground"])
         self.assertEqual(raised.exception.code, 2)

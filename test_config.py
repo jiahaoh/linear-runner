@@ -10,10 +10,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import config
-from config import ConfigError, config_fingerprint, find_home, load_config, pin_resolution, write_resolved
+from linear_runner import config
+from linear_runner.config import ConfigError, config_fingerprint, find_home, load_config, pin_resolution, write_resolved
 from fixtures import FakeLinear, TEST_REGISTRY, make_home, write
-from linear_client import LinearClient
+from linear_runner.linear.client import LinearClient
 
 ROOT = Path(__file__).resolve().parent
 
@@ -255,7 +255,8 @@ class RunnerIdentityTests(unittest.TestCase):
     def checkout(self, name):
         """Copy the runner sources into a fresh Git repository with a deterministic commit."""
         target = self.root / name
-        for relative in ("config.py", "linear_client.py", "prompts/generic.md", *[
+        for relative in ("linear_runner/__init__.py", "linear_runner/config.py", "linear_runner/linear/__init__.py",
+                         "linear_runner/linear/client.py", "prompts/generic.md", *[
                 str(p.relative_to(ROOT)) for folder in ("registry", "schema") for p in (ROOT / folder).glob("*.json")]):
             (target / relative).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, target / relative)
@@ -267,7 +268,7 @@ class RunnerIdentityTests(unittest.TestCase):
         return target, env
 
     def fingerprint(self, checkout):
-        script = ("import json, sys, config\n"
+        script = ("import json, sys\nfrom linear_runner import config\n"
                   "c = config.load_config(sys.argv[1], sys.argv[2]); c.update(project_id='p', assignee_id='u')\n"
                   "print(json.dumps([config.config_fingerprint(c), c['runner'], c['variables']['runner_root']]))")
         output = subprocess.run([sys.executable, "-c", script, str(self.batch), str(self.home)], cwd=checkout,
@@ -278,6 +279,10 @@ class RunnerIdentityTests(unittest.TestCase):
         first, env = self.checkout("checkout-a")
         second, _ = self.checkout("elsewhere/checkout-b")
         a, b = self.fingerprint(first), self.fingerprint(second)
+        # ${runner_root} is the checkout root (where runner.py, registry/ and schema/ live), not the package.
+        self.assertEqual((a[2], b[2]), (str(first), str(second)))
+        self.assertEqual(a[1]["commit"], subprocess.run(["git", "-C", str(first), "rev-parse", "HEAD"], check=True,
+                                                        capture_output=True, text=True).stdout.strip())
         self.assertNotEqual(a[2], b[2])
         self.assertEqual(a[1], b[1])
         self.assertFalse(a[1]["dirty"])

@@ -16,7 +16,9 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+from linear_runner.config import RUNNER_ROOT
+
+TEMPLATE_DIR = RUNNER_ROOT / "templates"
 # Draft kinds a model may write, per phase. ``review`` drafts come from the reviewer's
 # structured ``summary`` because the review sandbox is read-only (see Runner.review_draft).
 DRAFT_KINDS = {"implement": ("progress", "ready", "blocked"), "repair": ("progress", "ready", "blocked"),

@@ -24,8 +24,8 @@ from html import escape
 import json
 from pathlib import Path
 
-import records
-from records import USAGE_KEYS, parse_time
+from linear_runner.reporting import records
+from linear_runner.reporting.records import USAGE_KEYS, parse_time
 
 SCHEMA = "linear-runner.trajectory/1"
 SEMANTICS = [

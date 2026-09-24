@@ -43,10 +43,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from config import write_json
-import intake as intake_module
-from runner import (IssueBlocked, git, fingerprint, issue_contract, now, run_id, review_criteria,
-                    validate_review_result)
+from linear_runner.config import write_json
+from linear_runner.engine import intake as intake_module
+from linear_runner.engine.runner import (IssueBlocked, git, fingerprint, issue_contract, now, run_id, review_criteria,
+                                         validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
 KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel", "repin-config")
@@ -170,7 +170,7 @@ def _repin(runner, active, identifier):
     live = runner.linear.issue(active["issue_id"])
     runner.verify_issue(live)
     runner.verify_live_state(live, active["step"])
-    from rules import RuleError, parse_rules
+    from linear_runner.supervision.rules import RuleError, parse_rules
     try:
         parse_rules(live.get("description", ""), review_criteria(live))
     except RuleError as error:
@@ -270,7 +270,7 @@ def recover_revalidate(runner, *, reason, authorized_by, then="continue"):
     previous = Path(active.get("validation_dir") or "") / "checks.json"
     if not active.get("validation_dir") or not previous.is_file():
         raise RecoveryError(f"{active['issue_id']} has not run its checks yet; `recover resume` runs them")
-    from delivery import check_passed
+    from linear_runner.engine.delivery import check_passed
     records = json.loads(previous.read_text())
     identifier = "R-" + run_id()
     details = {"id": identifier, "issue": active["issue_id"], "step": active["step"],
@@ -397,9 +397,9 @@ def recover_repin_config(config, linear, *, reason, authorized_by):
 
     ``config`` is freshly loaded (``load_config``). Applied at once; see the module notes.
     """
-    from config import (RESOLVED_NAME, _with_ids, config_changes, config_fingerprint, read_json,
-                        resolution_names, write_resolved)
-    from runner import Runner
+    from linear_runner.config import (RESOLVED_NAME, _with_ids, config_changes, config_fingerprint, read_json,
+                                      resolution_names, write_resolved)
+    from linear_runner.engine.runner import Runner
     for name, value in (("--reason", reason), ("--authorized-by", authorized_by)):
         if not isinstance(value, str) or not value.strip():
             raise RecoveryError(f"{name} is required and must not be blank")

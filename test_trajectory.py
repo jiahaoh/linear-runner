@@ -13,9 +13,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import records
-import runner
-import trajectory
+from linear_runner.reporting import records
+from linear_runner import cli
+from linear_runner.reporting import trajectory
 
 FIXTURE = Path(__file__).resolve().parent / "testdata" / "trajectory"
 ROOTS = [FIXTURE / "root-a", FIXTURE / "root-b"]
@@ -96,7 +96,7 @@ class TrajectoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "out"
             with contextlib.redirect_stdout(io.StringIO()):
-                runner.main(["report", "--runs", *map(str, ROOTS), "--out", str(out), "--group",
+                cli.main(["report", "--runs", *map(str, ROOTS), "--out", str(out), "--group",
                              "complete=TEAM-1,TEAM-2", "--check-trajectory",
                              str(FIXTURE / "expected-trajectory.json")])
             payload = json.loads((out / "trajectory.json").read_text())

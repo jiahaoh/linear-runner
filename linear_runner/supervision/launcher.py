@@ -41,11 +41,11 @@ import subprocess
 import sys
 import time
 
-from config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
-from recovery import expected_state
-from runner import (PHASES, Runner, fingerprint, git, issue_contract, now, project_lock, published_contract_matches,
-                    resolve_profile, run_id)
-from supervisor import STATUS_NAME, Supervisor, pid_alive
+from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
+from linear_runner.supervision.recovery import expected_state
+from linear_runner.engine.runner import (PHASES, Runner, fingerprint, git, issue_contract, now, project_lock,
+                                         published_contract_matches, resolve_profile, run_id)
+from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor, pid_alive
 
 PREFLIGHT_NAME = "preflight.json"
 
@@ -346,7 +346,7 @@ def watchdog_unit(config, launch_id):
 
 def stop_earlier_timers(root, backend, current):
     """Stop watchdog timers of earlier launches that were not stopped yet (recorded)."""
-    import watchdog
+    from linear_runner.supervision import watchdog
     stopped = []
     for path in sorted((Path(root) / "launches").glob("*.json")):
         record = read_json(path)
@@ -436,7 +436,7 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
     except Exception as error:
         entry["error"] = str(error)
         if entry.get("watchdog_timer"):
-            import watchdog
+            from linear_runner.supervision import watchdog
             watchdog.record_timer_stop(root, entry["watchdog_timer"]["timer"], f"launch failed: {error}",
                                        backend.stop_watchdog(entry["watchdog_timer"]["timer"]))
         write_json(path, entry)

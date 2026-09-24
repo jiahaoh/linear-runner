@@ -12,7 +12,7 @@ import re
 import subprocess
 import unittest
 
-import config
+from linear_runner import config
 
 ROOT = Path(__file__).resolve().parent
 # The public repository URL is the one allowed mention of the owner's account.

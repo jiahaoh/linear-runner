@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sys
 
-from linear_client import append_comment
+from linear_runner.linear.client import append_comment
 
 
 def write(path, value):

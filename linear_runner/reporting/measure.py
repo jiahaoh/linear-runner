@@ -27,8 +27,8 @@ import os
 from pathlib import Path
 import re
 
-import records
-from records import parse_time
+from linear_runner.reporting import records
+from linear_runner.reporting.records import parse_time
 
 ISSUE_MARKUP = re.compile(r"<issue\b[^>]*>.*?</issue>|\[[^\]]*\]\(<?https?://[^)\s]+>?\)", re.S)
 UNCHECKED = re.compile(r"^\s*[-*] \[ \] ", re.M)

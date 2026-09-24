@@ -33,12 +33,13 @@ import os
 from pathlib import Path
 import signal
 
-from config import config_fingerprint, read_json, write_json
-import messages
-from recovery import append_log, block_record, defer, expected_state, park
-from rules import RuleError, evaluate, parse_rules
-from runner import (IssueBlocked, PHASES, Runner, git, issue_contract, now, project_lock, published_contract_matches,
-                    resolve_profile, review_criteria, run_id, validate_review_result)
+from linear_runner.config import config_fingerprint, read_json, write_json
+from linear_runner.linear import messages
+from linear_runner.supervision.recovery import append_log, block_record, defer, expected_state, park
+from linear_runner.supervision.rules import RuleError, evaluate, parse_rules
+from linear_runner.engine.runner import (IssueBlocked, PHASES, Runner, git, issue_contract, now, project_lock,
+                                         published_contract_matches, resolve_profile, review_criteria, run_id,
+                                         validate_review_result)
 
 STATUS_NAME = "supervisor.json"
 LIFECYCLE_DIR = "lifecycle"

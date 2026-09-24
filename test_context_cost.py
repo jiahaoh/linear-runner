@@ -6,14 +6,14 @@ from pathlib import Path
 import sys
 import unittest
 
-import intake
-import measure
+from linear_runner.engine import intake
+from linear_runner.reporting import measure
 from fixtures import FakeLinear, TEST_REGISTRY, make_home
-from config import load_config, pin_resolution
-from runner import Runner, git, usage_totals, write_json
+from linear_runner.config import load_config, pin_resolution
+from linear_runner.engine.runner import Runner, git, usage_totals, write_json
 import tempfile
 from test_supervisor import Harness
-import trajectory
+from linear_runner.reporting import trajectory
 
 FIXTURE = Path(__file__).resolve().parent / "testdata" / "trajectory"
 
@@ -374,7 +374,7 @@ class RiskDefaultOffTests(Harness):
 
 class ContextControlsConfigTests(Harness):
     def test_controls_are_validated_and_fingerprinted(self):
-        from config import ConfigError, config_fingerprint, load_config
+        from linear_runner.config import ConfigError, config_fingerprint, load_config
         base = load_config(self.batch, self.home)
         self.assertEqual(base["context_controls"], {"bounded_sessions": False, "low_risk_review": False,
                                                       "compact_token_limit": None})
@@ -413,7 +413,7 @@ class TerminalTrajectoryTests(Harness):
         self.assertIn("terminal-trajectory.html", self.linear.last("DEV-3", "batch-finished"))
 
     def test_renderer_failure_never_blocks_the_terminal_report(self):
-        import trajectory as module
+        from linear_runner.reporting import trajectory as module
         original = module.from_roots
         module.from_roots = lambda *a, **k: (_ for _ in ()).throw(ValueError("broken records"))
         self.addCleanup(setattr, module, "from_roots", original)
@@ -484,7 +484,7 @@ class CompactionArgvTests(unittest.TestCase):
         self.assertEqual((runner.compact_limit("implement"), runner.compact_limit("review")), (90000, 90000))
 
     def test_schema_rejects_a_tiny_or_non_integer_limit(self):
-        from config import ConfigError
+        from linear_runner.config import ConfigError
         for bad in (10, "150000"):
             with self.assertRaises(ConfigError):
                 self.runner({"compact_token_limit": bad})

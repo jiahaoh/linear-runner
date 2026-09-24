@@ -29,10 +29,10 @@ from pathlib import Path
 import subprocess
 import time
 
-import attention
-from config import read_json, write_json
-import messages
-import updates
+from linear_runner.linear import attention
+from linear_runner.config import read_json, write_json
+from linear_runner.linear import messages
+from linear_runner.linear import updates
 
 LEDGER_NAME = "watchdog.json"
 

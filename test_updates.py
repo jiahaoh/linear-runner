@@ -12,15 +12,15 @@ import tempfile
 import unittest
 import unittest.mock
 
-import attention
-from config import load_config, pin_resolution
+from linear_runner.linear import attention
+from linear_runner.config import load_config, pin_resolution
 from fixtures import FakeLinear, make_home
-import messages
-import render_samples
-from runner import IssueBlocked, Runner, git, write_json
+from linear_runner.linear import messages
+from linear_runner.reporting import render_samples
+from linear_runner.engine.runner import IssueBlocked, Runner, git, write_json
 from test_supervisor import Harness
-import updates
-import watchdog
+from linear_runner.linear import updates
+from linear_runner.supervision import watchdog
 
 LIMITS = {"max_chars": 1500, "max_lines": 30, "max_first_sentence_chars": 240}
 GOOD_PROGRESS = """The QC report now renders for all tiles; no action is needed.
@@ -515,7 +515,7 @@ class NeedsInputTests(AttentionHarness):
         self.finish()
 
     def test_config_rejects_unknown_mechanism_and_empty_command(self):
-        from config import ConfigError
+        from linear_runner.config import ConfigError
         with self.assertRaisesRegex(ConfigError, "must be one of"):
             make_home(self.root, self.repo, workspace={"attention": {"needs_input": {"mechanism": "email"}}})
             load_config(self.batch, self.home)
@@ -564,7 +564,7 @@ class BatchIdTests(unittest.TestCase):
         self.home, self.batch = make_home(self.root, self.repo)
 
     def test_bare_id_resolves_in_the_home_and_unknown_id_is_an_error(self):
-        from config import ConfigError, batch_argument, resolve_batch
+        from linear_runner.config import ConfigError, batch_argument, resolve_batch
         by_id = load_config("fixture", self.home)
         self.assertEqual(by_id["batch_id"], "fixture")
         self.assertEqual(by_id["_layers"]["batch fixture"], str(self.batch.resolve()))
@@ -583,7 +583,7 @@ class BatchIdTests(unittest.TestCase):
         self.assertEqual(batch_argument(load_config(str(outside), self.home)), str(outside.resolve()))
 
     def test_cli_accepts_an_id_and_rejects_an_unknown_one(self):
-        from runner import main
+        from linear_runner.cli import main
         with unittest.mock.patch("sys.stdout") as stdout:
             main(["validate-config", "--batch", "fixture", "--home", str(self.home)])
         self.assertEqual(json.loads("".join(c.args[0] for c in stdout.write.call_args_list))["batch"], "fixture")
@@ -595,6 +595,11 @@ class BatchIdTests(unittest.TestCase):
     def test_command_prefix_is_a_resolved_site_setting(self):
         self.assertEqual(load_config("fixture", self.home)["attention"]["command_prefix"],
                          f"python3 {Path(__file__).resolve().parent}/runner.py")
+        # The default prefix names the checkout's runner.py, which works from any directory.
+        shown = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "runner.py"), "validate-config",
+                                "--batch", "fixture", "--home", str(self.home)], cwd=self.root, check=True,
+                               capture_output=True, text=True).stdout
+        self.assertEqual(json.loads(shown)["batch"], "fixture")
         make_home(self.root, self.repo, site={"attention": {"command_prefix": "${python} -m runner"}})
         config = load_config("fixture", self.home)
         self.assertEqual(messages.command(messages.context(config), "launch"),
@@ -624,7 +629,7 @@ class DeliverablesTests(AttentionHarness):
         self.assertNotIn("Deliverables", self.linear.last("DEV-1", "claim"))
 
     def test_schemas_carry_deliverables_for_the_worker_only(self):
-        from runner import RESULT_SCHEMA, review_schema
+        from linear_runner.engine.runner import RESULT_SCHEMA, review_schema
         self.assertIn("deliverables", RESULT_SCHEMA["required"])
         self.assertEqual(RESULT_SCHEMA["properties"]["deliverables"]["items"]["required"], ["path", "description"])
         schema = review_schema(self.linear.data, "sha")
@@ -717,7 +722,7 @@ class WatchdogLabelAndTimerTests(AttentionHarness):
         self.assertEqual(calls, [["systemctl", "--user", "stop", "t.timer"]])
 
     def test_stop_command_stops_the_timer_unless_a_supervisor_is_running(self):
-        from runner import stop_watchdog_timer
+        from linear_runner.cli import stop_watchdog_timer
         entry = self.launch(stop_after=["DEV-1"])
         record_path = self.state_dir / "launches" / f"{entry['launch_id']}.json"
         write_json(record_path, dict(json.loads(record_path.read_text()), watchdog_timer={"timer": "w.timer"}))

@@ -16,7 +16,8 @@ from pathlib import Path
 import re
 import subprocess
 
-RUNNER_ROOT = Path(__file__).resolve().parent
+# The checkout root (runner.py, registry/, schema/, templates/, examples/): the parent of this package.
+RUNNER_ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_NAMES = ("models", "labels", "profiles", "phases", "linear")
 PHASES = ("implement", "repair", "review")
 HOME_ENV = "LINEAR_RUNNER_HOME"

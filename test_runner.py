@@ -9,13 +9,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from config import load_config, pin_resolution
+from linear_runner.config import load_config, pin_resolution
 from fixtures import FakeLinear, make_home
-from linear_client import LinearClient
-import runner as runner_module
-from runner import (RESULT_SCHEMA, Runner, execution_evidence, fingerprint, git, issue_contract, main, project_lock,
-                    published_contract_matches, published_issue, resolve_profile, review_criteria, review_schema,
-                    usage_totals, write_json)
+from linear_runner.linear.client import LinearClient
+from linear_runner import cli as cli_module
+from linear_runner.engine import runner as runner_module
+from linear_runner.cli import main
+from linear_runner.engine.runner import (RESULT_SCHEMA, Runner, execution_evidence, fingerprint, git, issue_contract,
+                                         project_lock, published_contract_matches, published_issue, resolve_profile,
+                                         review_criteria, review_schema, usage_totals, write_json)
 
 
 class EngineTests(unittest.TestCase):
@@ -367,7 +369,7 @@ class EngineTests(unittest.TestCase):
         self.assertNotEqual(keys[(5, False)], keys[(5, True)])
 
     def test_allow_empty_is_part_of_the_configuration_fingerprint(self):
-        from config import config_fingerprint
+        from linear_runner.config import config_fingerprint
         project = json.loads((self.home / "projects" / "fixture.json").read_text())
         project["checks"][0]["allow_empty"] = True
         (self.home / "projects" / "fixture.json").write_text(json.dumps(project))
@@ -377,12 +379,12 @@ class EngineTests(unittest.TestCase):
                             config_fingerprint(self.config))
         project["checks"][0]["allow_empty"] = "yes"
         (self.home / "projects" / "fixture.json").write_text(json.dumps(project))
-        from config import ConfigError
+        from linear_runner.config import ConfigError
         with self.assertRaisesRegex(ConfigError, "allow_empty: expected boolean"):
             load_config(self.batch, self.home)
 
     def test_delivery_integrity_accepts_only_evidenced_empty_outcomes(self):
-        from delivery import check_outcome, check_passed
+        from linear_runner.engine.delivery import check_outcome, check_passed
         self.assertEqual([check_outcome(0), check_outcome(5), check_outcome(5, True), check_outcome(1, True)],
                          ["passed", "failed", "empty", "failed"])
         self.assertTrue(check_passed({"exit_code": 0}))  # records written before the status field
@@ -392,8 +394,8 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(check_passed({"exit_code": 1, "status": "empty", "allow_empty": True}))
 
     def test_report_and_measure_name_empty_outcomes(self):
-        import measure
-        import trajectory
+        from linear_runner.reporting import measure
+        from linear_runner.reporting import trajectory
         run = self.root / "runs" / "DEV-1" / "20260101T000000Z-0000000a"
         validation = run / "validation-20260101T000100Z-0000000b"
         validation.mkdir(parents=True)
@@ -635,7 +637,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(totals["covered"], 0)
 
     def test_report_snapshots_escape_content_and_preserve_versions(self):
-        from report import render_report
+        from linear_runner.reporting.report import render_report
         summary = {"outcome": "blocked", "history": [], "scope": "fixture", "error": "<script>alert(1)</script>", "usage": {}}
         path = self.root / "report.html"
         first = render_report(path, summary, [])
@@ -804,7 +806,7 @@ class ControllerTests(unittest.TestCase):
         state = self.root / "state" / "fixture" / "state.json"
         write_json(state, {"phase": "queue_complete", "history": [{"issue_id": "DEV-1"}]})
         before = state.read_bytes()
-        with patch.object(runner_module, "pin_resolution", side_effect=lambda config, linear: pin_resolution(config, FakeLinear())), \
+        with patch.object(cli_module, "pin_resolution", side_effect=lambda config, linear: pin_resolution(config, FakeLinear())), \
                 patch.object(Runner, "codex") as codex, patch.object(Runner, "report_pause") as report, patch("sys.stderr"):
             with self.assertRaises(SystemExit):
                 main(["run", *self.args])
@@ -813,7 +815,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse((state.parent / "resolved-config.json").exists())
 
     def test_dry_run_failure_cannot_post_linear_updates(self):
-        with patch.object(runner_module, "pin_resolution", side_effect=lambda config, linear: pin_resolution(config, FakeLinear())), \
+        with patch.object(cli_module, "pin_resolution", side_effect=lambda config, linear: pin_resolution(config, FakeLinear())), \
                 patch.object(Runner, "execute", side_effect=RuntimeError("offline")), patch.object(Runner, "report_pause") as report:
             with self.assertRaises(SystemExit):
                 main(["dry-run", *self.args])

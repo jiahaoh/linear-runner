@@ -7,8 +7,8 @@ import tempfile
 import unittest
 import unittest.mock
 
-import measure
-import runner
+from linear_runner.reporting import measure
+from linear_runner import cli
 
 FIXTURE = Path(__file__).resolve().parent / "testdata" / "trajectory"
 ROOTS = [FIXTURE / "root-a", FIXTURE / "root-b"]
@@ -62,7 +62,7 @@ class MeasureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "m.json"
             with contextlib.redirect_stdout(io.StringIO()) as output:
-                runner.main(["measure", "--runs", *map(str, ROOTS), "--issues", "TEAM-2",
+                cli.main(["measure", "--runs", *map(str, ROOTS), "--issues", "TEAM-2",
                              "--rollouts", str(FIXTURE / "rollouts"), "--json", str(path)])
             saved = json.loads(path.read_text())
         self.assertEqual(list(saved["issues"]), ["TEAM-2"])
@@ -78,7 +78,7 @@ class MeasureTests(unittest.TestCase):
                 self.assertIn("not found at", status["note"])
                 err, out = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                    runner.main(["measure", "--runs", *map(str, ROOTS), "--issues", "TEAM-2"])
+                    cli.main(["measure", "--runs", *map(str, ROOTS), "--issues", "TEAM-2"])
                 self.assertIn("per-call context growth is omitted", err.getvalue())
                 self.assertIn("per-call context growth is omitted", out.getvalue())
                 (Path(directory) / "sessions").mkdir()
