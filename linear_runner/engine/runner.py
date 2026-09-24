@@ -53,6 +53,13 @@ def run_id():
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
 
 
+def inherited_environment(config):
+    """The runner's environment for its children, without a Claude token variable
+    (``site.claude.auth.oauth_token_env``): only the ``claude`` child gets that token."""
+    hidden = (config.get("claude_auth") or {}).get("oauth_token_env")
+    return {k: v for k, v in os.environ.items() if k != hidden}
+
+
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
@@ -428,13 +435,14 @@ class Runner:
                 "environment_overrides": self.config["check_environment"],
                 "host": os.uname().nodename, "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
         timeout = self.policy["phases"]["phases"][phase]["timeout_seconds"]
+        # Built (and a configured credential read) now; passed only to this child, never recorded.
+        env = backend.environment(dict(inherited_environment(self.config), **self.config["check_environment"]))
         events = []
         started = time.monotonic()
         try:
             with (directory / "stderr.log").open("wb") as stderr, (directory / "events.jsonl").open("w") as output:
                 self.child = subprocess.Popen(command, cwd=self.repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                              stderr=stderr, start_new_session=True, text=True, bufsize=1,
-                                              env=backend.environment(dict(os.environ, **self.config["check_environment"])))
+                                              stderr=stderr, start_new_session=True, text=True, bufsize=1, env=env)
                 meta["pid"] = self.child.pid
                 write_json(directory / "session.json", meta)
                 self.save(child_pid=self.child.pid)
@@ -514,8 +522,8 @@ class Runner:
             self.log(f"Validation: {' '.join(command)}")
             started = now()
             with log.open("wb") as output:
-                self.child = subprocess.Popen(command, cwd=cwd, env=dict(os.environ, **environment), stdout=output,
-                                              stderr=subprocess.STDOUT, start_new_session=True)
+                self.child = subprocess.Popen(command, cwd=cwd, env=dict(inherited_environment(self.config), **environment),
+                                              stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
                 self.save(child_pid=self.child.pid)
                 try:
                     returncode = self.child.wait(timeout=self.policy["phases"]["check_timeout_seconds"])
@@ -1159,7 +1167,7 @@ class Runner:
             digest = hashlib.sha256(json.dumps({"spec": spec, "environment": self.config["check_environment"]}, sort_keys=True).encode())
             # Explicit external manifests/executables and inherited environment are
             # part of evidence identity; secrets are hashed, never serialized.
-            digest.update(json.dumps(dict(os.environ), sort_keys=True).encode())
+            digest.update(json.dumps(inherited_environment(self.config), sort_keys=True).encode())
             executable = shutil.which(spec["command"][0])
             identities = list(self.config["identity_files"])
             if executable:

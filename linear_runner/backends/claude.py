@@ -1,8 +1,21 @@
 """The Claude Code CLI backend: ``claude -p`` argv, its stream-json events and its known models.
 
-Authentication is the host's subscription login (``claude.ai`` OAuth, already logged in).
-``--bare`` is never used because bare mode does not read that login. Isolation instead comes
-from these flags on every call:
+Authentication (``site.claude.auth``, see ``auth_mode``) is one of:
+
+* ``subscription-login`` (the default): the host's ``claude.ai`` OAuth login in ``~/.claude``.
+  Every Claude Code process on the host shares it, and when its access token expires,
+  concurrent refreshes race: the loser fails with "Failed to refresh OAuth token";
+* ``oauth-token-file``: a long-lived token from ``claude setup-token`` in a file (mode 600 or
+  stricter), read when each session starts;
+* ``oauth-token-env``: the same token in a named variable of the supervisor's environment.
+
+In both token modes the token reaches only the ``claude`` child process, as
+``CLAUDE_CODE_OAUTH_TOKEN``; it needs no refresh, so it cannot race. It is never written to
+argv, records, logs or the configuration fingerprint (which covers the mode and the file path
+or variable name only).
+
+``--bare`` is never used because bare mode does not read the subscription login. Isolation
+instead comes from these flags on every call:
 
 * ``--setting-sources ''`` (no user, project or local settings files, so no hooks, plugins or
   permission rules from the host) plus a per-session ``--settings`` file the runner writes
@@ -12,8 +25,9 @@ from these flags on every call:
 * ``--tools`` narrows the built-in tools, ``--permission-mode`` and the allow/deny rules decide
   what runs, ``--permission-prompts none`` denies anything that would ask a person;
 * ``--append-system-prompt`` adds a fixed runner instruction to Claude Code's system prompt;
-* inherited ``CLAUDE*``/``ANTHROPIC*`` variables are removed from the child environment, so a
-  parent Claude Code session or an API key cannot redirect the call.
+* inherited ``CLAUDE*``/``ANTHROPIC*`` variables (and a token-env variable) are removed from
+  the child environment, so a parent Claude Code session or an API key cannot redirect the
+  call; only a configured token is added back, as ``CLAUDE_CODE_OAUTH_TOKEN``.
 
 Workers run in ``acceptEdits`` (edits inside the worktree and the issue's run directory,
 added with ``--add-dir``; Bash allowed except Git history/branch commands and nested agents).
@@ -34,6 +48,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import time
 import uuid
@@ -49,6 +64,17 @@ MIN_VERSION = (2, 1, 280)
 # Only these two fields of `claude auth status` are ever recorded (never the account email).
 AUTH_FIELDS = ("loggedIn", "authMethod")
 SUBSCRIPTION_AUTH = "claude.ai"
+SUBSCRIPTION_MODE = "subscription-login"
+TOKEN_MODES = ("oauth-token-file", "oauth-token-env")
+# `claude auth status` reports this authMethod when CLAUDE_CODE_OAUTH_TOKEN is set (2.1.281). The
+# command is local: it shows the CLI sees the token, not that the service accepts it.
+TOKEN_AUTH = "oauth_token"
+TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
+# Stops that name this (with the auth mode in parentheses) get an authentication next action.
+AUTH_FAILURE = "Claude authentication"
+# An error result that is an authentication failure (W-191: "Failed to refresh OAuth token").
+AUTH_ERROR = re.compile(r"oauth|authenticat|\b401\b|/login|setup-token|invalid (api key|bearer|x-api-key)|"
+                        r"token (has )?(expired|been revoked)", re.I)
 # Variables a parent Claude Code session or a shell may set; none reaches the child.
 SCRUBBED_ENVIRONMENT = re.compile(r"^(CLAUDE|ANTHROPIC)")
 CHILD_ENVIRONMENT = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
@@ -79,6 +105,84 @@ def settings(writable):
     return {"disableAllHooks": True, "autoMemoryEnabled": False, "includeCoAuthoredBy": False,
             "permissions": {"defaultMode": "acceptEdits" if writable else "dontAsk",
                             "disableBypassPermissionsMode": "disable"}}
+
+
+def auth_mode(config):
+    """``subscription-login``, ``oauth-token-file`` or ``oauth-token-env`` (never the token)."""
+    return (config.get("claude_auth") or {}).get("mode", SUBSCRIPTION_MODE)
+
+
+def auth_reference(config):
+    """What the configuration names: the mode plus the token file path or variable name."""
+    auth = config.get("claude_auth") or {}
+    return {"mode": auth_mode(config), **{k: v for k, v in auth.items() if k != "mode"}}
+
+
+def check_token_file(path):
+    """Raise RuntimeError unless ``path`` is a non-empty regular file that only its owner can
+    read or write (mode 600 or stricter). Metadata only: the content is not read."""
+    where = f"{AUTH_FAILURE} (oauth-token-file): the token file {path}"
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        raise RuntimeError(f"{where} does not exist; create it with `claude setup-token` (mode 600)") from None
+    except OSError as error:
+        raise RuntimeError(f"{where} cannot be read: {error.strerror}") from None
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"{where} is not a regular file")
+    if info.st_mode & 0o177:
+        raise RuntimeError(f"{where} has mode {stat.S_IMODE(info.st_mode):03o}; it must not be readable by the "
+                           f"group or others (run `chmod 600 {path}`)")
+    if info.st_size == 0:
+        raise RuntimeError(f"{where} is empty; write the token from `claude setup-token` into it")
+
+
+def read_token(config, environ=None):
+    """The configured token, or None for the subscription login. Read at each call and never
+    stored; errors name the file or variable, never the value."""
+    auth = config.get("claude_auth") or {}
+    mode = auth_mode(config)
+    if mode == "oauth-token-file":
+        path = auth["oauth_token_file"]
+        check_token_file(path)
+        try:
+            value = Path(path).read_text().strip()
+        except (OSError, UnicodeDecodeError) as error:
+            raise RuntimeError(f"{AUTH_FAILURE} ({mode}): the token file {path} cannot be read: "
+                               f"{getattr(error, 'strerror', None) or type(error).__name__}") from None
+        where = f"the token file {path}"
+    elif mode == "oauth-token-env":
+        name = auth["oauth_token_env"]
+        value = (os.environ if environ is None else environ).get(name, "").strip()
+        if not value:
+            raise RuntimeError(f"{AUTH_FAILURE} ({mode}): the variable {name} is not set in the runner's environment; "
+                               f"export it before `launch` (it is passed to the supervisor by name)")
+        where = f"the variable {name}"
+    else:
+        return None
+    if not value:
+        raise RuntimeError(f"{AUTH_FAILURE} ({mode}): {where} is empty; write the token from `claude setup-token`")
+    if any(c.isspace() for c in value):
+        raise RuntimeError(f"{AUTH_FAILURE} ({mode}): {where} must hold one token on one line")
+    return value
+
+
+def offline_auth_check(config):
+    """``validate-config``: the configured reference and, for a token file, its metadata checks
+    (never its content). A token variable is reported as set or not in this shell, not required:
+    it must be set where ``launch`` runs, and launch preflight checks it there."""
+    record = auth_reference(config)
+    if record["mode"] == "oauth-token-file":
+        check_token_file(record["oauth_token_file"])
+        record["token_file"] = "ok: regular, mode 600 or stricter, non-empty (content not read)"
+    elif record["mode"] == "oauth-token-env":
+        record["set_in_this_environment"] = bool(os.environ.get(record["oauth_token_env"], "").strip())
+    return record
+
+
+def auth_failure(mode, text):
+    """The stop wording for an authentication error result, naming the mode (see ``AUTH_FAILURE``)."""
+    return f"{AUTH_FAILURE} ({mode}) failed: {text}"
 
 
 def parse_version(text):
@@ -203,8 +307,13 @@ class ClaudeBackend:
     def version(self):
         return parse_version(self._probe("version", ["--version"])[1])
 
+    @property
+    def auth_mode(self):
+        return auth_mode(self.config)
+
     def auth_status(self):
-        """Only ``loggedIn`` and ``authMethod`` of ``claude auth status``; never the email."""
+        """Only ``loggedIn`` and ``authMethod`` of ``claude auth status``; never the email.
+        In a token mode the probe runs with the token, as a session would."""
         code, text = self._probe("auth", ["auth", "status", "--json"])
         try:
             data = json.loads(text)
@@ -222,6 +331,22 @@ class ClaudeBackend:
         if version is None or version < MIN_VERSION:
             raise RuntimeError(f"Claude CLI version {version and '.'.join(map(str, version))} is unsupported; "
                                f"{'.'.join(map(str, MIN_VERSION))} or newer is required")
+        self.check_auth()
+
+    def check_auth(self):
+        """Subscription login: ``claude auth status`` must show the claude.ai login. Token modes:
+        the token must be readable (file: mode 600 or stricter, non-empty; variable: set) and
+        ``claude auth status`` must show the CLI uses it. That command makes no model or service
+        call, so a revoked or expired token is only found by the first session (an
+        ``environment`` stop that says to regenerate it)."""
+        mode = self.auth_mode
+        if mode in TOKEN_MODES:
+            read_token(self.config)
+            auth = self.auth_status()
+            if auth["loggedIn"] is not True or auth["authMethod"] != TOKEN_AUTH:
+                raise RuntimeError(f"{AUTH_FAILURE} ({mode}): the Claude CLI does not use the configured token "
+                                   f"(loggedIn={auth['loggedIn']}, authMethod={auth['authMethod']})")
+            return
         auth = self.auth_status()
         if auth["loggedIn"] is not True or auth["authMethod"] != SUBSCRIPTION_AUTH:
             raise RuntimeError(f"Claude CLI credential is not the subscription login (loggedIn={auth['loggedIn']}, "
@@ -230,7 +355,7 @@ class ClaudeBackend:
     def catalog_report(self, entries):
         version = self.version()
         return {"models": len(KNOWN_MODELS), "cli_version": version and ".".join(map(str, version)),
-                "auth": self.auth_status(),
+                "auth_mode": self.auth_mode, "auth": self.auth_status(),
                 "registry_pool_entries_available": {f"{e['model']}/{e['effort']}": e["effort"] in KNOWN_MODELS.get(e["model"], ())
                                                     for e in entries}}
 
@@ -267,18 +392,27 @@ class ClaudeBackend:
         return command
 
     def environment(self, base):
-        env = {k: v for k, v in base.items() if not SCRUBBED_ENVIRONMENT.match(k)}
+        """``base`` without ``CLAUDE*``/``ANTHROPIC*`` (and a token-env variable), plus the fixed
+        child settings; in a token mode also ``CLAUDE_CODE_OAUTH_TOKEN``, read now. Only the
+        ``claude`` child gets this environment; it is never recorded."""
+        hidden = (self.config.get("claude_auth") or {}).get("oauth_token_env")
+        env = {k: v for k, v in base.items() if not SCRUBBED_ENVIRONMENT.match(k) and k != hidden}
         env.update(CHILD_ENVIRONMENT)
+        token = read_token(self.config)
+        if token is not None:
+            env[TOKEN_VARIABLE] = token
         return env
 
     def describe(self, request):
         mode, tools, allowed, denied, directories = self.permissions(request)
-        return {"auth": self.auth_status(), "settings": settings(request.writable),
+        return {"auth_mode": self.auth_mode, "auth": self.auth_status(), "settings": settings(request.writable),
                 "settings_path": str(self.settings_path(request)), "setting_sources": [],
                 "permission_mode": mode, "tools": list(tools), "allowed_tools": list(allowed),
                 "disallowed_tools": list(denied), "add_dirs": directories, "mcp_servers": [],
                 "system_prompt_append": WORKER_PROMPT if request.writable else REVIEWER_PROMPT,
-                "environment": {"removed": "CLAUDE*/ANTHROPIC* variables", "set": CHILD_ENVIRONMENT},
+                "environment": {"removed": "CLAUDE*/ANTHROPIC* variables", "set": CHILD_ENVIRONMENT,
+                                **({"token": f"{TOKEN_VARIABLE} ({self.auth_mode}, value not recorded)"}
+                                   if self.auth_mode in TOKEN_MODES else {})},
                 "isolation": "Claude Code permission rules (not an OS sandbox)"}
 
     # --- Reading the stream-json events and the result -----------------------------------
@@ -304,8 +438,11 @@ class ClaudeBackend:
         text = " ".join(str(result.get("result") or "; ".join(map(str, result.get("errors") or [])) or "").split())
         reason = result.get("terminal_reason") or result.get("subtype")
         status = result.get("api_error_status")
-        return (f"error result ({reason}" + (f", API status {status}" if status else "") + ")"
-                + (f": {text[:300]}" if text else ""))
+        message = (f"error result ({reason}" + (f", API status {status}" if status else "") + ")"
+                   + (f": {text[:300]}" if text else ""))
+        if status == 401 or AUTH_ERROR.search(text):
+            return auth_failure(self.auth_mode, message)
+        return message
 
     def result(self, request, events):
         result = self.last_result(events)

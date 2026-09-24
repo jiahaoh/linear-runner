@@ -179,6 +179,12 @@ def samples():
          messages.blocked(CTX, issue="TEAM-12", classification="environment", error=(
              "Linear OAuth expired; refresh with the owning CLI and resume"), step="validate",
              evidence_paths=[RUN, f"{STATE}/state.json"])),
+        ("Blocked or stopped, Claude token rejected", "blocked.md", "runner",
+         "when a Claude session fails to authenticate with the configured long-lived token", "TEAM-15", "blocked",
+         messages.blocked(CTX, issue="TEAM-15", classification="environment", error=(
+             "Claude failed or did not finish a turn: Claude authentication (oauth-token-file) failed: error result "
+             "(api_error, API status 401): Invalid bearer token; see " + team15 + "/implement-20260923T120000Z-5e6f7a8b"),
+             step="implement", evidence_paths=[team15, f"{STATE}/state.json"])),
         ("Blocked or stopped, a repair finished blocked", "blocked.md", "runner (quotes the worker)",
          "when a repair ends with status blocked instead of ready", "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="worker_blocked",

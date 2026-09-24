@@ -6,6 +6,7 @@ variant and fills fields with plain prose.
 """
 from __future__ import annotations
 
+import re
 import shlex
 
 from linear_runner.linear.updates import first_sentence, plain, quote, render, variant
@@ -270,6 +271,16 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
     return blocks(primary, launch, aside)
 
 
+def claude_auth_variant(error):
+    """``claude-auth-token`` or ``claude-auth-login`` for a stop naming a Claude authentication
+    failure and its auth mode (``Claude authentication (<mode>) ...``), else None."""
+    from linear_runner.backends.claude import AUTH_FAILURE, TOKEN_MODES
+    match = re.search(re.escape(AUTH_FAILURE) + r" \(([a-z-]+)\)", str(error or ""))
+    if not match:
+        return None
+    return "claude-auth-token" if match.group(1) in TOKEN_MODES else "claude-auth-login"
+
+
 def blocked(ctx, *, issue, classification, event=None, error="", step=None, phase=None, result=None, who="worker",
             draft=None, draft_problem=None, draft_path=None, evidence_paths=(), repairs=None, stage=None):
     subject = issue or f"Batch {ctx['batch']}"
@@ -282,8 +293,9 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
         happened += f" The runner reported: {short_cause(error, 300)}."
     if model_text(stage):
         happened += f" The {stage.get('phase')} phase ran with {model_text(stage)}."
+    auth = claude_auth_variant(error) if classification == "environment" and not known else None
     needed = variant("blocked", "needed", "repair_blocked" if event == "worker_blocked" and step == "repair"
-                     else event if known else classification, values)
+                     else event if known else auth or classification, values)
     words = own_words(who=who, result=result, draft=draft, draft_problem=draft_problem, draft_path=draft_path) \
         if event in ("worker_blocked", "review_blocked", "checks_failed", "budget_exceeded") else ""
     return render("blocked", {"subject": subject, "mention": ctx["mention"], "cause": cause, "what_happened": happened,

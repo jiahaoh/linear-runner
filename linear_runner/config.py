@@ -37,6 +37,8 @@ _VARIABLE = re.compile(r"\$\{([^}]*)\}")
 CONTEXT_CONTROL_DEFAULTS = {"bounded_sessions": False, "low_risk_review": False, "compact_token_limit": None}
 SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
                         "baseline_checks": False}
+# site.claude.auth key -> recorded auth mode; without auth the mode is the subscription login.
+CLAUDE_AUTH_MODES = {"oauth_token_file": "oauth-token-file", "oauth_token_env": "oauth-token-env"}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
                      "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}
 
@@ -381,6 +383,23 @@ def batch_argument(config):
     return path or config["batch_id"]
 
 
+def claude_auth(auth, base, variables, repo):
+    """The resolved ``site.claude.auth``: ``{"mode", "oauth_token_file": <absolute path>}`` or
+    ``{"mode", "oauth_token_env": <variable name>}``. The token itself is read only when a
+    Claude session starts (``linear_runner.backends.claude``)."""
+    where = "site.claude.auth"
+    if len(auth) != 1:
+        raise ConfigError(f"{where}: choose exactly one of oauth_token_file or oauth_token_env (omit auth to use the "
+                          "subscription login); never store the token itself")
+    (key, value), = auth.items()
+    if key == "oauth_token_file":
+        path = _path(value, base, variables, f"{where}.oauth_token_file")
+        if path.is_relative_to(repo) or path.is_relative_to(RUNNER_ROOT):
+            raise ConfigError(f"{where}.oauth_token_file must be outside the worktree and the runner checkout")
+        value = str(path)
+    return {"mode": CLAUDE_AUTH_MODES[key], key: value}
+
+
 def load_config(batch_path, home=None):
     """Validate and merge every layer offline; Linear IDs remain unresolved (None).
 
@@ -580,6 +599,12 @@ def load_config(batch_path, home=None):
     if "claude" in defaults | named and "claude" not in variables:
         raise ConfigError("site.executables.claude: a default pool entry or a batch model_overrides entry runs on "
                           "the claude backend, so the site must name its executable")
+    # Claude authentication: a reference (file path or variable name), never the token. Only a
+    # configured reference enters the resolved configuration, so the default (the subscription
+    # login) leaves existing fingerprints unchanged.
+    auth = (site.get("claude") or {}).get("auth")
+    if auth is not None:
+        put("claude_auth", claude_auth(auth, site_path.parent, variables, repo), site_label)
     put("model_catalog", str(_path(site["model_catalog"], site_path.parent, builtins, "site.model_catalog")), site_label)
     put("artifact_root", str(_path(site["artifact_root"], site_path.parent, builtins, "site.artifact_root")), site_label)
     state_root = _path(site["state_root"], site_path.parent, builtins, "site.state_root")

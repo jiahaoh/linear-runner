@@ -8,12 +8,16 @@ step                      identity it depends on                 reused when unc
 config                    resolved configuration fingerprint     yes
 worktree                  source (branch, HEAD, clean, content)  yes
 model_catalog             catalog bytes + configuration          yes
+claude_auth (opt.)        the configured Claude token            never (always re-read)
 baseline_checks (opt.)    source, configuration, environment,    yes
                           fixtures (identity files)
 linear                    live Linear state                      never (always re-read)
 ========================  =====================================  ==========================
 
-Every step records whether it was reused or rerun and why. The ``linear`` step reads
+Every step records whether it was reused or rerun and why. ``claude_auth`` runs only when
+``site.claude.auth`` names a token file or variable: the token must be readable (a file of
+mode 600 or stricter, non-empty; a set variable) and ``claude auth status`` must show the CLI
+uses it. It records the mode and the path or name, never the token. The ``linear`` step reads
 every allowlisted issue (proving authentication), checks gates, ownership, dependencies,
 decision-rule blocks and model/effort availability for each pending issue, and performs
 the dry-run selection (or, for a saved active issue, the resume-specific checks).
@@ -107,6 +111,19 @@ def _check_catalog(config):
         entries.setdefault(entry["backend"], {})[(entry["model"], entry["effort"])] = entry
     return {name: backends.create(config, name).catalog_report(list(items.values()))
             for name, items in sorted(entries.items())}
+
+
+def _check_claude_auth(config):
+    """The configured Claude token is usable (see ``ClaudeBackend.check_auth``); never records it."""
+    from linear_runner.backends.claude import ClaudeBackend, auth_reference, read_token
+    record = auth_reference(config)
+    if config.get("claude"):
+        backend = ClaudeBackend(config)
+        backend.check_auth()
+        record["cli_auth"] = backend.auth_status()
+    else:
+        read_token(config)
+    return dict(record, token="readable (value not recorded)")
 
 
 def _baseline_checks(runner, directory):
@@ -211,6 +228,8 @@ def preflight(config, runner, *, launch_id, force=False):
     step("config", ["config"], lambda: {"fingerprint": ids["config"]["fingerprint"], "layers": config["_layers"]})
     step("worktree", ["source", "config"], lambda: _check_worktree(runner))
     step("model_catalog", ["model_catalog", "config"], lambda: _check_catalog(config))
+    if config.get("claude_auth"):
+        step("claude_auth", [], lambda: _check_claude_auth(config), live=True)
     if config["supervision"]["baseline_checks"]:
         step("baseline_checks", ["source", "config", "environment", "fixtures"],
              lambda: _baseline_checks(runner, directory / "baseline"))
@@ -336,6 +355,14 @@ def backend_for(name, supervise=None):
 
 # --- Launch --------------------------------------------------------------------------
 
+def inherited_names(config):
+    """Credential variables the unit copies from the launching environment by NAME
+    (``--setenv=NAME``): the Linear ``token_env`` and a Claude ``oauth_token_env``. A Claude
+    token file needs nothing here: the supervisor reads it when each session starts."""
+    names = [config["linear"].get("token_env"), (config.get("claude_auth") or {}).get("oauth_token_env")]
+    return list(dict.fromkeys(n for n in names if n))
+
+
 def unit_name(config, launch_id):
     base = f"{config['launcher']['unit_prefix']}-{config['batch_id']}-{launch_id}"
     return re.sub(r"[^A-Za-z0-9:_.-]", "-", base) + ".service"
@@ -414,9 +441,9 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
                          "interval_minutes": config["attention"]["watchdog"]["interval_minutes"],
                          "log": str(root / "watchdog.log")},
             "workdir": str(RUNNER_ROOT), "log": str(root / "supervisor.log"), "state_dir": str(root),
-            "environment": dict(launcher["environment"]), "inherit": [config["linear"]["token_env"]]
-            if config["linear"].get("token_env") else [], "stop_marker": str(root / "STOP")
-            if launcher["stop_on_exit"] else None, "startup_timeout_seconds": launcher["startup_timeout_seconds"],
+            "environment": dict(launcher["environment"]), "inherit": inherited_names(config),
+            "stop_marker": str(root / "STOP") if launcher["stop_on_exit"] else None,
+            "startup_timeout_seconds": launcher["startup_timeout_seconds"],
             "stop_after": list(stop_after), "scope": scope}
     # The launcher block is outside the configuration fingerprint; record what was used.
     entry = {"launch_id": launch_id, "at": now(), "backend": backend.name, "spec": spec,

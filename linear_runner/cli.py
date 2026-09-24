@@ -19,14 +19,16 @@ from linear_runner.linear.client import LinearClient
 
 
 def summarize(config):
-    """Offline validation report: no state, credentials, Linear or model CLI access."""
+    """Offline validation report: no state, credentials, Linear or model CLI access (a Claude
+    token file's metadata is checked, its content never read)."""
+    from linear_runner.backends.claude import offline_auth_check
     return {"valid": True, "batch": config["batch_id"], "project": config["project_name"],
             "workspace": config["linear_workspace"], "issues": config["issues"], "state_dir": config["state_dir"],
             "resolution_pending": {"project": config["project_name"], "assignee": config["assignee"]},
             "runner": config["runner"], "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
-            "context_controls": config["context_controls"],
+            "context_controls": config["context_controls"], "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "layers": config["_layers"]}
 
 
@@ -234,7 +236,11 @@ def main(argv=None):
     except (ConfigError, OSError) as error:
         parser.error(str(error))
     if args.command == "validate-config":
-        print(json.dumps(summarize(config), indent=2))
+        try:
+            report = summarize(config)
+        except RuntimeError as error:
+            parser.error(str(error))
+        print(json.dumps(report, indent=2))
         return
     root = Path(config["state_dir"])
     if args.command == "status":

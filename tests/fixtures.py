@@ -167,22 +167,31 @@ class FakeLinear:
 
 
 # A fake `claude` executable for backend and engine tests; no model or network. It answers
-# `--version` and `auth status` (with an email the runner must never record), and for `-p`
+# `--version` and `auth status` (with an email the runner must never record; with
+# CLAUDE_CODE_OAUTH_TOKEN set it reports authMethod "oauth_token", as 2.1.281 does), and for `-p`
 # replays stream-json in the shape of the recorded samples (tests/backends/claude_samples/).
-# Each `-p` call consumes the next step of the JSON plan file and appends its argv to "log".
+# Each `-p` call consumes the next step of the JSON plan file and appends its argv and the
+# CLAUDE_CODE_OAUTH_TOKEN it received (its environment, recorded only in the plan file) to "log";
+# each `auth status` appends that token to "auth_probes".
 # Step keys: write {relative: text} (in the cwd), outbox (a progress draft), acceptance (list
 # overriding the one built from the prompt), status, error (an API error result, exit 1),
-# usage (raw Claude usage).
+# auth_error (the W-191 "Failed to refresh OAuth token" error result, exit 1), usage (raw
+# Claude usage).
 FAKE_CLAUDE = r'''
-import json, pathlib, re, sys
+import json, os, pathlib, re, sys
 PLAN = pathlib.Path(__PLAN__)
 args = sys.argv[1:]
 plan = json.loads(PLAN.read_text())
+token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
 if args == ["--version"]:
     print(plan.get("version", "2.1.281") + " (Claude Code)"); sys.exit(0)
 if args[:2] == ["auth", "status"]:
-    print(json.dumps(dict({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
-                           "email": "owner@example.invalid", "orgName": "Fixture org"}, **plan.get("auth", {}))))
+    plan.setdefault("auth_probes", []).append(token)
+    PLAN.write_text(json.dumps(plan))
+    status = ({"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstParty"} if token else
+              {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
+               "email": "owner@example.invalid", "orgName": "Fixture org"})
+    print(json.dumps(dict(status, **plan.get("auth", {}))))
     sys.exit(0)
 prompt = sys.stdin.read()
 def opt(name):
@@ -191,7 +200,8 @@ log = plan.setdefault("log", [])
 step = plan.get("steps", [])[len(log)] if len(log) < len(plan.get("steps", [])) else {}
 session = opt("--resume") or opt("--session-id")
 log.append({"argv": args, "session": session, "resume": opt("--resume"), "model": opt("--model"),
-            "effort": opt("--effort"), "mode": opt("--permission-mode")})
+            "effort": opt("--effort"), "mode": opt("--permission-mode"), "oauth_token": token,
+            "environment": sorted(os.environ)})
 PLAN.write_text(json.dumps(plan))
 for relative, text in (step.get("write") or {}).items():
     pathlib.Path(relative).write_text(text)
@@ -203,6 +213,11 @@ def emit(event):
 emit({"type": "system", "subtype": "init", "model": opt("--model"), "permissionMode": opt("--permission-mode"),
       "tools": opt("--tools").split(","), "mcp_servers": [], "apiKeySource": "none", "claude_code_version": "2.1.281"})
 zero = {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 0}
+if step.get("auth_error"):
+    emit({"type": "result", "subtype": "success", "is_error": True, "terminal_reason": "api_error",
+          "result": "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
+          "usage": zero, "modelUsage": {}, "total_cost_usd": 0})
+    sys.exit(1)
 if step.get("error"):
     emit({"type": "assistant", "message": {"model": "<synthetic>", "role": "assistant",
                                            "content": [{"type": "text", "text": "There's an issue with the selected model."}]}})

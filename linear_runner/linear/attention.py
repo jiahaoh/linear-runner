@@ -22,7 +22,7 @@ EVENT_CLASSES = {"worker_blocked": "needs-decision", "review_blocked": "needs-de
 # Message fragments of batch-level RuntimeErrors raised by the runner, Linear client or a
 # model backend ("<label> failed"/"<label> exceeded" for every backend, e.g. Codex, Claude).
 # Environment patterns are checked first.
-ENVIRONMENT_PATTERNS = ("Linear HTTP", "Linear OAuth", "credential", "Linear MCP", "MCP redirect", "MCP stream",
+ENVIRONMENT_PATTERNS = ("Linear HTTP", "Linear OAuth", "credential", "Claude authentication", "Linear MCP", "MCP redirect", "MCP stream",
                         "MCP protocol", "returned unexpected", "Cannot reconcile paginated", "Cannot read paginated",
                         *failure_patterns(), "Missing structured result", "unavailable in host CLI catalog",
                         "CLI version", "CLI unavailable", "Another controller", "may still be alive", "read-back",

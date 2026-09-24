@@ -25,6 +25,8 @@ needed.budget_exceeded: Decide whether the phase may use more; the recovery reco
 needed.needs-decision: Look at what changed outside the runner and decide how to reconcile it before resuming.
 needed.technical-block: Look at the failure and decide how to recover.
 needed.environment: Fix the host or service problem (for example refresh the Linear login or free disk space), then resume.
+needed.claude-auth-token: The Claude token the runner uses (site claude.auth) was rejected or cannot be read. Regenerate it with claude setup-token, put it in the configured token file (mode 600, outside any Git repository) or variable, then resume.
+needed.claude-auth-login: Claude Code's shared subscription login failed. Check it with claude auth status on the host and log in again if needed, then resume. Claude Code sessions on one host share that login and can race when it refreshes, so consider giving the runner its own long-lived token: claude.auth.oauth_token_file in the site configuration, created with claude setup-token.
 needed.runner-defect: This looks like a runner bug rather than a problem with the issue. Check the supervisor log before resuming.
 ---
 {headline}
