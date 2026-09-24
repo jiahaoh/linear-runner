@@ -326,6 +326,10 @@ elsewhere stops the batch for reconciliation.
    the flag, is still a failure. The flag is part of the check definition, so changing it
    changes the configuration fingerprint and the check's reuse identity. Every check record
    in `checks.json` has `status` (`passed`, `failed` or `empty`) and `allow_empty`.
+   Each run of the checks writes `validation-<UTC second>-<random>/checks.json` in the issue's
+   run directory. These names do not order validations within one second, so the state names
+   the validation that counts: `active.validation_dir` while the issue runs and
+   `history[].validation_dir` once it is Done.
 5. **Repair.** At most `max_repairs` (≤ 2) repairs, shared across resumes and profiles.
    After an unsuccessful repair, one escalation to the registry's `escalation_profile` is
    available. An unchanged failing input stops recovery; an interrupted repair consumes

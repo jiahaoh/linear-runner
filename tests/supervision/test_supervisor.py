@@ -872,8 +872,9 @@ class RepinConfigTests(Harness):
         entry = self.launch()
         self.assertEqual(entry["started"]["outcome"], "complete")
         self.assertEqual(self.calls[:3], [("DEV-1", "implement"), ("DEV-1", "repair"), ("DEV-1", "review")])
-        run = Path(self.state()["history"][0]["run_dir"])
-        final = json.loads(sorted(run.glob("validation-*/checks.json"))[-1].read_text())
+        # The validation DEV-1 was accepted on, as the state records it: validation directory names
+        # do not sort by time within one second (W-192).
+        final = json.loads((Path(self.state()["history"][0]["validation_dir"]) / "checks.json").read_text())
         self.assertEqual([(r["name"], r["status"]) for r in final], [("output", "passed"), ("pytest-extended", "empty")])
         latest = json.loads((self.state_dir / "preflight.json").read_text())
         self.assertEqual(latest["identities"]["config"]["fingerprint"], details["new_config_sha256"])

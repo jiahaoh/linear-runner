@@ -1405,7 +1405,10 @@ class Runner:
             write_json(Path(active["run_dir"]) / "final-result.json", result)
             self.manifest(active, result)
             if not any(h["issue_id"] == issue for h in self.state["history"]):
-                self.state["history"].append({"issue_id": issue, "commit": active["commit"], "run_dir": active["run_dir"], "completed_at": now()})
+                # ``validation_dir`` names the validation the issue was accepted on. Directory names
+                # (``validation-<UTC second>-<random>``) do not order validations within a second.
+                self.state["history"].append({"issue_id": issue, "commit": active["commit"], "run_dir": active["run_dir"],
+                                              "validation_dir": active.get("validation_dir"), "completed_at": now()})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
 
