@@ -14,7 +14,7 @@ import unittest
 
 from linear_runner import config
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent  # the runner checkout
 # The public repository URL is the one allowed mention of the owner's account.
 ALLOWED_URLS = ("https://github.com/" + "jia" + "haoh" + "/linear-runner",)
 PATTERNS = {

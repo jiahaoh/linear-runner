@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from linear_runner.config import load_config, pin_resolution, write_resolved
-from fixtures import TEST_REGISTRY, FakeLinear, make_home
+from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, make_home
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
 from linear_runner.supervision import recovery
 from linear_runner.supervision.recovery import RecoveryError, verify_log
@@ -25,7 +25,6 @@ from linear_runner.cli import main
 from linear_runner.engine.runner import Runner, git, project_lock, review_criteria, write_json
 from linear_runner.supervision.supervisor import SupervisorRefused, supervise
 
-CHECKOUT = Path(__file__).resolve().parent  # the runner checkout: runner.py, registry/, schema/, templates/
 RULES = "# defer this issue instead of stopping everything\ndefer issue when worker blocked 2 times on the same criterion"
 
 

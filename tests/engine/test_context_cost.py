@@ -8,14 +8,14 @@ import unittest
 
 from linear_runner.engine import intake
 from linear_runner.reporting import measure
-from fixtures import FakeLinear, TEST_REGISTRY, make_home
+from tests.fixtures import CHECKOUT, FakeLinear, TEST_REGISTRY, make_home
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import Runner, git, usage_totals, write_json
 import tempfile
-from test_supervisor import Harness
+from tests.supervision.test_supervisor import Harness
 from linear_runner.reporting import trajectory
 
-FIXTURE = Path(__file__).resolve().parent / "testdata" / "trajectory"
+FIXTURE = CHECKOUT / "testdata" / "trajectory"
 
 
 class CompactIntakeTests(Harness):
@@ -363,7 +363,7 @@ class RiskGateRelationTests(RiskBase):
 
 class RiskDefaultOffTests(Harness):
     def test_rule_is_in_the_registry_but_off_unless_the_batch_opts_in(self):
-        rule = json.loads((Path(__file__).resolve().parent / "registry" / "profiles.json").read_text())
+        rule = json.loads((CHECKOUT / "registry" / "profiles.json").read_text())
         self.assertEqual(rule["review_routing"]["light_review"]["profile"], "Economy")
         self.make_runner().execute(limit=1)
         run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())

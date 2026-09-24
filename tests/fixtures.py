@@ -7,6 +7,9 @@ import sys
 
 from linear_runner.linear.client import append_comment
 
+# The runner checkout (runner.py, registry/, schema/, templates/, examples/, testdata/).
+CHECKOUT = Path(__file__).resolve().parent.parent
+
 
 def write(path, value):
     path = Path(path)

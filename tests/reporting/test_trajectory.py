@@ -15,9 +15,10 @@ import unittest
 
 from linear_runner.reporting import records
 from linear_runner import cli
+from tests.fixtures import CHECKOUT
 from linear_runner.reporting import trajectory
 
-FIXTURE = Path(__file__).resolve().parent / "testdata" / "trajectory"
+FIXTURE = CHECKOUT / "testdata" / "trajectory"
 ROOTS = [FIXTURE / "root-a", FIXTURE / "root-b"]
 GROUPS = {"complete": ["TEAM-1", "TEAM-2"], "with unknown": ["TEAM-1", "TEAM-2", "TEAM-3"]}
 

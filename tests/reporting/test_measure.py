@@ -9,8 +9,9 @@ import unittest.mock
 
 from linear_runner.reporting import measure
 from linear_runner import cli
+from tests.fixtures import CHECKOUT
 
-FIXTURE = Path(__file__).resolve().parent / "testdata" / "trajectory"
+FIXTURE = CHECKOUT / "testdata" / "trajectory"
 ROOTS = [FIXTURE / "root-a", FIXTURE / "root-b"]
 
 

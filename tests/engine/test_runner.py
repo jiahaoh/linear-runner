@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from linear_runner.config import load_config, pin_resolution
-from fixtures import FakeLinear, make_home
+from tests.fixtures import FakeLinear, make_home
 from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
 from linear_runner.engine import runner as runner_module

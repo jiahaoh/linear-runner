@@ -14,11 +14,11 @@ import unittest.mock
 
 from linear_runner.linear import attention
 from linear_runner.config import load_config, pin_resolution
-from fixtures import FakeLinear, make_home
+from tests.fixtures import CHECKOUT, FakeLinear, make_home
 from linear_runner.linear import messages
 from linear_runner.reporting import render_samples
 from linear_runner.engine.runner import IssueBlocked, Runner, git, write_json
-from test_supervisor import Harness
+from tests.supervision.test_supervisor import Harness
 from linear_runner.linear import updates
 from linear_runner.supervision import watchdog
 
@@ -330,7 +330,7 @@ class SilentStopTests(AttentionHarness):
                                            "and it needs your decision to continue.")
         self.assertIn("> " + WORKER_EXPLANATION, body)
         self.assertIn("Record the recovery (you can add --note-file with a note for the worker):\n\n```bash\n"
-                      f"python3 {Path(__file__).parent / 'runner.py'} recover resume --batch fixture --home ", body)
+                      f"python3 {CHECKOUT / 'runner.py'} recover resume --batch fixture --home ", body)
         self.assertNotIn('{"', body)
         # The success comments on DEV-1 were not touched; the batch summary is a new comment.
         self.assertEqual(self.linear.bodies("DEV-1"), done_comments)
@@ -594,9 +594,9 @@ class BatchIdTests(unittest.TestCase):
 
     def test_command_prefix_is_a_resolved_site_setting(self):
         self.assertEqual(load_config("fixture", self.home)["attention"]["command_prefix"],
-                         f"python3 {Path(__file__).resolve().parent}/runner.py")
+                         f"python3 {CHECKOUT}/runner.py")
         # The default prefix names the checkout's runner.py, which works from any directory.
-        shown = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "runner.py"), "validate-config",
+        shown = subprocess.run([sys.executable, str(CHECKOUT / "runner.py"), "validate-config",
                                 "--batch", "fixture", "--home", str(self.home)], cwd=self.root, check=True,
                                capture_output=True, text=True).stdout
         self.assertEqual(json.loads(shown)["batch"], "fixture")

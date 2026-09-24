@@ -12,10 +12,10 @@ from unittest.mock import patch
 
 from linear_runner import config
 from linear_runner.config import ConfigError, config_fingerprint, find_home, load_config, pin_resolution, write_resolved
-from fixtures import FakeLinear, TEST_REGISTRY, make_home, write
+from tests.fixtures import CHECKOUT, FakeLinear, TEST_REGISTRY, make_home, write
 from linear_runner.linear.client import LinearClient
 
-ROOT = Path(__file__).resolve().parent
+ROOT = CHECKOUT
 
 
 class LayeredConfigTests(unittest.TestCase):
