@@ -250,6 +250,7 @@ def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=N
         issue = report["issues"].setdefault(item["issue"], {"intakes": [], "invocations": []})
         counter = item["counter"] or {}
         prior = previous.get(item["session_id"]) if item["session_id"] else None
+        gap = previous.get(("gap", item["session_id"]), False) if item["session_id"] else False
         row = {"attempt": item["attempt"], "phase": item["phase"], "session_id": item["session_id"],
                "start": item["start"], "finished": bool(item["end"]), "prompt_bytes": item["prompt_bytes"],
                "tool_output_bytes": item["tool_output_bytes"],
@@ -257,10 +258,14 @@ def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=N
                "session_input_after": counter.get("input_tokens"),
                "input_added": (counter["input_tokens"] - (prior or 0)) if "input_tokens" in counter else None,
                "output_added": (counter["output_tokens"] - (previous.get(("out", item["session_id"])) or 0))
-               if "output_tokens" in counter else None}
+               if "output_tokens" in counter else None,
+               "usage_basis": records.delta_basis(item, gap)}
         if "input_tokens" in counter and item["session_id"]:
             previous[item["session_id"]] = counter["input_tokens"]
             previous[("out", item["session_id"])] = counter.get("output_tokens", 0)
+            previous[("gap", item["session_id"])] = False
+        elif item["session_id"]:
+            previous[("gap", item["session_id"])] = True
         if item["prompt_bytes"] is None:
             prompt = Path(item["source"]).parent / "prompt.txt"
             row["prompt_bytes"] = prompt.stat().st_size if prompt.is_file() else None
@@ -290,7 +295,7 @@ def totals(report):
     """Batch-level sums: intake components, invocation input and the growth split."""
     components, replay = {}, {}
     rollout = dict({"input": 0, "prefix": 0, "invocations": 0}, **{kind: 0 for kind in GROWTH_KINDS})
-    added = {}
+    added, bounded = {}, set()
     for issue in report["issues"].values():
         for intake in issue["intakes"]:
             for key, value in intake["components"].items():
@@ -300,6 +305,8 @@ def totals(report):
         for row in issue["invocations"]:
             if row["input_added"] is not None:
                 added[row["phase"]] = added.get(row["phase"], 0) + row["input_added"]
+                if row.get("usage_basis") == records.UPPER_BOUND:
+                    bounded.add(row["phase"])
             growth = row.get("rollout")
             if growth and growth.get("calls"):
                 rollout["invocations"] += 1
@@ -308,6 +315,7 @@ def totals(report):
                 for key in GROWTH_KINDS:
                     rollout[key] += growth["growth"][key]
     return {"intake_components": components, "compact_replay": replay or None, "input_added_by_phase": added,
+            "input_added_upper_bound_phases": sorted(bounded),
             "rollout": rollout if rollout["invocations"] else None}
 
 
@@ -346,7 +354,9 @@ def render_markdown(report):
                                              fmt(row.get("compact_token_limit")) if row.get("compact_token_limit")
                                              else "default", fmt(row["prompt_bytes"]),
                                              fmt(row["tool_output_bytes"]), fmt(row["session_input_after"]),
-                                             fmt(row["input_added"]), fmt(r.get("calls")), fmt(r.get("first_context")),
+                                             ("≤ " if row.get("usage_basis") == records.UPPER_BOUND
+                                              and row["input_added"] is not None else "") + fmt(row["input_added"]),
+                                             fmt(r.get("calls")), fmt(r.get("first_context")),
                                              fmt(r.get("last_context")), fmt(r.get("prefix")),
                                              *(fmt(growth.get(kind)) for kind in GROWTH_KINDS)]) + " |")
     lines += ["", "## Check outcomes", "",

@@ -10,7 +10,9 @@ Semantics:
 
 * invocations are deduplicated by session ID + start + role; copies are listed;
 * the latest observed cumulative counter of each unique session counts once, and an
-  invocation's delta subtracts the session's previous counter;
+  invocation's delta subtracts the session's previous counter; after an invocation of the
+  same session without a counter (a failed turn) the delta is an upper bound
+  (``usage_basis`` ``cumulative-upper-bound``, shown as "≤ N"), never an exact delta;
 * cached input is a subset of input and reasoning a subset of output (never added);
 * a session without a counter makes the issue total unknown (``null``), never zero;
 * an invocation without a finish time (still running, or cut off by ``until``) is listed as
@@ -32,6 +34,8 @@ SEMANTICS = [
     "Invocation deduplication key is exact session ID + start + role; copied paths retained.",
     "Latest observed cumulative counter per unique session contributes once; per-invocation delta subtracts "
     "the session's prior counter.",
+    "After an invocation of the same session without a counter (a failed turn), the next delta also holds that "
+    "turn's unreported usage: it is an upper bound (basis cumulative-upper-bound, shown as ≤ N).",
     "Cached input is a subset of input and reasoning is a subset of output.",
     "Missing counters are unknown (null), never zero. No billed cost is inferred.",
     "Invocations without a recorded finish (or starting after the cutoff) are pending and excluded from totals.",
@@ -83,12 +87,16 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
         key = item["session_id"] or f"unknown:{item['source']}"
         session = sessions.setdefault(key, {"session_id": item["session_id"], "issue": item["issue"],
                                             "role": item["role"], "invocations": 0, "counter": None,
-                                            "monotonic": True})
+                                            "monotonic": True, "gap": False})
         previous = session["counter"]
-        if item["counter"] is not None:
+        basis = records.delta_basis(item, session["gap"])
+        if item["counter"] is None:
+            session["gap"] = True
+        else:
             if previous and any(item["counter"].get(k, 0) < previous.get(k, 0) for k in USAGE_KEYS):
                 session["monotonic"] = False
             session["counter"] = {k: item["counter"][k] for k in USAGE_KEYS if k in item["counter"]}
+            session["gap"] = False
         session["invocations"] += 1
         attempts.append({
             "issue": item["issue"], "run_id": item["run_id"], "attempt": item["attempt"], "phase": item["phase"],
@@ -101,9 +109,11 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
             "cumulative_usage": {k: item["counter"][k] for k in USAGE_KEYS if k in item["counter"]}
             if item["counter"] is not None else None,
             "usage_delta": _delta(item["counter"], previous if item["counter"] is not None else None),
+            "usage_basis": basis,
             "source": item["source"], "copies": len(item["copies"])})
     for session in sessions.values():
         session["covered"] = session["counter"] is not None
+        del session["gap"]
 
     summaries = []
     for issue in wanted:
@@ -218,6 +228,14 @@ def _fmt(value):
     return str(value)
 
 
+def delta_cell(attempt, key):
+    """An attempt's delta for ``key``; an upper bound is shown as ``≤ N``, never as an exact delta."""
+    value = (attempt["usage_delta"] or {}).get(key)
+    if value is not None and attempt.get("usage_basis") == records.UPPER_BOUND:
+        return f"≤ {_fmt(value)}"
+    return value
+
+
 def tables(result):
     """(title, intro, header, rows) for every section; shared by Markdown and HTML."""
     usage_header = ["Issue", "Attempts", "Sessions", "Covered", "Active wall s", "Elapsed s", "Validation s",
@@ -231,7 +249,7 @@ def tables(result):
     attempt_rows = [[a["issue"], a["attempt"], a["phase"], a["profile"],
                      f"{a['requested_model']}/{a['requested_effort']}", a["status"] or f"exit {a['exit_code']}",
                      a["wall_seconds"], a["prompt_bytes"], a["tool_output_bytes"],
-                     (a["cumulative_usage"] or {}).get("input_tokens"), (a["usage_delta"] or {}).get("input_tokens"),
+                     (a["cumulative_usage"] or {}).get("input_tokens"), delta_cell(a, "input_tokens"),
                      a["copies"]] for a in result["attempts"]]
     session_header = ["Issue", "Session", "Role", "Invocations", "Latest input", "Covered", "Monotonic"]
     session_rows = [[s["issue"], s["session_id"], s["role"], s["invocations"], (s["counter"] or {}).get("input_tokens"),
@@ -247,7 +265,8 @@ def tables(result):
                         c["output_tokens"], c["reasoning_subset"]] for c in result["comparison"]]
     sections = [
         ("Usage and time per issue", "Totals per issue from the saved session and check records.", usage_header, usage_rows),
-        ("Attempts", "One row per recorded model invocation, in start order.", attempt_header, attempt_rows),
+        ("Attempts", "One row per recorded model invocation, in start order. ≤ marks an upper bound: an "
+         "earlier invocation of the same session reported no usage.", attempt_header, attempt_rows),
         ("Sessions", "Latest cumulative counter per unique session; it counts once.", session_header, session_rows),
         ("Validation audit", "Runner check records with their log hashes re-verified.", audit_header, audit_rows),
         ("Batch comparison", "Group totals; unlike workloads are not causal comparisons.", comparison_header,

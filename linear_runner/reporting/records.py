@@ -12,7 +12,9 @@ every copy under the given roots and keeps one record per identity:
 Usage semantics (the same as ``runner.usage_totals``): counters are cumulative within a
 session (Codex reports them so; the runner accumulates Claude's per-invocation counters), so the latest observed counter of each unique session counts once; cached input
 is a subset of input and reasoning output a subset of output; a missing counter is unknown,
-never zero. No model, network or Linear access.
+never zero. An invocation's delta is exact unless an earlier invocation of its session,
+after the session's latest counter, recorded none (a failed turn): then it is an upper
+bound (``delta_basis``). No model, network or Linear access.
 """
 from __future__ import annotations
 
@@ -82,6 +84,19 @@ def counter_of(meta):
     return {k: v for k, v in usage[-1].items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
+UPPER_BOUND = "cumulative-upper-bound"
+
+
+def delta_basis(item, gap):
+    """How exact an invocation's usage delta is: ``unavailable`` (no counter), ``delta`` or
+    ``cumulative-upper-bound`` when ``gap`` (an invocation of the same session without a
+    counter came after the session's latest counter). Per-invocation counters (Claude) stay
+    exact: the runner added only known counters to them."""
+    if item.get("counter") is None:
+        return "unavailable"
+    return UPPER_BOUND if gap and not item.get("invocation_scoped") else "delta"
+
+
 def read_invocation(path):
     meta = read_json(path)
     located = locate(path)
@@ -111,6 +126,7 @@ def read_invocation(path):
         "handoff": meta.get("handoff"),
         "compact_token_limit": meta.get("compact_token_limit"),
         "counter": counter_of(meta),
+        "invocation_scoped": bool((meta.get("execution_evidence") or {}).get("invocation_usage_events")),
         "source": str(path), "sha256": sha256(path), "copies": [],
     }
 

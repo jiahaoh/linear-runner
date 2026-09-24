@@ -492,7 +492,10 @@ validation audit (log hashes re-verified) and batch comparison rows as Markdown 
 JSON, with no model. Copies of run directories are deduplicated by session ID + start + role;
 the latest cumulative counter of each session counts once; cached input and reasoning are
 subsets; a missing counter is unknown, never zero; an unfinished invocation is listed as pending
-and not counted. The `--check-*` options compare against recorded totals field by field. At
+and not counted. An attempt that follows an attempt of the same session without a counter (a
+failed turn) has only an upper bound for its delta: the attempts table shows it as `≤ N` and
+the JSON gives `usage_basis: "cumulative-upper-bound"` (`measure` marks its "input added" the
+same way); the session's counter still counts once in the totals. The `--check-*` options compare against recorded totals field by field. At
 every terminal outcome the supervisor also writes `terminal-trajectory.{json,md,html}` next to
 the terminal report from the batch's run directories; a rendering failure is logged and never
 blocks the terminal report.

@@ -105,5 +105,61 @@ class TrajectoryTests(unittest.TestCase):
         self.assertTrue(all(r["match"] for r in payload["reproduction"]))
 
 
+
+class UpperBoundTests(unittest.TestCase):
+    """The W-193 shape: a Codex implement turn failed before any completed turn (no counter);
+    the resumed turn in the same session completed with a cumulative counter."""
+
+    RUN = "20260101T050000Z-0000a001"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for root in ("evidence", "copy"):  # a copied run directory must not count twice
+            run = self.root / root / "TEAM-7" / self.RUN
+            self.session(run / "implement-20260101T050001Z-0000a002", "sess-t7-impl", "05:00:01", "05:02:00", None)
+            self.session(run / "implement-20260101T051000Z-0000a003", "sess-t7-impl", "05:10:00", "05:30:00",
+                         {"input_tokens": 1_602_748, "cached_input_tokens": 1_499_392, "output_tokens": 39_173,
+                          "reasoning_output_tokens": 22_663})
+            self.session(run / "review-20260101T053500Z-0000a004", "sess-t7-review", "05:35:00", "05:40:00",
+                         {"input_tokens": 200_000, "cached_input_tokens": 150_000, "output_tokens": 3_000,
+                          "reasoning_output_tokens": 1_000})
+        self.roots = [self.root / "evidence", self.root / "copy"]
+
+    @staticmethod
+    def session(directory, session, start, end, counter):
+        directory.mkdir(parents=True)
+        (directory / "session.json").write_text(json.dumps({
+            "session_id": session, "started_at": f"2026-01-01T{start}+00:00", "finished_at": f"2026-01-01T{end}+00:00",
+            "wall_seconds": 60.0, "exit_code": 0 if counter else 1,
+            "execution_evidence": {"usage_events": [{"usage": counter}] if counter else None}}))
+
+    def test_resumed_delta_is_an_upper_bound_and_totals_count_once(self):
+        result = trajectory.from_roots(self.roots)
+        rows = [a for a in result["attempts"] if a["session_id"] == "sess-t7-impl"]
+        self.assertEqual([a["usage_basis"] for a in rows], ["unavailable", "cumulative-upper-bound"])
+        self.assertEqual(rows[1]["usage_delta"]["input_tokens"], 1_602_748)
+        review = next(a for a in result["attempts"] if a["phase"] == "review")
+        self.assertEqual(review["usage_basis"], "delta")
+        summary = result["summaries"][0]
+        self.assertEqual((summary["attempts"], summary["sessions"], summary["usage"]["input_tokens"],
+                          summary["usage"]["output_tokens"]), (3, 2, 1_802_748, 42_173))
+        self.assertEqual(result["comparison"][0]["input_tokens"], 1_802_748)
+        markdown = trajectory.render_markdown(result)
+        self.assertIn("| ≤ 1,602,748 |", markdown)
+        self.assertIn("| 200,000 |", markdown)  # the exact review delta has no mark
+        self.assertIn("upper bound", markdown)
+        self.assertIn("≤ 1,602,748", trajectory.render_html(result))
+
+    def test_measure_marks_the_upper_bound(self):
+        from linear_runner.reporting import measure
+        report = measure.measure(self.roots)
+        rows = report["issues"]["TEAM-7"]["invocations"]
+        self.assertEqual([(r["usage_basis"], r["input_added"]) for r in rows],
+                         [("unavailable", None), ("cumulative-upper-bound", 1_602_748), ("delta", 200_000)])
+        self.assertEqual(report["totals"]["input_added_upper_bound_phases"], ["implement"])
+        self.assertIn("≤ 1,602,748", measure.render_markdown(report))
+
+
 if __name__ == "__main__":
     unittest.main()
