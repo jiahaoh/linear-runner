@@ -23,6 +23,7 @@ made between those two calls. Nothing here contacts Linear or Codex.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 
@@ -80,6 +81,23 @@ def read_markers(packet):
 
 
 # --- Codex rollouts -----------------------------------------------------------------------
+
+def default_rollouts():
+    """Where Codex keeps session logs: ``$CODEX_HOME/sessions``, else ``~/.codex/sessions``."""
+    home = os.environ.get("CODEX_HOME")
+    return str(Path(home).expanduser() / "sessions") if home else str(Path("~/.codex/sessions").expanduser())
+
+
+def rollout_location(requested=None, *, disabled=False):
+    """``{"location", "found", "note"}`` for the session-log directory measure should read."""
+    if disabled:
+        return {"location": None, "found": False, "note": "Codex session logs not read (--no-rollouts)."}
+    location = str(Path(requested or default_rollouts()).expanduser())
+    if Path(location).is_dir():
+        return {"location": location, "found": True, "note": None}
+    return {"location": location, "found": False,
+            "note": f"Codex session logs not found at {location}; per-call context growth is omitted "
+                    "(pass --rollouts DIR to read them from elsewhere)."}
 
 def find_rollout(directory, session_id):
     if not directory or not session_id:
@@ -173,13 +191,16 @@ def context_growth(calls, markers):
 
 # --- Measurement ----------------------------------------------------------------------------
 
-def measure(roots, *, issues=None, rollouts=None, compact=None):
+def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=None):
     """Per issue: intake components and per-invocation usage/growth. ``compact`` is an optional
     ``callable(packet) -> packet`` replaying a new intake builder on each saved intake."""
     invocations = [i for i in records.find_invocations(roots) if not issues or i["issue"] in issues]
     intakes = {(e["issue"], e["run_id"]): e for e in records.find_intakes(roots)
                if not issues or e["issue"] in issues}
-    report = {"schema": "linear-runner.measure/1", "issues": {}}
+    report = {"schema": "linear-runner.measure/1", "issues": {},
+              "rollouts": rollout_status or {"location": str(rollouts) if rollouts else None,
+                                             "found": bool(rollouts and Path(rollouts).expanduser().is_dir()),
+                                             "note": None if rollouts else "No Codex session-log directory given."}}
     previous = {}
     for key, entry in sorted(intakes.items()):
         packet = json.loads(Path(entry["path"]).read_text())
@@ -253,7 +274,10 @@ def totals(report):
 
 
 def render_markdown(report):
-    lines = ["# Context-cost measurement", "", "Offline, from saved runner records; no model was used.", "",
+    status = report.get("rollouts") or {}
+    logs = (f"Codex session logs: {status['location']}." if status.get("found")
+            else status.get("note") or "Codex session logs were not read.")
+    lines = ["# Context-cost measurement", "", "Offline, from saved runner records; no model was used. " + logs, "",
              "## Intake packets", "",
              "| Issue | Run | Total | Description | Other issue fields | Guidance | Context files | Checks | Other "
              "| Criteria | Link markup | Compact replay |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]

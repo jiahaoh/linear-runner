@@ -301,8 +301,10 @@ verifiable criteria, optional decision rules, exclusions); `examples/issue-contr
 is a fictional example and `examples/home/contracts/shared-contract.md` an example contract.
 The runner also writes `intake-components.json` (bytes per component) for later measurement.
 
-**Measurement.** `runner.py measure --runs <dir>... [--issues ...] [--rollouts ~/.codex/sessions]
-[--replay-compact] [--json out.json]` reads saved records only. It reports intake bytes by
+**Measurement.** `runner.py measure --runs <dir>... [--issues ...] [--rollouts DIR | --no-rollouts]
+[--replay-compact] [--json out.json]` reads saved records only. Codex session logs are read from
+`--rollouts`, else `$CODEX_HOME/sessions`, else `~/.codex/sessions`; when that directory is
+missing, the output says so and omits the per-call growth instead of failing. It reports intake bytes by
 component, unchecked criteria and link-markup bytes, and per invocation the prompt and
 tool-output bytes and the input it added to its session. With `--rollouts` it reads the Codex
 rollout of each session and splits each invocation's input into the re-sent starting context

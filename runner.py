@@ -21,6 +21,7 @@ import selectors
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -1569,7 +1570,9 @@ def build_parser():
     measure = commands.add_parser("measure", parents=[offline],
                                   help="offline: intake bytes by component, prompt/tool-output bytes and input growth")
     measure.add_argument("--rollouts", metavar="DIR",
-                         help="Codex session rollout directory for per-call context growth (read only)")
+                         help="Codex session-log directory for per-call context growth (read only; default "
+                              "$CODEX_HOME/sessions, else ~/.codex/sessions, when it exists)")
+    measure.add_argument("--no-rollouts", action="store_true", help="do not read Codex session logs")
     measure.add_argument("--replay-compact", action="store_true",
                          help="also rebuild each saved intake with the compact builder and report its size")
     measure.add_argument("--json", metavar="PATH", help="also write the full measurement as JSON")
@@ -1692,7 +1695,11 @@ def offline_measure(args):
     if args.replay_compact:
         import intake
         compact = intake.compact_from_saved
-    result = measure.measure(args.runs, issues=args.issues, rollouts=args.rollouts, compact=compact)
+    status = measure.rollout_location(args.rollouts, disabled=args.no_rollouts)
+    if status["note"]:
+        print(status["note"], file=sys.stderr)
+    result = measure.measure(args.runs, issues=args.issues, rollouts=status["location"] if status["found"] else None,
+                             compact=compact, rollout_status=status)
     if args.json:
         write_json(Path(args.json), result)
     print(measure.render_markdown(result))

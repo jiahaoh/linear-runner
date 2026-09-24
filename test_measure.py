@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 import measure
 import runner
@@ -67,6 +68,23 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(list(saved["issues"]), ["TEAM-2"])
         self.assertIn("## Intake packets", output.getvalue())
         self.assertEqual(saved["totals"]["rollout"]["input"], 72_000)
+
+    def test_session_log_location_defaults_and_missing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict("os.environ", {"CODEX_HOME": directory}):
+                self.assertEqual(measure.default_rollouts(), str(Path(directory) / "sessions"))
+                status = measure.rollout_location()
+                self.assertFalse(status["found"])
+                self.assertIn("not found at", status["note"])
+                err, out = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    runner.main(["measure", "--runs", *map(str, ROOTS), "--issues", "TEAM-2"])
+                self.assertIn("per-call context growth is omitted", err.getvalue())
+                self.assertIn("per-call context growth is omitted", out.getvalue())
+                (Path(directory) / "sessions").mkdir()
+                self.assertTrue(measure.rollout_location()["found"])
+        self.assertEqual(measure.rollout_location(disabled=True)["location"], None)
+        self.assertEqual(measure.rollout_location(str(FIXTURE / "rollouts"))["found"], True)
 
 
 if __name__ == "__main__":
