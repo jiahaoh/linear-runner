@@ -300,7 +300,8 @@ class Runner:
         digest = config_fingerprint(self.config)
         previous = self.state.get("config_sha256")
         if previous and previous != digest:
-            raise RuntimeError("Configuration/guidance changed; restore the saved batch configuration before resuming")
+            raise RuntimeError("Configuration/guidance changed; restore the saved batch configuration before resuming, "
+                               "or adopt it with `recover repin-config` while the batch is paused or stopped")
         if not previous and self.state_path.exists():
             raise RuntimeError("State without a configuration fingerprint is read-only; prepare a new batch/state directory")
         self.state["config_sha256"] = digest
@@ -1637,6 +1638,9 @@ def build_parser():
                      help="re-run the checks on the current source at a repair or validate stop (no model, no repair slot)")
     kinds.add_parser("publish", parents=[common, authority, then], help="reconcile publication of an accepted review; no model")
     kinds.add_parser("cancel", parents=[common, authority], help="withdraw a pending recovery that was not launched")
+    kinds.add_parser("repin-config", parents=[common, authority],
+                     help="adopt a changed configuration and/or runner commit for a paused or stopped batch "
+                          "(applied at once; record the recovery the state needs afterwards)")
     defer_issue = kinds.add_parser("defer", parents=[common, authority], help="defer an issue; the queue continues without it")
     defer_issue.add_argument("--issue", required=True)
     defer_issue.add_argument("--restore-worktree", action="store_true",
@@ -1820,6 +1824,16 @@ def supervised_command(parser, args, config, linear):
     import recovery
     import supervisor
     root = Path(config["state_dir"])
+    if args.command == "recover" and args.kind == "repin-config":
+        # The one recovery that runs against a configuration that differs from the pinned one.
+        with project_lock(root / "controller.lock"):
+            try:
+                record = recovery.recover_repin_config(config, linear, reason=args.reason,
+                                                       authorized_by=args.authorized_by)
+            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
+                parser.error(str(error))
+        print(json.dumps(record, indent=2))
+        return
     try:
         config, fresh = pin_resolution(config, linear)
     except (ConfigError, RuntimeError, OSError) as error:

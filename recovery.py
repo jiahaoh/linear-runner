@@ -25,6 +25,14 @@ No command accepts work, deletes history or resets usage, repair or escalation c
 * ``publish`` - reconcile publication of an already accepted review; no model may run.
 * ``defer``   - set an issue aside and let the queue continue with independent issues.
 * ``cancel``  - withdraw a pending recovery that has not been launched (recorded too).
+* ``repin-config`` - adopt a changed configuration and/or a newer runner commit for a paused
+  or stopped batch. Unlike the others it is applied when recorded and is never pending: it
+  re-pins ``resolved-config.json`` (the previous file is kept), records the old and new
+  fingerprints, the runner commit and the changed keys, and invalidates reused check
+  evidence whose definition changed. Record it first, then the recovery the paused state
+  needs (for example ``revalidate``), then launch. It refuses while a recovery is pending
+  and never changes the batch identity (issue allowlist and order, project, workspace,
+  assignee, worktree, branch, state directory, resolved Linear IDs).
 """
 from __future__ import annotations
 
@@ -41,7 +49,15 @@ from runner import (IssueBlocked, git, fingerprint, issue_contract, now, run_id,
                     validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
-KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel")
+KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel", "repin-config")
+# What repin-config may never change: these define the batch; changing them needs a new batch.
+REPIN_FIXED = (("batch_id", "the batch id"), ("issues", "the issue allowlist and its order"),
+               ("project_name", "the Linear project"), ("linear_workspace", "the Linear workspace"),
+               ("assignee", "the assignee"), ("worktree", "the worktree"), ("branch", "the branch"),
+               ("state_dir", "the state directory"), ("project_id", "the resolved Linear project ID"),
+               ("assignee_id", "the resolved Linear assignee ID"))
+# Steps whose validated evidence would no longer match a changed check definition.
+VALIDATED_STEPS = ("commit", "delivery", "review", "publish", "done")
 # Steps before independent acceptance, where an edited issue contract may be re-pinned.
 PRE_ACCEPTANCE = ("implement", "validate", "commit", "delivery", "review")
 PARK_REF = "refs/linear-runner/parked"
@@ -97,7 +113,10 @@ def _record(runner, kind, *, reason, authorized_by, then, details, pending=True)
     record = {"id": identifier, "kind": kind, "at": now(), "reason": reason.strip(),
               "authorized_by": authorized_by.strip(), "then": then, "details": details,
               "expected": expected_state(state), "host": os.uname().nodename,
+              "config_sha256": state.get("config_sha256"),
               "stop_marker_sha256": _sha(marker.read_bytes()) if marker.exists() else None}
+    if not pending:
+        record["applied_at"] = record["at"]  # applied when recorded (repin-config); never consumed by a launch
     append_log(runner.root, dict(record, event="recorded"))
     state.setdefault("recoveries", []).append(record)
     if pending:
@@ -362,6 +381,103 @@ def recover_cancel(runner, *, reason, authorized_by):
     return dict(cancellation, id=pending["id"], kind="cancel")
 
 
+# --- Re-pinning the configuration ---------------------------------------------------
+
+def _changed_checks(old, new):
+    """Names of checks whose definition (or shared check environment) changed or vanished."""
+    before = {c["name"]: c for c in old.get("checks", [])}
+    after = {c["name"]: c for c in new.get("checks", [])}
+    if old.get("check_environment") != new.get("check_environment"):
+        return sorted(before)
+    return sorted(name for name, spec in before.items() if after.get(name) != spec)
+
+
+def recover_repin_config(config, linear, *, reason, authorized_by):
+    """Adopt the current configuration (and runner commit) for a paused or stopped batch.
+
+    ``config`` is freshly loaded (``load_config``). Applied at once; see the module notes.
+    """
+    from config import (RESOLVED_NAME, _with_ids, config_changes, config_fingerprint, read_json,
+                        resolution_names, write_resolved)
+    from runner import Runner
+    for name, value in (("--reason", reason), ("--authorized-by", authorized_by)):
+        if not isinstance(value, str) or not value.strip():
+            raise RecoveryError(f"{name} is required and must not be blank")
+    root = Path(config["state_dir"])
+    pinned_path, state_path = root / RESOLVED_NAME, root / "state.json"
+    if not pinned_path.exists() or not state_path.exists():
+        raise RecoveryError("This batch has no pinned state to re-pin")
+    pinned, state = read_json(pinned_path), read_json(state_path)
+    if state.get("config_sha256") != pinned.get("config_sha256"):
+        raise RecoveryError(f"state.json and {RESOLVED_NAME} name different configurations; reconcile them first")
+    if state.get("pending_recovery"):
+        raise RecoveryError(f"Recovery {state['pending_recovery']['id']} is pending and was recorded against the "
+                            "pinned configuration; cancel it (recover cancel), re-pin, then record it again")
+    status_path = root / "supervisor.json"
+    status = read_json(status_path) if status_path.exists() else {}
+    if status.get("status") == "running" and status.get("pid") and Path(f"/proc/{status['pid']}").exists():
+        raise RecoveryError(f"Supervisor {status.get('launch_id')} (PID {status['pid']}) is still running; "
+                            "the configuration can be re-pinned only while the batch is paused or stopped")
+    pid = state.get("child_pid")
+    if pid and Path(f"/proc/{pid}").exists():
+        raise RecoveryError(f"Previous worker PID {pid} may still be alive; inspect before recovery")
+    if state.get("phase") != "paused" and not (root / "STOP").exists():
+        raise RecoveryError(f"The batch is {state.get('phase')!r} without a STOP marker; the configuration can be "
+                            "re-pinned only while the batch is paused or stopped (runner.py stop)")
+    old = pinned["config"]
+    ids = pinned["resolution"]["ids"]
+    new = _with_ids(config, ids, f"re-pinned {RESOLVED_NAME}")
+    fixed = [label for key, label in REPIN_FIXED if old.get(key) != new.get(key)]
+    projects = lambda layers: sorted(k for k in layers if k.startswith("project "))
+    if projects(pinned.get("layers", {})) != projects(config["_layers"]):
+        fixed.append("the project configuration file")
+    if pinned["resolution"]["names"] != resolution_names(config) and not fixed:
+        fixed.append("the Linear names")
+    if fixed:
+        raise RecoveryError("repin-config cannot change " + ", ".join(fixed) + "; those need a new batch id")
+    # Linear name resolution, as at launch: the names must still resolve to the pinned IDs.
+    live = {"project_id": linear.resolve_project(config["project_name"]),
+            "assignee_id": linear.resolve_user(config["assignee"])}
+    if live != ids:
+        raise RecoveryError(f"Linear now resolves the project/assignee names to {live}, not the pinned {ids}; "
+                            "that needs a new batch id")
+    old_sha, new_sha = pinned["config_sha256"], config_fingerprint(new)
+    if old_sha == new_sha:
+        raise RecoveryError("The configuration and runner are unchanged since they were pinned; nothing to re-pin")
+    changes = config_changes(old, new)
+    invalidated = _changed_checks(old, new)
+    active = state.get("active")
+    if invalidated and active and active["step"] in VALIDATED_STEPS:
+        raise RecoveryError(f"{active['issue_id']} is at step {active['step']!r} with evidence validated by the "
+                            f"pinned checks, and the definition of {invalidated} changed; finish or defer it first")
+    runner = Runner(new, linear)  # checks the batch identity against state.json
+    identifier = "R-" + run_id()
+    archived = root / f"resolved-config-before-{identifier}.json"
+    archived.write_bytes(pinned_path.read_bytes())
+    cache_path = root / "check-cache.json"
+    dropped = []
+    if cache_path.exists() and invalidated:
+        cache = read_json(cache_path)
+        dropped = sorted(name for name in cache if name in invalidated)
+        if dropped:
+            (root / f"check-cache-before-{identifier}.json").write_bytes(cache_path.read_bytes())
+            write_json(cache_path, {k: v for k, v in cache.items() if k not in dropped})
+    write_resolved(new)
+    details = {"id": identifier, "old_config_sha256": old_sha, "new_config_sha256": new_sha,
+               "runner": {"old": old.get("runner"), "new": new.get("runner")}, "changes": changes,
+               "changed_checks": invalidated, "invalidated_check_evidence": dropped,
+               "previous_resolved_config": str(archived),
+               "active": {"issue": active["issue_id"], "step": active["step"]} if active else None}
+    runner.state["config_sha256"] = new_sha
+    runner.state.setdefault("config_repins", []).append(
+        {"id": identifier, "at": now(), "authorized_by": authorized_by.strip(), "reason": reason.strip(),
+         "old_config_sha256": old_sha, "new_config_sha256": new_sha, "runner": details["runner"], "changes": changes,
+         "invalidated_check_evidence": dropped, "previous_resolved_config": str(archived)})
+    record = _record(runner, "repin-config", reason=reason, authorized_by=authorized_by, then=None, details=details,
+                     pending=False)
+    return record
+
+
 # --- Deferral and parking --------------------------------------------------------
 
 def defer(runner, issue, *, cause):
@@ -472,4 +588,4 @@ def block_record(runner, active, error, launch_id):
 
 __all__ = ["IssueBlocked", "KINDS", "RecoveryError", "append_log", "verify_log", "expected_state", "park", "unpark",
            "defer", "block_record", "repair_outcome", "recover_resume", "recover_revalidate", "recover_review", "recover_budget", "recover_publish",
-           "recover_defer", "recover_cancel"]
+           "recover_defer", "recover_cancel", "recover_repin_config"]

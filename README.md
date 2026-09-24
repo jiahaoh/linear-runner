@@ -136,7 +136,9 @@ exact match is an error) and write `<state dir>/resolved-config.json` with the r
 the effective configuration, the source layer of every value and the layer files used.
 Project names must match exactly within the authenticated workspace. Later runs reuse the
 pinned IDs without contacting Linear for resolution; a renamed project or assignee, or any
-change to the resolved configuration, is refused. Use a new batch `id` for a new queue.
+change to the resolved configuration, is refused. A paused or stopped batch can adopt a
+changed configuration or runner commit explicitly with `recover repin-config` (see "Stop,
+recovery and continuation"). Use a new batch `id` for a new queue.
 
 The configuration fingerprint in `state.json` and `resolved-config.json` covers the whole
 resolved configuration: guidance text, commands, environment, policy, IDs and the runner
@@ -145,7 +147,8 @@ it is checked out: paths under the runner checkout are normalized to `${runner_r
 before hashing. Moving or re-cloning the runner at the same commit therefore resumes
 normally, while a different runner commit, uncommitted runner edits or any configuration
 change is refused. The dirty flag is a boolean, so further edits to an already dirty
-checkout are not distinguished; run batches from a clean commit. The site `launcher` block
+checkout are not distinguished; run batches from a clean commit (`recover repin-config`
+adopts a new commit for a paused or stopped batch). The site `launcher` block
 and the site and workspace `attention` blocks are the exceptions: they only choose how the
 supervisor process starts and how a person is told about progress and stops, so they are
 left out of the fingerprint and changing them never blocks resuming. Each launch record
@@ -579,8 +582,8 @@ needs depends on whether a recovery is pending:
   unfinished issue; those always need a recorded recovery.
 
 Every recovery requires `--reason` and `--authorized-by`, runs offline except
-`--repin-contract`, and is written to `state.json` and the append-only, hash-chained
-`<state dir>/recovery-log.jsonl`. None accepts work or resets history, usage, repairs or
+`--repin-contract` and `repin-config` (Linear name resolution), and is written to
+`state.json` and the append-only, hash-chained `<state dir>/recovery-log.jsonl`. None accepts work or resets history, usage, repairs or
 escalation. `--then continue` (the default) lets the supervisor continue the batch after
 the recovered issue finishes, just as a fresh launch would; `--then stop` stops after it
 (writing STOP again, so a later bare continuation needs `--clear-stop`).
@@ -596,6 +599,7 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | Set an issue aside and continue with the others | `recover defer --batch $B --issue ISSUE [--restore-worktree] [--keep-commit] --reason R --authorized-by A` |
 | Restore a deferred, parked issue | `recover resume --batch $B --issue ISSUE --reason R --authorized-by A` |
 | Withdraw a recovery that was not launched | `recover cancel --batch $B --reason R --authorized-by A` |
+| Adopt a changed configuration and/or a newer runner commit (paused or stopped batch; applied at once, then record the recovery the state needs) | `recover repin-config --batch $B --reason R --authorized-by A` |
 | A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A` |
 
 Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
@@ -620,14 +624,51 @@ issue. `defer --restore-worktree` parks uncommitted work in a Git ref; `--keep-c
 continues on top of an unaccepted controller commit. A parked issue can be restored only
 when HEAD has not moved since it was parked, or when it was parked cleanly at `implement`.
 
+**Re-pinning the configuration.** `recover repin-config` is how a paused or stopped batch
+adopts an edited private configuration (for example a check that gains `allow_empty`) and/or
+a newer runner commit, which otherwise refuse every resume. It is allowed only while no
+supervisor or worker is alive and the batch is paused or has a STOP marker, and only when no
+recovery is pending (that recovery was recorded against the old configuration: cancel it,
+re-pin, record it again). It reloads every layer, resolves the Linear project and assignee
+names live and requires them to resolve to the pinned IDs, then:
+
+* refuses any change to the batch identity, which needs a new batch `id`: the batch id, the
+  issue allowlist and its order, the project file, the Linear project, workspace and
+  assignee names, the resolved project and assignee IDs, the worktree, the branch and the
+  state directory;
+* refuses a changed check definition (or check environment) while the active issue is at
+  `commit`, `delivery`, `review`, `publish` or `done`, whose evidence was validated by the
+  pinned checks (finish or defer it first);
+* keeps the previous pin as `resolved-config-before-<R-id>.json`, writes the new
+  `resolved-config.json` and the new fingerprint into `state.json`, and removes the reuse
+  cache entries of checks whose definition changed (the old cache is kept as
+  `check-cache-before-<R-id>.json`); history, usage, repairs, escalation, blocks and stops
+  are untouched;
+* records the old and new fingerprints, the runner commit and dirty flag old → new and each
+  changed key, for example `checks[pytest-extended].allow_empty: absent → true`, in
+  `state.config_repins`, `state.recoveries` and the recovery log.
+
+It is applied when recorded and is never pending, so it composes with the one pending
+recovery: record `repin-config` first, then the recovery the state needs, then launch. For
+a check that should have allowed an empty selection:
+
+```bash
+python3 runner.py recover repin-config --batch $B --reason R --authorized-by A
+python3 runner.py recover revalidate --batch $B --reason R --authorized-by A
+python3 runner.py launch --batch $B
+```
+
+A stopped batch with nothing paused needs only `repin-config` and then `launch --clear-stop`.
+To undo a re-pin, restore the files and re-pin again; every pin stays recorded.
+
 Verify no previous child is alive before recovering (recoveries and launch refuse a live
 recorded PID). Never delete state or reset the worktree to clear a failure. The lock
 protects one state directory on one host only; the transient unit survives logout (with
 lingering enabled) but not a reboot, and it never restarts itself.
 
 State written by an earlier runner version has a different configuration fingerprint and
-is refused; finish or reconcile it with the runner version that created it rather than
-editing state.
+is refused; adopt the new runner with `recover repin-config` while the batch is paused or
+stopped, or finish it with the runner version that created it. Never edit state.
 
 ## Decision rules
 

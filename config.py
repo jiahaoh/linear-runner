@@ -562,9 +562,46 @@ def config_fingerprint(config):
 
     The runner checkout path is normalized away; its commit and dirty flag identify it.
     """
+    return hashlib.sha256(json.dumps(_effective(config), sort_keys=True).encode()).hexdigest()
+
+
+def _effective(config):
+    """The fingerprinted part of a resolved configuration, with the runner checkout path normalized."""
     effective = {k: v for k, v in config.items() if k not in META_KEYS + UNFINGERPRINTED}
     root = effective.get("variables", {}).get("runner_root") or str(RUNNER_ROOT)
-    return hashlib.sha256(json.dumps(_portable(effective, root), sort_keys=True).encode()).hexdigest()
+    return _portable(effective, root)
+
+
+def _flatten(value, prefix, out):
+    """Leaf paths: ``a.b`` for objects, ``checks[name]`` for lists of uniquely named objects."""
+    if isinstance(value, dict) and value:
+        for key, item in value.items():
+            _flatten(item, f"{prefix}.{key}" if prefix else str(key), out)
+    elif (isinstance(value, list) and value and all(isinstance(v, dict) and isinstance(v.get("name"), str) for v in value)
+          and len({v["name"] for v in value}) == len(value)):
+        for item in value:
+            _flatten({k: v for k, v in item.items() if k != "name"}, f"{prefix}[{item['name']}]", out)
+    else:
+        out[prefix] = value
+    return out
+
+
+def _shown(value, absent):
+    if value is absent:
+        return "absent"
+    text = json.dumps(value, sort_keys=True)
+    if len(text) <= 80:
+        return text
+    return f"<{len(text)} characters, sha256 {hashlib.sha256(text.encode()).hexdigest()[:12]}>"
+
+
+def config_changes(old, new):
+    """Human-readable changes between two resolved configurations, limited to what the
+    fingerprint covers, e.g. ``checks[pytest-extended].allow_empty: absent → true``."""
+    before, after = _flatten(_effective(old), "", {}), _flatten(_effective(new), "", {})
+    absent = object()
+    return [f"{key}: {_shown(before.get(key, absent), absent)} → {_shown(after.get(key, absent), absent)}"
+            for key in sorted(set(before) | set(after)) if before.get(key, absent) != after.get(key, absent)]
 
 
 def resolution_names(config):
@@ -588,7 +625,8 @@ def pin_resolution(config, linear):
             raise ConfigError("Linear names changed since this batch pinned its IDs; restore the configuration or prepare a new batch")
         resolved = _with_ids(config, pinned["resolution"]["ids"], f"pinned {RESOLVED_NAME}")
         if config_fingerprint(resolved) != pinned.get("config_sha256"):
-            raise ConfigError(f"Configuration/guidance changed since {path} was pinned; restore the saved batch configuration before resuming")
+            raise ConfigError(f"Configuration/guidance changed since {path} was pinned; restore the saved batch configuration, "
+                              "or adopt the change with `runner.py recover repin-config` while the batch is paused or stopped")
         return resolved, False
     ids = {"project_id": linear.resolve_project(config["project_name"]),
            "assignee_id": linear.resolve_user(config["assignee"])}

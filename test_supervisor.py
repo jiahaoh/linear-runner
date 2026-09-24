@@ -796,6 +796,180 @@ class RevalidateTests(Harness):
             main(["recover", "revalidate", *args, "--authorized-by", "Owner"])
 
 
+EMPTY_CHECK = {"name": "pytest-extended", "kind": "code", "tier": "default", "inputs": ["README.md"], "cwd": ".",
+               "command": ["${python}", "-c", "raise SystemExit(5)"]}
+
+
+class RepinConfigTests(Harness):
+    """`recover repin-config`: a paused batch adopts a changed configuration and runner commit."""
+
+    def setUp(self):
+        super().setUp()
+        self.identity = {"commit": "a" * 40, "dirty": False}
+        patcher = patch("config.runner_identity", side_effect=lambda *args: dict(self.identity))
+        patcher.start(); self.addCleanup(patcher.stop)
+        self.edit_project(lambda project: project["checks"].append(dict(EMPTY_CHECK)))
+
+    def edit_project(self, change):
+        path = self.home / "projects" / "fixture.json"
+        project = json.loads(path.read_text()); change(project); path.write_text(json.dumps(project))
+
+    def edit_batch(self, change):
+        batch = json.loads(self.batch.read_text()); change(batch); self.batch.write_text(json.dumps(batch))
+
+    def allow_empty(self, project):
+        next(c for c in project["checks"] if c["name"] == "pytest-extended")["allow_empty"] = True
+
+    def repin(self, **kwargs):
+        kwargs.setdefault("reason", "pytest-extended may select nothing after the tests moved")
+        kwargs.setdefault("authorized_by", "Owner")
+        config = load_config(self.batch, self.home)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with project_lock(self.state_dir / "controller.lock"):
+            return recovery.recover_repin_config(config, self.linear, **kwargs)
+
+    def test_canary_sequence_repin_then_revalidate_then_launch(self):
+        self.hooks[("DEV-1", "repair")] = self.blocked(times=1)
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        before = self.state()
+        self.assertEqual((before["active"]["step"], before["active"]["repairs"]), ("repair", 1))
+        old_sha = before["config_sha256"]
+        # The owner allows the empty selection and updates the runner.
+        self.edit_project(self.allow_empty)
+        self.identity = {"commit": "b" * 40, "dirty": False}
+        with self.assertRaisesRegex(Exception, "changed since .* was pinned.*recover repin-config"):
+            self.recover("revalidate")
+        args = ["--batch", str(self.batch), "--home", str(self.home), "--reason", "allow the empty extended tier",
+                "--authorized-by", "Owner"]
+        with patch.object(runner_module, "LinearClient", lambda *a, **k: self.linear), \
+                patch("sys.stdout") as stdout:
+            main(["recover", "repin-config", *args])
+        record = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
+        details = record["details"]
+        self.assertEqual(record["kind"], "repin-config")
+        self.assertEqual(details["old_config_sha256"], old_sha)
+        self.assertEqual(details["runner"], {"old": {"commit": "a" * 40, "dirty": False},
+                                             "new": {"commit": "b" * 40, "dirty": False}})
+        self.assertEqual(details["changes"], ["checks[pytest-extended].allow_empty: absent → true",
+                                              f'runner.commit: "{"a" * 40}" → "{"b" * 40}"'])
+        self.assertEqual((details["changed_checks"], details["active"]), (["pytest-extended"], {"issue": "DEV-1", "step": "repair"}))
+        state = self.state()
+        self.assertEqual(state["config_sha256"], details["new_config_sha256"])
+        self.assertIsNone(state.get("pending_recovery"))  # applied, never pending
+        self.assertEqual(state["config_repins"][0]["changes"], details["changes"])
+        self.assertEqual((state["history"], state["active"]["repairs"], state["blocks"]),
+                         (before["history"], 1, before["blocks"]))  # nothing erased or reset
+        pinned = json.loads((self.state_dir / "resolved-config.json").read_text())
+        self.assertEqual(pinned["config_sha256"], details["new_config_sha256"])
+        self.assertEqual(json.loads(Path(details["previous_resolved_config"]).read_text())["config_sha256"], old_sha)
+        with self.assertRaisesRegex(LaunchError, "paused"):
+            self.launch(clear_stop=True)  # a paused batch still needs the recovery its state calls for
+        revalidate = self.recover("revalidate")
+        self.assertEqual(revalidate["config_sha256"], details["new_config_sha256"])
+        entry = self.launch()
+        self.assertEqual(entry["started"]["outcome"], "complete")
+        self.assertEqual(self.calls[:3], [("DEV-1", "implement"), ("DEV-1", "repair"), ("DEV-1", "review")])
+        run = Path(self.state()["history"][0]["run_dir"])
+        final = json.loads(sorted(run.glob("validation-*/checks.json"))[-1].read_text())
+        self.assertEqual([(r["name"], r["status"]) for r in final], [("output", "passed"), ("pytest-extended", "empty")])
+        latest = json.loads((self.state_dir / "preflight.json").read_text())
+        self.assertEqual(latest["identities"]["config"]["fingerprint"], details["new_config_sha256"])
+        entries = verify_log(self.state_dir)
+        self.assertEqual([(e["event"], e.get("kind")) for e in entries],
+                         [("recorded", "repin-config"), ("recorded", "revalidate"), ("consumed", "revalidate")])
+        self.assertEqual(entries[0]["details"]["changes"], details["changes"])
+
+    def test_identity_changes_are_refused(self):
+        self.launch(stop_after=["DEV-1"])
+        cases = [
+            (lambda: self.edit_batch(lambda b: b.update(issues=["DEV-2", "DEV-1", "DEV-3"])), "the issue allowlist and its order"),
+            (lambda: self.edit_batch(lambda b: b.update(branch="codex/other")), "the branch"),
+            (lambda: self.edit_batch(lambda b: b.update(worktree=str(self.root / "other"))), "the worktree"),
+            (lambda: self.edit_project(lambda p: p.update(linear_project="Other project")), "the Linear project"),
+        ]
+        for change, label in cases:
+            original = (self.batch.read_text(), (self.home / "projects" / "fixture.json").read_text())
+            with self.subTest(label=label):
+                change()
+                self.edit_project(self.allow_empty)
+                with self.assertRaisesRegex(RecoveryError, f"cannot change .*{label}.*new batch id"):
+                    self.repin()
+            self.batch.write_text(original[0]); (self.home / "projects" / "fixture.json").write_text(original[1])
+        self.edit_project(self.allow_empty)
+        self.linear.resolve_project = lambda name: "another-project-id"
+        with self.assertRaisesRegex(RecoveryError, "resolves the project/assignee names to"):
+            self.repin()
+        self.assertFalse(list(self.state_dir.glob("resolved-config-before-*")))
+        self.assertNotIn("config_repins", self.state())
+
+    def test_preconditions(self):
+        with self.assertRaisesRegex(RecoveryError, "no pinned state"):
+            self.repin()
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.launch()
+        with self.assertRaisesRegex(RecoveryError, "unchanged since they were pinned"):
+            self.repin()
+        self.edit_project(self.allow_empty)
+        with self.assertRaisesRegex(RecoveryError, "--authorized-by"):
+            self.repin(authorized_by="")
+        # A recovery recorded against the pinned configuration must be cancelled first.
+        self.edit_project(lambda p: next(c for c in p["checks"] if c["name"] == "pytest-extended").pop("allow_empty"))
+        self.recover("resume")
+        self.edit_project(self.allow_empty)
+        with self.assertRaisesRegex(RecoveryError, "is pending .* cancel it"):
+            self.repin()
+        self.edit_project(lambda p: next(c for c in p["checks"] if c["name"] == "pytest-extended").pop("allow_empty"))
+        self.recover("cancel")
+        self.edit_project(self.allow_empty)
+        # Only while paused or stopped, and never with a live supervisor.
+        write_json(self.state_dir / "supervisor.json", {"launch_id": "L-live", "pid": os.getpid(), "status": "running"})
+        with self.assertRaisesRegex(RecoveryError, "still running"):
+            self.repin()
+        write_json(self.state_dir / "supervisor.json", {"launch_id": "L-live", "pid": os.getpid(), "status": "exited"})
+        path = self.state_dir / "state.json"
+        state = json.loads(path.read_text()); state["phase"] = "supervising"; path.write_text(json.dumps(state))
+        (self.state_dir / "STOP").unlink()
+        with self.assertRaisesRegex(RecoveryError, "paused or stopped"):
+            self.repin()
+        (self.state_dir / "STOP").write_text("held")
+        self.assertEqual(self.repin()["details"]["changed_checks"], ["pytest-extended"])
+
+    def test_changed_check_evidence_is_invalidated_and_the_batch_continues(self):
+        self.edit_project(self.allow_empty)
+        self.assertEqual(self.launch(stop_after=["DEV-1"])["started"]["outcome"], "checkpoint")
+        cache = json.loads((self.state_dir / "check-cache.json").read_text())
+        self.assertEqual(sorted(cache), ["output", "pytest-extended"])
+        self.edit_project(lambda p: p["checks"][0].update(inputs=["result.txt", "README.md"]))
+        record = self.repin()
+        details = record["details"]
+        self.assertEqual((details["changed_checks"], details["invalidated_check_evidence"], details["active"]),
+                         (["output"], ["output"], None))
+        self.assertEqual(sorted(json.loads((self.state_dir / "check-cache.json").read_text())), ["pytest-extended"])
+        self.assertEqual(len(list(self.state_dir.glob("check-cache-before-R-*.json"))), 1)
+        self.assertEqual(details["changes"], ['checks[output].inputs: ["result.txt"] → ["result.txt", "README.md"]'])
+        # A stopped batch continues on the re-pinned configuration; history is kept.
+        entry = self.launch(clear_stop=True)
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-3"]))
+        self.assertEqual(self.state()["history"][0]["issue_id"], "DEV-1")
+
+    def test_changed_checks_are_refused_after_validation(self):
+        self.edit_project(lambda p: p["checks"].remove(next(c for c in p["checks"] if c["name"] == "pytest-extended")))
+        self.hooks[("DEV-1", "review")] = self.blocked(times=1)
+        self.launch()
+        self.assertEqual(self.state()["active"]["step"], "review")
+        self.edit_project(lambda p: p["checks"][0].update(inputs=["result.txt", "README.md"]))
+        with self.assertRaisesRegex(RecoveryError, "at step 'review' with evidence validated by the pinned checks"):
+            self.repin()
+        # A change that leaves the checks alone (here only the runner commit) is fine there.
+        self.edit_project(lambda p: p["checks"][0].update(inputs=["result.txt"]))
+        self.identity = {"commit": "c" * 40, "dirty": True}
+        record = self.repin()
+        self.assertEqual(record["details"]["changes"], [f'runner.commit: "{"a" * 40}" → "{"c" * 40}"',
+                                                        "runner.dirty: false → true"])
+        self.recover("review")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+
+
 class OnBlockPolicyTests(Harness):
     BATCH = {"supervision": {"on_block": "continue_independent", "report_issues": ["TRACK-1"]}}
 
