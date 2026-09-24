@@ -19,33 +19,51 @@ before unattended use.
 
 ## Layout
 
+The code is one Python package, `linear_runner/`, with no dependencies outside the standard
+library. `runner.py` at the checkout root is the only entry point you run; it forwards to
+`linear_runner/cli.py`. Data the code reads (`registry/`, `schema/`, `templates/`) stays at
+the checkout root, which is also `${runner_root}`.
+
 | Path | Contents |
 | --- | --- |
-| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, and the offline `report` and `measure`) |
-| `launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` backends |
-| `supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
-| `recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
-| `rules.py` | One-line decision rules written in issue descriptions |
-| `delivery.py` | Generic, config-driven delivery integrity step |
-| `config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning |
-| `linear_client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint; append-only comments with read-back |
+| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, and the offline `report` and `measure`); launch units and comment commands run it by path |
+| `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
+| `linear_runner/cli.py` | The command line: argument parsing and dispatch of every command |
+| `linear_runner/config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning, the configuration fingerprint and runner identity |
+| `linear_runner/engine/runner.py` | The per-issue state machine: gates, model phases, checks and validation, the controller commit, delivery, review, publication and terminal reporting |
+| `linear_runner/engine/delivery.py` | Check outcomes and the generic, config-driven delivery integrity step |
+| `linear_runner/engine/intake.py` | Worker intake packets: compact schema 2 (default) and the full schema 1 |
+| `linear_runner/backends/__init__.py` | The model-backend interface (`SessionRequest`, `Backend`) and the backend registry |
+| `linear_runner/backends/codex.py` | Everything Codex-specific: the `codex exec` argv, its JSONL events, execution evidence and the host model catalog |
+| `linear_runner/linear/client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint; append-only comments with read-back |
+| `linear_runner/linear/updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
+| `linear_runner/linear/messages.py` | Builds each human-review comment from saved state |
+| `linear_runner/linear/attention.py` | Stop classification, needs-input mechanisms and the out-of-band notifier |
+| `linear_runner/supervision/launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` host backends |
+| `linear_runner/supervision/supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
+| `linear_runner/supervision/recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
+| `linear_runner/supervision/watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`, run by a launch-started timer) |
+| `linear_runner/supervision/rules.py` | One-line decision rules written in issue descriptions |
+| `linear_runner/reporting/records.py` | Reads saved session, check and intake records from evidence roots and deduplicates copies |
+| `linear_runner/reporting/trajectory.py` | Deterministic trajectory/usage/attempts/validation-audit/batch-comparison report (`runner.py report`, and `terminal-trajectory.*` at the terminal step) |
+| `linear_runner/reporting/measure.py` | Offline context-cost measurement: intake components, prompt/tool-output bytes, per-call context growth (`runner.py measure`) |
+| `linear_runner/reporting/report.py` | Standalone terminal HTML/JSON report |
+| `linear_runner/reporting/render_samples.py` | Builds one sample comment per template for `docs/template-samples.md` |
 | `templates/` | Human-review Linear comment templates and the worker/reviewer draft templates |
-| `updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
-| `messages.py` | Builds each human-review comment from saved state |
-| `attention.py` | Stop classification, needs-input mechanisms and the out-of-band notifier |
-| `watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`, run by a launch-started timer) |
-| `render_samples.py` | Writes `docs/template-samples.md`, one sample comment per template |
-| `report.py` | Standalone terminal HTML/JSON report |
-| `records.py` | Reads saved session, check and intake records from evidence roots and deduplicates copies |
-| `trajectory.py` | Deterministic trajectory/usage/attempts/validation-audit/batch-comparison report (`runner.py report`, and `terminal-trajectory.*` at the terminal step) |
-| `measure.py` | Offline context-cost measurement: intake components, prompt/tool-output bytes, per-call context growth (`runner.py measure`) |
-| `intake.py` | Worker intake packets: compact schema 2 (default) and the full schema 1 |
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
 | `prompts/` | Generic worker guidance |
 | `testdata/` | Fictional runner records for the renderer and measurement tests |
-| `test_*.py` | Offline tests; `test_public_tree.py` fails on private identifiers in any tracked file |
+| `tests/` | Offline tests, laid out like the package (`tests/engine/`, `tests/backends/`, ...); shared fixtures in `tests/fixtures.py`; `tests/test_public_tree.py` fails on private identifiers in any tracked file |
+
+Run the tests from the checkout root; they need no network, Linear, Codex or systemd:
+
+```bash
+python3 -m unittest -v                          # everything
+python3 -m unittest tests.engine.test_runner    # one module (or tests.engine.test_runner.EngineTests)
+python3 render_samples.py --check               # docs/template-samples.md is current
+```
 
 ## Configuration layers
 
@@ -124,7 +142,7 @@ dollar sign) in a check argument is still replaced by that check's validation di
 run time. Commands are argv arrays; no shell is involved.
 
 Credentials are never stored: the workspace names an environment variable or a credential
-cache path, and `linear_client.py` re-reads it on each request. Do not put secrets in
+cache path, and `linear_runner/linear/client.py` re-reads it on each request. Do not put secrets in
 `check_environment`; it is recorded in manifests.
 
 ### Name resolution and pinning
@@ -165,6 +183,11 @@ left out of the fingerprint and changing them never blocks resuming. Each launch
    validation commands. Add project or batch guidance files as needed.
 4. Validate offline, run the tests, then launch. Inspect one completed issue before
    continuing with a newly introduced profile or host (a planned checkpoint does this).
+
+**Canary policy.** After any change to runner behavior, the configuration schema, the model
+backend or a model, first run one small canary batch of low-risk real issues, and fix what
+it finds before you start a production batch. Unit tests and offline `validate-config` do
+not exercise live dispatch.
 
 `--batch` takes the batch file's path or, for a file at `<home>/batches/<id>.json` in the
 active private home, just its `id`; an unknown id is an error. Comments show `--batch <id>`

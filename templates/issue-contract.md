@@ -22,8 +22,9 @@ below only where this issue differs from the contract.
 ## Acceptance criteria
 
 The reviewer assesses exactly these unchecked items, verbatim, against the shared contract.
-Write about 5 to 10. Each one can be checked from the diff, a command's output or a saved
-file; say which when it is not obvious.
+Write about 5 to 10. Every criterion names where its evidence comes from: a check, the
+diff, a saved file or a measurement the owner supplies. A criterion that compares against a
+baseline also says how that baseline is produced.
 
 - [ ] <Observable result 1, with the command or file that shows it.>
 - [ ] <Observable result 2.>
