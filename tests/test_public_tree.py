@@ -25,6 +25,8 @@ PATTERNS = {
     "lab share name": re.compile("wang" + "lab", re.I),
     "host name": re.compile("gp" + "099", re.I),
     "Linear document URL": re.compile(r"linear\.app/[^/\s]+/document/", re.I),
+    # Anthropic keys and Claude OAuth tokens (for example from `claude setup-token`).
+    "Anthropic credential": re.compile(r"\bsk-" + "ant" + r"-[a-z]{2,4}\d{2}-[A-Za-z0-9_-]{16,}"),
 }
 # Generic system locations that may legitimately appear as private site values.
 SYSTEM_PREFIXES = ("/usr/", "/bin/", "/etc/", "/tmp/", "/opt/", "/var/")
@@ -122,7 +124,8 @@ class PublicTreeTests(unittest.TestCase):
         samples = {"UUID": "id " + "-".join(["123e4567", "e89b", "12d3", "a456", "426614174000"]),
                    "home directory path": '"/ho' + 'me/someone/x"', "user directory path": " /Us" + "ers/someone",
                    "lab share name": "WANG" + "LAB share", "host name": "gp" + "099.example",
-                   "Linear document URL": "https://linear.app/" + "team/document/plan-1"}
+                   "Linear document URL": "https://linear.app/" + "team/document/plan-1",
+                   "Anthropic credential": "token sk-" + "ant-" + "oat01-" + "x" * 24}
         for name, sample in samples.items():
             self.assertIsNotNone(PATTERNS[name].search(sample), name)
         self.assertIsNone(PATTERNS["home directory path"].search("examples/ho" + "me/site.json"))

@@ -14,7 +14,8 @@ authorization rules belong in project or batch guidance files. One command,
 outer model session is needed to start, continue or recover a batch.
 
 Requires Python 3.10+, Git, a POSIX host (tested on Linux), an authenticated Codex CLI (and,
-for Claude-backed pools, Claude Code logged in with a claude.ai subscription) and a Linear
+for Claude-backed pools, Claude Code with a claude.ai subscription: its login or a long-lived
+token, see "Claude authentication") and a Linear
 credential reachable through an environment variable or the Codex credential cache. CLI event
 parsing was established on Codex CLI 0.154.0 and Claude Code 2.1.281; probe changed versions
 before unattended use.
@@ -96,7 +97,7 @@ model does not allow) are errors.
 
 | Layer | Fields |
 | --- | --- |
-| Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
+| Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides` |
@@ -220,7 +221,7 @@ site changes the configuration fingerprint of its batches, so a paused batch the
 
 | | Codex (`codex exec`) | Claude Code (`claude -p`) |
 | --- | --- | --- |
-| Auth | Codex login | claude.ai subscription login (never `--bare`); preflight records only `loggedIn`/`authMethod` |
+| Auth | Codex login | claude.ai subscription login (never `--bare`), or a long-lived token (see "Claude authentication"); preflight records only the auth mode and `loggedIn`/`authMethod` |
 | Read-only review | OS sandbox (`--sandbox read-only`) | Permission rules: `dontAsk`, tools Read/Grep/Glob/Bash, Bash limited to read-only Git commands |
 | Worker | `--approve-for-me` | `acceptEdits` in the worktree and the issue run directory; Bash allowed except Git history/branch commands and nested agents |
 | Isolation | Linear MCP disabled | no settings files, a per-session `--settings` (hooks and auto-memory off), `--strict-mcp-config` with no servers, a fixed appended system prompt, `CLAUDE*`/`ANTHROPIC*` variables removed |
@@ -229,12 +230,67 @@ site changes the configuration fingerprint of its batches, so a paused batch the
 | Usage | cumulative per session | per call; the runner accumulates it per session. Input includes cache reads and writes; `total_cost_usd` is kept as the CLI's estimate, never billed cost |
 | Observed model / effort | when emitted | model from events; effort is never emitted |
 | `compact_token_limit` | supported | not supported: a limit on a phase whose pools include Claude is a configuration error |
-| Availability check | host catalog (`site.model_catalog`) | probe-verified model list, CLI version (≥ 2.1.280), subscription login |
+| Availability check | host catalog (`site.model_catalog`) | probe-verified model list, CLI version (≥ 2.1.280), the configured authentication |
 
 The Claude reviewer's read-only guarantee is Claude Code's permission rules, not an OS
 sandbox; the runner's frozen-source check after the review still stops the issue if the
 worktree changed. A Claude error result (for example an unavailable model) stops as an
 `environment` stop with the CLI's message, never a silent retry.
+
+### Claude authentication
+
+By default Claude sessions use the host's claude.ai subscription login (`claude auth login`,
+kept in `~/.claude`). Every Claude Code process on the host shares that login: interactive
+sessions, the desktop app and the runner's `claude -p` calls. Its access token is short-lived,
+and when it expires each process refreshes it; concurrent refreshes race, and the loser fails
+with "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited
+mid-refresh". When the loser is a runner session, the batch stops.
+
+Give the runner its own long-lived subscription token instead: it needs no refresh, so it
+cannot race. Create it once with `claude setup-token` (interactive; it prints the token) and
+keep it in a file only you can read, outside any Git repository:
+
+```bash
+claude setup-token                                                  # prints a long-lived token
+install -d -m 700 ~/.local/share/linear-runner
+(umask 077; cat > ~/.local/share/linear-runner/claude-oauth.token)  # paste the token, Enter, Ctrl-D
+chmod 600 ~/.local/share/linear-runner/claude-oauth.token
+```
+
+Then reference it in the private `site.json` (the token itself never goes in configuration):
+
+```json
+"claude": {"auth": {"oauth_token_file": "~/.local/share/linear-runner/claude-oauth.token"}}
+```
+
+or `{"oauth_token_env": "NAME"}` for a variable set in the environment that runs `launch`.
+
+* **Token file.** `validate-config` and launch preflight check that it is a regular, non-empty
+  file with mode 600 or stricter, and never print it; a path inside the worktree or this
+  checkout is refused. The runner reads it when each Claude session starts and puts it only in
+  that `claude` process's environment, as `CLAUDE_CODE_OAUTH_TOKEN`: never in argv,
+  `session.json`, `events.jsonl`, `resolved-config.json`, logs, launch records or unit
+  properties. The systemd unit gets no secret, and a replaced token is used from the next session.
+* **Token variable.** Preflight fails if it is unset. `launch` passes it to the unit by name
+  (`--setenv=NAME`, like the Linear `token_env`); the runner removes it from checks and Codex
+  sessions and gives it only to `claude`, as `CLAUDE_CODE_OAUTH_TOKEN`.
+* **Preflight.** In a token mode the `claude_auth` step (always re-run) checks that the token is
+  readable and that `claude auth status` reports `authMethod: oauth_token`; the claude.ai login
+  is not required. That command is local, so an expired or revoked token shows up at the first
+  session.
+* **Records.** Preflight and `session.json` record the auth mode (`subscription-login`,
+  `oauth-token-file` or `oauth-token-env`), never the token. The configuration fingerprint covers
+  the mode and the file path or variable name, not the token, so replacing the token changes
+  nothing; adding or changing the setting does, and a paused batch then needs
+  `recover repin-config`.
+* **Stops.** A Claude authentication error (OAuth, 401, login) is an `environment` stop that
+  names the auth mode. Its blocked comment says to regenerate the token with `claude setup-token`
+  (token modes), or suggests a token file because concurrent Claude Code sessions can race on
+  the refresh (subscription login).
+
+Claude Code decides whether the tools it runs (for example the worker's Bash) see
+`CLAUDE_CODE_OAUTH_TOKEN`; treat the token like the login it replaces, which a worker could also
+read from `~/.claude`.
 
 ## Running a batch
 
@@ -271,7 +327,8 @@ python3 runner.py status --batch $B                          # state, supervisor
 `ExecStopPost` that writes STOP), waits until the supervisor reports itself running and
 prints the unit, PID, state directory, log, launch record and terminal-report path. It
 then exits; no model or operator session stays attached. A credential named by
-`token_env` is passed to the unit by name (`--setenv=NAME`), never by value. Before the
+`token_env` (or a Claude `oauth_token_env`) is passed to the unit by name (`--setenv=NAME`),
+never by value. Before the
 supervisor it starts the watchdog timer (see "Watchdog"); if the timer cannot start, nothing
 is launched. `--backend foreground` runs the supervisor in the launching process instead and
 starts no timer.
@@ -284,6 +341,7 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 | `worktree` | Expected branch, not moved outside the controller, clean unless an active issue owns the changes | source (branch, HEAD, clean flag, content hash) + configuration |
 | `model_catalog` | Host catalog readable; which registry profiles it offers | catalog bytes + configuration |
 | `baseline_checks` (optional) | Default-tier checks pass on the clean baseline | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
+| `claude_auth` (with `site.claude.auth`) | The Claude token file or variable is usable and the CLI uses it (see "Claude authentication") | never: always re-read |
 | `linear` | Authenticated live read of every allowlisted issue, gates, ownership, decision-rule blocks, model/effort per phase, dependency-aware dry-run selection, or the resume checks for a saved active issue | never: live state is always re-read |
 
 Each step records `reused` and a reason (`reused: source, config unchanged since L-...`,
