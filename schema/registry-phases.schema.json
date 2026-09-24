@@ -43,6 +43,31 @@
     },
     "check_timeout_seconds": {
       "$ref": "#/$defs/positive"
+    },
+    "bounded_sessions": {
+      "description": "Opt-in: continue worker phases in a fresh Codex session seeded with a handoff file instead of resuming a long session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "input_threshold_tokens",
+        "handoff_after_implement",
+        "max_handoff_bytes"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "input_threshold_tokens": {
+          "$ref": "#/$defs/positive"
+        },
+        "handoff_after_implement": {
+          "type": "boolean"
+        },
+        "max_handoff_bytes": {
+          "$ref": "#/$defs/positive"
+        }
+      }
     }
   },
   "$defs": {

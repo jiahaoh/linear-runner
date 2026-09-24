@@ -754,7 +754,7 @@ class Runner:
 
     # --- Model phases and checks ------------------------------------------------
 
-    def model_phase(self, active, phase, prompt, *, resume=None, writable=True, result_schema=None):
+    def model_phase(self, active, phase, prompt, *, resume=None, writable=True, result_schema=None, session_meta=None):
         if self.allowed_phases is not None and phase not in self.allowed_phases:
             raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
         prompt += operator_notes(active)
@@ -764,6 +764,8 @@ class Runner:
         self.save(active=active)
         attempt = Path(active["run_dir"]) / (phase + "-" + run_id())
         prompt += self.outbox_instructions(phase, attempt / "outbox")
+        if writable:
+            prompt += self.handoff_instructions(attempt)
         before_records = [read_json(p) for p in Path(active["run_dir"]).glob("*/session.json")]
         before = usage_totals(before_records)["totals"]
         try:
@@ -780,6 +782,8 @@ class Runner:
                 meta = read_json(attempt / "session.json")
                 meta["selection"] = selection
                 meta["prompt_bytes"] = len(prompt.encode())
+                if session_meta:
+                    meta["handoff"] = session_meta
                 captured = locals().get("events")
                 if captured is None and (attempt / "events.jsonl").exists():
                     captured = [json.loads(line) for line in (attempt / "events.jsonl").read_text().splitlines() if line.strip()]
@@ -788,6 +792,8 @@ class Runner:
         write_json(attempt / "phase-result.json", result)
         if writable:
             active["session_id"] = session
+            active["session_last_phase"] = phase
+            active.pop("pending_handoff", None)
         active["last_result"] = result
         self.save(active=active)
         active["drafts"] = self.settle_outbox(active, phase, attempt, result)
@@ -809,6 +815,125 @@ class Runner:
             raise IssueBlocked("Phase soft budget exceeded or telemetry unavailable; reconcile before resume",
                                "budget_exceeded")
         return result
+
+    # --- Bounded worker sessions (opt-in; registry phases.bounded_sessions) ------------
+
+    def bounded_policy(self):
+        policy = self.policy["phases"].get("bounded_sessions") or {}
+        return policy if policy.get("enabled") else None
+
+    def handoff_instructions(self, attempt):
+        policy = self.bounded_policy()
+        if not policy:
+            return ""
+        return (f"\n\nBefore you return, write {attempt}/handoff.json following {updates.TEMPLATE_DIR}/handoff.md "
+                f"(at most {policy['max_handoff_bytes']} bytes). If this session is continued, a fresh session "
+                "starts from that file, the repository and the intake packet instead of this conversation.")
+
+    def session_input(self, active, session):
+        """Latest cumulative input counter of ``session`` in this issue's records (None: unknown)."""
+        import records
+        values = []
+        for path in Path(active["run_dir"]).glob("*/session.json"):
+            meta = read_json(path)
+            counter = records.counter_of(meta) if meta.get("session_id") == session else None
+            if counter and "input_tokens" in counter:
+                values.append(counter["input_tokens"])
+        return max(values) if values else None
+
+    def worker_session(self, active, phase):
+        """(resume session or None, seed prompt, handoff record) for the next worker phase.
+
+        With bounded sessions enabled, a session whose cumulative input reached the threshold,
+        or the first repair after implement (``handoff_after_implement``), is not resumed:
+        the next phase starts a fresh session seeded with the handoff. Repairs, escalation and
+        the issue identity live in ``active`` and carry over unchanged.
+        """
+        session = active.get("session_id")
+        pending = active.get("pending_handoff")
+        if pending and not session:  # interrupted after the switch was recorded
+            return None, self.handoff_seed(active, pending), pending
+        policy = self.bounded_policy()
+        if not policy or not session:
+            return session, "", None
+        used = self.session_input(active, session)
+        reason = None
+        if used is not None and used >= policy["input_threshold_tokens"]:
+            reason = f"session input {used} reached the threshold {policy['input_threshold_tokens']}"
+        elif phase == "repair" and policy["handoff_after_implement"] and active.get("session_last_phase") == "implement":
+            reason = "implement to self-check boundary"
+        if reason is None:
+            return session, "", None
+        record = dict(self.take_handoff(active, session, phase, policy), from_session=session, reason=reason,
+                      session_input=used, at=now(), next_phase=phase)
+        active.setdefault("session_switches", []).append(record)
+        active["pending_handoff"] = record
+        active["session_id"] = None
+        self.save(active=active)
+        self.log(f"{active['issue_id']}: fresh {phase} session from handoff ({reason})")
+        return None, self.handoff_seed(active, record), record
+
+    def take_handoff(self, active, session, phase, policy):
+        """The worker's handoff.json from the session's latest attempt if valid, else one
+        synthesized from saved records; stored under ``handoffs/`` with its hash."""
+        from config import ConfigError, check_schema, load_schema
+        run = Path(active["run_dir"])
+        metas = [(read_json(p), p) for p in run.glob("*/session.json")]
+        attempts = [p.parent for meta, p in sorted(((m, p) for m, p in metas if m.get("session_id") == session),
+                                                   key=lambda item: (item[0].get("started_at") or "",
+                                                                     item[1].stat().st_mtime))]
+        problem, handoff, source = None, None, "runner"
+        candidate = attempts[-1] / "handoff.json" if attempts else None
+        if candidate is not None and candidate.is_file():
+            try:
+                data = candidate.read_bytes()
+                if len(data) > policy["max_handoff_bytes"]:
+                    raise ConfigError(f"{len(data)} bytes exceeds {policy['max_handoff_bytes']}")
+                value = json.loads(data)
+                check_schema(value, load_schema("handoff"), "handoff")
+                if value["issue_id"] != active["issue_id"]:
+                    raise ConfigError(f"issue_id {value['issue_id']!r} is not {active['issue_id']!r}")
+                handoff, source = value, "worker"
+            except (ConfigError, ValueError) as error:
+                problem = f"worker handoff rejected: {error}"
+        elif candidate is not None:
+            problem = "the worker wrote no handoff.json"
+        if handoff is None:
+            handoff = self.synthesize_handoff(active, phase)
+        directory = run / "handoffs"; directory.mkdir(exist_ok=True)
+        path = directory / f"handoff-{run_id()}.json"
+        write_json(path, handoff)
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "source": source,
+                "worker_file": str(candidate) if candidate else None, "problem": problem}
+
+    def synthesize_handoff(self, active, phase):
+        """A model-free handoff from the last structured result, the diff and the latest checks."""
+        result = active.get("last_result") or {}
+        changed = sorted(set(git(self.repo, "diff", "--name-only", active["starting_commit"]).splitlines()
+                             + git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()))
+        validation = []
+        if active.get("validation_dir") and (Path(active["validation_dir"]) / "checks.json").is_file():
+            validation = [{"command": c.get("name", " ".join(c.get("command", []))),
+                           "outcome": f"exit {c.get('exit_code')}" + (" (reused)" if c.get("reused") else "")}
+                          for c in read_json(Path(active["validation_dir"]) / "checks.json")]
+        status = result.get("status") if result.get("status") in ("ready", "blocked") else "in_progress"
+        criteria = [{"criterion": e.get("criterion", ""), "state": "met" if e.get("satisfied") else "unmet",
+                     "evidence": str(e.get("evidence", ""))[:400]} for e in (result.get("acceptance") or [])[:50]]
+        steps = ([f"Repair only the failing checks listed in {active['validation_dir']}/checks.json."]
+                 if phase == "repair" and active.get("validation_dir") else ["Continue with the unmet criteria."])
+        return {"schema": "linear-runner.handoff/1", "issue_id": active["issue_id"], "status": status,
+                "summary": str(result.get("summary") or "No structured summary was recorded.")[:1500],
+                "changed_files": changed[:200], "criteria": criteria, "validation": validation,
+                "open_questions": [str(v)[:400] for v in (result.get("limitations") or [])[:20]],
+                "next_steps": steps, "evidence_paths": [p for p in (active["run_dir"], active.get("validation_dir")) if p]}
+
+    def handoff_seed(self, active, record):
+        text = Path(record["path"]).read_text()
+        return (f"Continue {active['issue_id']} in a fresh session: the previous worker session "
+                f"{record['from_session']} ended ({record['reason']}). Its handoff ({record['source']}-written, "
+                f"{record['path']}, sha256 {record['sha256'][:16]}) is below; the repository, the intake packet "
+                f"{Path(active['run_dir']) / 'intake.json'} and the saved evidence are authoritative where they "
+                f"differ.\n\n```json\n{text.strip()}\n```\n\n")
 
     def run_checks(self, active):
         directory = Path(active["run_dir"]) / ("validation-" + run_id())
@@ -959,7 +1084,9 @@ class Runner:
                 run_dir=active["run_dir"]), dedupe="claim:" + active["run_dir"])
             self.linear.call("save_issue", id=issue, state=self.config["states"]["in_progress"])
             self.verify_issue(self.linear.issue(issue))
-            result = self.model_phase(active, "implement", self.worker_packet(active), resume=active.get("session_id"))
+            resume, seed, switch = self.worker_session(active, "implement")
+            result = self.model_phase(active, "implement", seed + self.worker_packet(active), resume=resume,
+                                      session_meta=switch)
             if result.get("status") != "ready" or result.get("issue_id") != issue:
                 raise IssueBlocked("Worker reported blocked: " + messages.short_cause(result.get("summary") or
                                                                                    "no summary given", 300),
@@ -995,9 +1122,11 @@ class Runner:
             self.emit(issue, "validation", messages.validation(self.ctx, issue=issue, records=records, passed=False,
                                                                repair=active["repairs"], directory=active["validation_dir"]),
                       dedupe=active["validation_dir"])
-            result = self.model_phase(active, "repair", f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
+            resume, seed, switch = self.worker_session(active, "repair")
+            result = self.model_phase(active, "repair", seed + f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
                                       "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
-                                      "Return readiness with evidence, or blocked. Preserve scientific contracts.", resume=active.get("session_id"))
+                                      "Return readiness with evidence, or blocked. Preserve scientific contracts.", resume=resume,
+                                      session_meta=switch)
             if result.get("status") != "ready" or result.get("issue_id") != issue:
                 raise IssueBlocked("Repair did not report ready: " + messages.short_cause(result.get("summary") or
                                                                                         "no summary given", 300),

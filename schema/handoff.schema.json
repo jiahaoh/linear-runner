@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Worker session handoff",
+  "description": "Written by a worker (or synthesized by the runner) when a bounded session ends, and given to the fresh session that continues the same issue. See templates/handoff.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "issue_id", "status", "summary", "changed_files", "criteria", "next_steps"],
+  "properties": {
+    "schema": {"enum": ["linear-runner.handoff/1"]},
+    "issue_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["in_progress", "ready", "blocked"]},
+    "summary": {"type": "string", "minLength": 1},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "state"],
+        "properties": {
+          "criterion": {"type": "string"},
+          "state": {"enum": ["met", "unmet", "unknown"]},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "outcome"],
+        "properties": {"command": {"type": "string"}, "outcome": {"type": "string"}}
+      }
+    },
+    "decisions": {"type": "array", "items": {"type": "string"}},
+    "open_questions": {"type": "array", "items": {"type": "string"}},
+    "next_steps": {"type": "array", "items": {"type": "string"}},
+    "evidence_paths": {"type": "array", "items": {"type": "string"}}
+  }
+}
