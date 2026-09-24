@@ -19,6 +19,12 @@ It replaces per-batch supervise scripts. Under the project lock it:
   policy (stop, or defer the issue and continue with independent issues);
 * writes a terminal report, posts the batch summary as a new comment on the terminal
   issue and ``report_issues``, and, by default, writes a STOP marker when it exits.
+
+Exit status: a planned checkpoint, STOP, a partial or complete queue and a recorded pause
+(a classified stop with its blocked comment) all return normally, so ``runner.py
+supervise`` exits 0. It exits nonzero only when it refuses to start (2), when the pause
+is classified ``runner-defect`` (an unexpected exception type), or when recording the
+pause itself fails. Status and the watchdog read ``supervisor.json``, never the exit code.
 """
 from __future__ import annotations
 
@@ -352,9 +358,15 @@ class Supervisor:
         except (Exception, KeyboardInterrupt) as error:
             r.stop_child()
             r.log(f"Paused: {error}")
-            r.report_pause(error, launch_id=self.launch_id, extra=self.extra())
-            self.write_status("exited", outcome="blocked", error=str(error))
-            raise
+            stop = r.report_pause(error, launch_id=self.launch_id, extra=self.extra())
+            self.write_status("exited", outcome="blocked", error=str(error), stop=stop["id"],
+                              classification=stop["class"])
+            # A recorded pause is an orderly outcome (exit 0). Only a runner defect (an
+            # unexpected exception type) is re-raised, so the process exits nonzero and a
+            # systemd unit ends "failed" for real failures only.
+            if stop["class"] == "runner-defect":
+                raise
+            return "blocked"
 
     def checkpoint(self, issue):
         self.state.setdefault("checkpoints_reached", []).append({"issue": issue, "at": now(),

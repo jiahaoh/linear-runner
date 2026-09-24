@@ -437,6 +437,14 @@ recovery whose expected state still matches exactly. Then it:
 When it carries out a recorded recovery it first posts a `recovery` comment on the issue
 and removes the needs-input mark of the stop it recovers.
 
+**Exit status.** Every orderly outcome exits 0: a planned checkpoint, STOP, a `partial` or
+complete queue, and a recorded pause (a classified stop with its blocked comment, including
+a `systemctl stop`). The supervisor exits nonzero only when it refuses to start (2), when a
+pause is classified `runner-defect` (an unexpected exception type, 1) or when recording the
+pause itself fails, so a systemd unit ends `failed` only for real failures. `status`,
+`launch` confirmation and the watchdog read `supervisor.json` (`status`, `outcome` and,
+for a pause, `stop` and `classification`), never the exit code.
+
 A batch-level failure (gates, ownership, Linear errors, changed configuration, lost
 read-back) pauses the batch as before. An issue-level block (worker or repair blocked,
 repair limit, delivery failure, rejected review, soft budget) is recorded in

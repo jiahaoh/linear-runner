@@ -224,6 +224,51 @@ class LaunchAndSupervisorTests(Harness):
         self.assertFalse(self.calls)
 
 
+class SupervisorExitTests(Harness):
+    def supervise_cli(self):
+        """Run ``runner.py supervise`` for a passed preflight; return its exit code (0 on return)."""
+        runner = self.make_runner()
+        preflight(runner.config, runner, launch_id="L-exit")
+        args = ["supervise", "--batch", str(self.batch), "--home", str(self.home), "--launch-id", "L-exit"]
+        fake = self
+        class Engine(Runner):
+            def __init__(self, config, linear=None):
+                super().__init__(config, fake.linear)
+                self.codex = fake.codex
+        with patch("supervisor.Runner", Engine), patch.object(runner_module, "LinearClient", lambda *a, **k: self.linear), \
+                patch.object(runner_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
+                patch("signal.signal"), patch("sys.stderr"):
+            try:
+                main(args)
+            except SystemExit as raised:
+                return raised.code
+        return 0
+
+    def test_orderly_pause_exits_zero_and_a_runner_defect_exits_nonzero(self):
+        self.hooks[("DEV-1", "implement")] = self.blocked()
+        self.assertEqual(self.supervise_cli(), 0)
+        state = self.state()
+        self.assertEqual((state["phase"], state["stops"][-1]["class"]), ("paused", "needs-decision"))
+        self.assertTrue((self.state_dir / "STOP").exists())  # still held after an orderly pause
+        self.assertEqual(json.loads((self.state_dir / "supervisor.json").read_text())["outcome"], "blocked")
+
+    def test_runner_defect_is_recorded_and_still_exits_nonzero(self):
+        def defect(result):
+            raise KeyError("a runner bug")
+        self.hooks[("DEV-1", "implement")] = defect
+        self.assertEqual(self.supervise_cli(), 1)
+        state = self.state()
+        self.assertEqual((state["phase"], state["stops"][-1]["class"]), ("paused", "runner-defect"))
+        status = json.loads((self.state_dir / "supervisor.json").read_text())
+        self.assertEqual((status["status"], status["outcome"], status["classification"]),
+                         ("exited", "blocked", "runner-defect"))
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "blocked"])
+
+    def test_completed_queue_exits_zero(self):
+        self.assertEqual(self.supervise_cli(), 0)
+        self.assertEqual(self.state()["phase"], "queue_complete")
+
+
 class SystemdBackendTests(Harness):
     SITE = {"launcher": {"backend": "systemd-user", "python": "${python}", "cpu_list": "0",
                          "environment": {"PATH": "/usr/bin:/bin"}, "startup_timeout_seconds": 5}}
@@ -346,9 +391,13 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
     def test_review_only_recovery_with_redelivery(self):
         self.hooks[("DEV-1", "review")] = self.blocked(times=1)
         entry = self.launch()
-        self.assertEqual(entry["started"]["exit_code"], 1)
+        # A recorded pause is an orderly outcome: the supervisor exits 0.
+        self.assertEqual((entry["started"]["exit_code"], entry["started"]["outcome"]), (0, "blocked"))
         state = self.state()
         self.assertEqual((state["phase"], state["active"]["step"]), ("paused", "review"))
+        status = json.loads((self.state_dir / "supervisor.json").read_text())
+        self.assertEqual((status["status"], status["outcome"], status["classification"], status["stop"]),
+                         ("exited", "blocked", "needs-decision", state["stops"][-1]["id"]))
         self.assertEqual(state["blocks"]["DEV-1"][0]["event"], "review_blocked")
         with self.assertRaisesRegex(LaunchError, "STOP marker present"):
             self.launch()
@@ -582,7 +631,7 @@ class OnBlockPolicyTests(Harness):
         self.batch = batch
         self.assertEqual(self.make_runner().config["supervision"]["on_block"], "stop")
         self.hooks[("DEV-1", "implement")] = self.blocked()
-        self.assertEqual(self.launch()["started"]["exit_code"], 1)
+        self.assertEqual(self.launch()["started"], {"pid": os.getpid(), "exit_code": 0, "outcome": "blocked"})
         state = self.state()
         self.assertEqual((state["phase"], state["active"]["issue_id"], self.done()), ("paused", "DEV-1", []))
         self.assertNotIn("deferred", state)
@@ -608,7 +657,7 @@ class OnBlockPolicyTests(Harness):
     def test_batch_level_failures_still_stop(self):
         self.linear.others["DEV-2"]["assigneeId"] = "someone-else"
         entry = self.launch()
-        self.assertEqual(entry["started"]["exit_code"], 1)
+        self.assertEqual((entry["started"]["exit_code"], entry["started"]["outcome"]), (0, "blocked"))
         self.assertEqual(self.done(), ["DEV-1"])
         self.assertEqual(self.state()["phase"], "paused")
 
@@ -642,7 +691,7 @@ class DecisionRuleTests(Harness):  # on_block defaults to stop
         home, batch = make_home(self.root, self.repo, batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3",
                                                               "supervision": {"on_block": "continue_independent"}})
         self.batch = batch  # the policy alone would defer DEV-1
-        self.assertEqual(self.launch()["started"]["exit_code"], 1)
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
         self.assertEqual((self.state()["phase"], self.done()), ("paused", []))
         self.assertEqual(self.state()["rule_applications"][0]["rule"]["text"], "stop batch when worker blocked 1 time")
 
