@@ -263,5 +263,106 @@ class DisabledTests(BoundedSessionTests):
         self.assertNotIn("handoff.json", self.prompts[0])
 
 
+def risk_registry(**settings):
+    registry = copy.deepcopy(TEST_REGISTRY)
+    registry["profiles"]["review_routing"] = {"light_review": dict({
+        "enabled": True, "profile": "Economy", "issue_profiles": ["Economy", "Standard"],
+        "task_kinds": ["Maintenance", "Implementation"], "max_changed_files": 8, "max_changed_lines": 300,
+        "max_repairs": 0, "opt_out_labels": ["Full review"], "gate_labels": ["Human gate"]}, **settings)}
+    return registry
+
+
+class RiskBase(Harness):
+    REGISTRY = risk_registry()
+
+    def review_selection(self, labels=None):
+        if labels is not None:
+            self.linear.data["labels"] = labels
+        runner = self.make_runner()
+        runner.execute(limit=1)
+        run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())
+        meta = json.loads(next(run.glob("review-*/session.json")).read_text())
+        return meta["selection"], json.loads((run / "review-risk.json").read_text())
+
+
+class RiskRoutingTests(RiskBase):
+    def test_low_risk_issue_gets_the_lighter_review(self):
+        selection, risk = self.review_selection()
+        self.assertEqual((selection["profile"], selection["selection_source"]), ("Economy", "low-risk review rule"))
+        self.assertEqual((risk["eligible"], risk["diff"]["files"]), (True, 2))
+        self.assertEqual(self.linear.data["statusType"], "completed")
+
+    def test_research_validation_and_deep_floors_still_hold(self):
+        for labels, expected in ((["Research", "Standard"], "Deep"), (["Validation", "Economy"], "Deep"),
+                                 (["Implementation", "Deep"], "Deep")):
+            with self.subTest(labels=labels):
+                self.setUp()
+                selection, _ = self.review_selection(labels)
+                self.assertEqual(selection["profile"], expected)
+
+    def test_opt_out_and_gate_labels_keep_the_normal_review(self):
+        for label in ("Full review", "Human gate"):
+            with self.subTest(label=label):
+                self.setUp()
+                selection, risk = self.review_selection(["Implementation", "Standard", label])
+                self.assertEqual(selection["profile"], "Standard")
+                self.assertIn(f"label {label!r}", risk["failed"])
+
+
+class RiskFloorWithBroadRuleTests(RiskBase):
+    # Even a rule that names Research cannot lower the Research review floor.
+    REGISTRY = risk_registry(task_kinds=["Research", "Implementation"])
+
+    def test_floor_wins_over_a_broad_rule(self):
+        selection, risk = self.review_selection(["Research", "Standard"])
+        self.assertTrue(risk["eligible"])
+        self.assertEqual((selection["profile"], selection["selection_source"]),
+                         ("Deep", "approved phase override/review floor"))
+
+
+class RiskLargeDiffTests(RiskBase):
+    REGISTRY = risk_registry(max_changed_lines=1)
+
+    def test_large_diff_keeps_the_normal_review(self):
+        selection, risk = self.review_selection()
+        self.assertEqual(selection["profile"], "Standard")
+        self.assertIn("2 changed lines > 1", risk["failed"])
+
+
+class RiskAfterRepairTests(BoundedSessionTests):
+    REGISTRY = risk_registry()
+
+    def test_repaired_issue_keeps_the_normal_review(self):
+        self.run_issue()
+        run = self.run_dir()
+        risk = json.loads((run / "review-risk.json").read_text())
+        self.assertIn("1 repair(s) > 0", risk["failed"])
+        meta = json.loads(next(run.glob("review-*/session.json")).read_text())
+        self.assertEqual(meta["selection"]["profile"], "Standard")
+
+
+class RiskGateRelationTests(RiskBase):
+    BATCH = {"human_gates": [{"issue_id": "GATE-1", "comment_id": "c1", "author_id": "owner",
+                              "approval_text": "approved"}]}
+
+    def test_issue_blocked_by_a_human_gate_keeps_the_normal_review(self):
+        self.linear.others["GATE-1"] = {"id": "GATE-1", "statusType": "completed"}
+        self.linear.comments = lambda issue: [{"id": "c1", "author": {"id": "owner"}, "body": "approved"}]
+        self.linear.data["relations"] = {"blockedBy": [{"id": "GATE-1"}]}
+        selection, risk = self.review_selection()
+        self.assertEqual(selection["profile"], "Standard")
+        self.assertIn("blocked by human gate ['GATE-1']", risk["failed"])
+
+
+class RiskDefaultOffTests(Harness):
+    def test_registry_default_is_off(self):
+        rule = json.loads((Path(__file__).resolve().parent / "registry" / "profiles.json").read_text())
+        self.assertFalse(rule["review_routing"]["light_review"]["enabled"])
+        self.make_runner().execute(limit=1)
+        run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())
+        self.assertEqual(json.loads(next(run.glob("review-*/session.json")).read_text())["selection"]["profile"],
+                         "Standard")
+
+
 if __name__ == "__main__":
     unittest.main()

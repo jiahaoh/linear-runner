@@ -98,6 +98,76 @@
       "additionalProperties": {
         "$ref": "#/$defs/label"
       }
+    },
+    "review_routing": {
+      "description": "Optional risk-based review routing; review floors still apply.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "light_review"
+      ],
+      "properties": {
+        "light_review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "profile",
+            "issue_profiles",
+            "task_kinds",
+            "max_changed_files",
+            "max_changed_lines",
+            "max_repairs",
+            "opt_out_labels",
+            "gate_labels"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "profile": {
+              "$ref": "#/$defs/label"
+            },
+            "issue_profiles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/label"
+              }
+            },
+            "task_kinds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/label"
+              }
+            },
+            "max_changed_files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_changed_lines": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_repairs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "opt_out_labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/label"
+              }
+            },
+            "gate_labels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/label"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

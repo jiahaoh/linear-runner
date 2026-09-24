@@ -134,8 +134,13 @@ RESULT_SCHEMA = {
 }
 
 
-def resolve_profile(config, issue, phase, escalation=None):
-    """Registry-driven routing: issue labels, approved phase overrides, review floors, escalation."""
+def resolve_profile(config, issue, phase, escalation=None, light=None):
+    """Registry-driven routing: issue labels, approved phase overrides, review floors, escalation.
+
+    ``light`` is the lighter review profile allowed by the low-risk review rule (see
+    ``Runner.review_risk``); it replaces the issue's profile and the default review floor, but
+    the task-kind and profile floors still apply, and an escalation ignores it.
+    """
     policy = config["policy"]
     routing = policy["profiles"]
     labels = [v.get("name") if isinstance(v, dict) else v for v in issue.get("labels", [])]
@@ -145,16 +150,22 @@ def resolve_profile(config, issue, phase, escalation=None):
         raise RuntimeError(f"{issue['id']}: require exactly one task-type and execution-profile label")
     overrides = routing["phase_overrides"]
     selected = escalation or overrides.get(phase, profiles[0])
+    lighter = False
     if phase == "review":
         floors = routing["review_floors"]
-        candidates = [selected, floors["default"], floors["by_task_kind"].get(types[0]), floors["by_profile"].get(profiles[0])]
+        if light and not escalation:
+            candidates = [light, floors["by_task_kind"].get(types[0]), floors["by_profile"].get(profiles[0])]
+        else:
+            candidates = [selected, floors["default"], floors["by_task_kind"].get(types[0]),
+                          floors["by_profile"].get(profiles[0])]
         selected = max((c for c in candidates if c), key=routing["order"].index)
+        lighter = bool(light and not escalation and selected == light)
     value = routing["profiles"][selected]
     return {"task_type": types[0], "issue_profile": profiles[0], "profile": selected,
             "model": value["model"], "effort": value["effort"], "phase": phase,
             "routing_version": routing["routing_version"],
-            "selection_source": "escalation" if escalation else "approved phase override/review floor" if
-                phase in overrides or selected != profiles[0] else "issue labels"}
+            "selection_source": "escalation" if escalation else "low-risk review rule" if lighter else
+                "approved phase override/review floor" if phase in overrides or selected != profiles[0] else "issue labels"}
 
 
 def usage_totals(records):
@@ -758,7 +769,8 @@ class Runner:
         if self.allowed_phases is not None and phase not in self.allowed_phases:
             raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
         prompt += operator_notes(active)
-        selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"))
+        light = (active.get("review_risk") or {}).get("profile") if phase == "review" else None
+        selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"), light)
         self.verify_model(selection)
         active["selection"] = selection
         self.save(active=active)
@@ -815,6 +827,56 @@ class Runner:
             raise IssueBlocked("Phase soft budget exceeded or telemetry unavailable; reconcile before resume",
                                "budget_exceeded")
         return result
+
+    # --- Risk-based review routing (opt-in; registry profiles.review_routing) ---------
+
+    def review_risk(self, active):
+        """Evaluate the low-risk review rule on the frozen, validated commit (no model).
+
+        Returns ``{"eligible", "profile", "failed", "diff"}``; ``profile`` is the lighter
+        review profile only when every condition holds. Floors are applied by resolve_profile.
+        """
+        rule = (self.policy["profiles"].get("review_routing") or {}).get("light_review") or {}
+        if not rule.get("enabled"):
+            return {"eligible": False, "profile": None, "failed": ["rule disabled"], "diff": None}
+        issue = active["issue"]
+        labels = [v.get("name") if isinstance(v, dict) else v for v in issue.get("labels", [])]
+        policy_labels = self.policy["labels"]
+        kinds = [v for v in policy_labels["task_kinds"] if v in labels]
+        profiles = [v for v in policy_labels["profiles"] if v in labels]
+        failed = []
+        if not profiles or profiles[0] not in rule["issue_profiles"]:
+            failed.append(f"profile label not in {rule['issue_profiles']}")
+        if not kinds or kinds[0] not in rule["task_kinds"]:
+            failed.append(f"task kind not in {rule['task_kinds']}")
+        for name in rule["opt_out_labels"] + rule["gate_labels"]:
+            if name in labels:
+                failed.append(f"label {name!r}")
+        gates = {g["issue_id"] for g in self.config["human_gates"]}
+        blockers = {b.get("id") for b in (issue.get("relations") or {}).get("blockedBy", []) if isinstance(b, dict)}
+        if gates & blockers:
+            failed.append(f"blocked by human gate {sorted(gates & blockers)}")
+        if active.get("repairs", 0) > rule["max_repairs"]:
+            failed.append(f"{active.get('repairs', 0)} repair(s) > {rule['max_repairs']}")
+        if active.get("escalation"):
+            failed.append("escalated")
+        records = read_json(Path(active["validation_dir"]) / "checks.json") if active.get("validation_dir") else []
+        if not records or any(c.get("exit_code") != 0 for c in records):
+            failed.append("deterministic checks did not all pass")
+        delivery = Path(active["run_dir"]) / "delivery" / "checks.json"
+        if delivery.is_file() and any(c.get("exit_code") != 0 for c in read_json(delivery)):
+            failed.append("delivery checks did not all pass")
+        files = lines = 0
+        for row in git(self.repo, "diff", "--numstat", active["starting_commit"], active["commit"]).splitlines():
+            added, deleted, _ = row.split("\t", 2)
+            files += 1
+            lines += (int(added) if added.isdigit() else 0) + (int(deleted) if deleted.isdigit() else 0)
+        if files > rule["max_changed_files"]:
+            failed.append(f"{files} changed files > {rule['max_changed_files']}")
+        if lines > rule["max_changed_lines"]:
+            failed.append(f"{lines} changed lines > {rule['max_changed_lines']}")
+        return {"eligible": not failed, "profile": rule["profile"] if not failed else None, "failed": failed,
+                "diff": {"files": files, "lines": lines}, "rule": rule}
 
     # --- Bounded worker sessions (opt-in; registry phases.bounded_sessions) ------------
 
@@ -1156,6 +1218,9 @@ class Runner:
         if active["step"] == "review":
             self.verify_frozen(active)
             self.verify_contract(active)
+            active["review_risk"] = dict(self.review_risk(active), at=now())
+            write_json(Path(active["run_dir"]) / "review-risk.json", active["review_risk"])
+            self.save(active=active)
             self.enter_review(issue)
             self.save(phase="reviewing")
             expected = review_criteria(active["issue"])

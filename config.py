@@ -235,6 +235,17 @@ def check_policy(policy):
     for name in floors["by_profile"]:
         if name not in order:
             raise ConfigError(f"registry profiles.review_floors.by_profile: unknown profile {name!r}")
+    light = (profiles.get("review_routing") or {}).get("light_review")
+    if light:
+        where = "registry profiles.review_routing.light_review"
+        if light["profile"] not in order:
+            raise ConfigError(f"{where}.profile: unknown profile {light['profile']!r}")
+        unknown = sorted(set(light["issue_profiles"]) - set(order))
+        if unknown:
+            raise ConfigError(f"{where}.issue_profiles: unknown profile(s) {unknown}")
+        unknown = sorted(set(light["task_kinds"]) - set(labels["task_kinds"]))
+        if unknown:
+            raise ConfigError(f"{where}.task_kinds: unknown task kind(s) {unknown}")
 
 
 # --- Layers -----------------------------------------------------------------------
