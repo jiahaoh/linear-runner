@@ -1,0 +1,33 @@
+{
+  "phase": "implement",
+  "backend": "codex",
+  "session_id": "sess-12-worker",
+  "requested_model": "gpt-6-luna",
+  "requested_reasoning_effort": "max",
+  "started_at": "2026-09-23T10:15:05+00:00",
+  "finished_at": "2026-09-23T10:29:45+00:00",
+  "wall_seconds": 880.0,
+  "exit_code": 0,
+  "selection": {
+    "profile": "Standard",
+    "backend": "codex",
+    "model": "gpt-6-luna",
+    "effort": "max",
+    "selection_source": "pool default"
+  },
+  "execution_evidence": {
+    "usage_events": [
+      {
+        "event_index": 9,
+        "usage": {
+          "input_tokens": 1602748,
+          "cached_input_tokens": 1499392,
+          "output_tokens": 39173,
+          "reasoning_output_tokens": 22663
+        }
+      }
+    ],
+    "completed_tool_calls": 57,
+    "failed_tool_calls": 2
+  }
+}

@@ -4,7 +4,8 @@ Two audiences are kept apart. Agent-review contracts are the structured result a
 review JSON schemas in ``runner.py``. Human-review updates are the plain-Markdown
 templates in ``templates/``: every Linear comment opens with one plain sentence (what
 happened and what, if anything, the owner must do), followed by short optional sections
-and at most one ``Evidence:`` line of host paths. No JSON, code blocks, tables or hashes.
+and at most one ``Evidence:`` line of host paths. No JSON, code blocks, tables or hashes;
+runner comments may add commands (see below) and the run summary's usage tables.
 
 Workers and reviewers write drafts (``NNN-<kind>.md``) into their attempt's outbox; the
 runner lints each draft against its template and posts valid ones as new comments.
@@ -31,6 +32,8 @@ MARKER_PREFIX = "<!-- linear-runner "
 _FIELD = re.compile(r"\{([a-z_]+)\}")
 _SECTION = re.compile(r"^(?:\*\*(?P<bold>[^*]+?)\*\*|#{1,4}\s+(?P<hash>.+?))\s*:?\s*$")
 _TABLE = re.compile(r"^\s*\|.*\|\s*$|^\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_DELIMITER = re.compile(r"^\s*:?-{3,}:?\s*$")
 _JSON = re.compile(r'^\s*[\[{].*[\]}]\s*,?$|\{\s*"|"\s*:\s*[\[{"\d]')
 _HASH = re.compile(r"\b[0-9a-fA-F]{32,}\b")
 _PLACEHOLDER = re.compile(r"^\s*<[^>]{3,}>\s*$")
@@ -101,12 +104,48 @@ def draft_template(kind):
     return load_template("draft-" + kind)
 
 
-def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None, allow_commands=False):
+def table_cells(line):
+    """The cells of one Markdown table row (``\\|`` is a literal bar inside a cell)."""
+    inner = line.strip()[1:-1]
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|", inner)]
+
+
+def tables(lines):
+    """``(indices, problems)`` for the Markdown table blocks in ``lines``: runs of ``| ... |``
+    rows. A table has a header row, a delimiter row (``|---|---|``) and rows with the same
+    number of cells, and stands in its own paragraph."""
+    indices, problems = set(), []
+    index = 0
+    while index < len(lines):
+        if not _TABLE_ROW.match(lines[index]):
+            index += 1
+            continue
+        end = index
+        while end < len(lines) and _TABLE_ROW.match(lines[end]):
+            end += 1
+        block = lines[index:end]
+        width = len(table_cells(block[0]))
+        if len(block) < 3 or not all(_TABLE_DELIMITER.match(cell) for cell in table_cells(block[1])):
+            problems.append(f"line {index + 1}: a table needs a header row, a delimiter row and at least one row")
+        elif any(len(table_cells(row)) != width for row in block[1:]):
+            problems.append(f"line {index + 1}: every table row needs {width} cells")
+        if (index and lines[index - 1].strip()) or (end < len(lines) and lines[end].strip()):
+            problems.append(f"line {index + 1}: a table must be its own paragraph (blank lines around it)")
+        indices.update(range(index, end))
+        index = end
+    return indices, problems
+
+
+def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None, allow_commands=False,
+         allow_tables=False):
     """Return a list of problems (empty when the text may be posted).
 
     ``sections`` limits headings to a template's headings; ``required`` must be present.
     ``allow_commands`` (runner comments only) permits fenced ``bash`` blocks of exactly one
-    command line each.
+    command line each. ``allow_tables`` (runner comments only: the run summary's usage
+    tables) permits well-formed Markdown tables; their lines do not count against
+    ``max_chars`` and ``max_lines``, which bound prose, and they are still checked for JSON,
+    long hashes and HTML comments. Model drafts never get either.
     """
     problems = []
     if allowed_kinds is not None and kind not in allowed_kinds:
@@ -114,11 +153,14 @@ def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None, 
     body = (text or "").strip()
     if not body:
         return problems + ["the draft is empty"]
-    if len(body) > limits["max_chars"]:
-        problems.append(f"too long: {len(body)} characters (limit {limits['max_chars']})")
     lines = body.splitlines()
-    if len(lines) > limits["max_lines"]:
-        problems.append(f"too many lines: {len(lines)} (limit {limits['max_lines']})")
+    table_lines, table_problems = tables(lines) if allow_tables else (set(), [])
+    problems += table_problems
+    prose = len(body) - sum(len(lines[i]) + 1 for i in table_lines)
+    if prose > limits["max_chars"]:
+        problems.append(f"too long: {prose} characters (limit {limits['max_chars']})")
+    if len(lines) - len(table_lines) > limits["max_lines"]:
+        problems.append(f"too many lines: {len(lines) - len(table_lines)} (limit {limits['max_lines']})")
     first = " ".join(body.split("\n\n")[0].split())
     if section_name(lines[0]) or re.match(r"^\s*([#>|`~-]|\*\s|\d+\.\s|<)", lines[0]):
         problems.append("the first line must be one plain sentence, not a heading, list, quote or placeholder")
@@ -152,7 +194,7 @@ def lint(text, *, kind, limits, sections=None, required=(), allowed_kinds=None, 
                 problems.append(f"unknown section {name!r}; use only: {', '.join(sections)}")
         if stripped.startswith(("```", "~~~")):
             problems.append(f"line {index + 1}: code blocks are not allowed")
-        if _TABLE.match(line):
+        if _TABLE.match(line) and index not in table_lines:
             problems.append(f"line {index + 1}: tables are not allowed")
         if index not in evidence and _JSON.search(stripped):
             problems.append(f"line {index + 1}: JSON or raw records are not allowed")

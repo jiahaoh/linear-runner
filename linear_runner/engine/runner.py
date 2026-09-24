@@ -1678,16 +1678,17 @@ class Runner:
         write_json(self.root / "terminal-report.json", summary)
         from linear_runner.reporting.report import render_report
         delivery = render_report(self.root / "terminal-report.html", summary, records)
-        delivery["trajectory"] = self.terminal_trajectory()
+        delivery["trajectory"], trajectory_result = self.terminal_trajectory()
         write_json(self.root / "terminal-delivery.json", delivery)
-        self.post_batch(outcome, summary, skip=skip)
+        self.post_batch(outcome, summary, skip=skip, trajectory_result=trajectory_result)
 
     def terminal_trajectory(self):
         """Model-free trajectory/usage report next to the terminal report (terminal-trajectory.*).
 
         Rendered after the batch outcome from saved records only; an invocation without a
-        recorded finish is listed as pending, never counted. A failure here is logged and
-        never blocks the terminal report or the batch comment.
+        recorded finish is listed as pending, never counted. Returns (paths, result); the
+        batch comment's usage table is built from the same result. A failure here is logged
+        and never blocks the terminal report or the batch comment.
         """
         try:
             from linear_runner.reporting import trajectory
@@ -1700,12 +1701,23 @@ class Runner:
             result = trajectory.from_roots([r for r in dict.fromkeys(runs) if Path(r).is_dir()],
                                            issues=self.config["issues"], until=at, captured_at=at,
                                            groups={self.config["batch_id"]: self.config["issues"]})
-            return trajectory.write(self.root, result, stem="terminal-trajectory")
+            return trajectory.write(self.root, result, stem="terminal-trajectory"), result
         except Exception as error:  # reporting must not turn an outcome into a failure
             self.log(f"Terminal trajectory report not written: {error}")
-            return {"error": str(error)}
+            return {"error": str(error)}, None
 
-    def post_batch(self, outcome, summary, skip=()):
+    def batch_usage(self, result, outcomes):
+        """The batch comment's usage table data (``trajectory.batch_summary``), or None."""
+        if result is None:
+            return None
+        try:
+            from linear_runner.reporting import trajectory
+            return trajectory.batch_summary(result, outcomes)
+        except Exception as error:  # the comment then says the table could not be rendered
+            self.log(f"Batch usage table not rendered: {error}")
+            return None
+
+    def post_batch(self, outcome, summary, skip=(), trajectory_result=None):
         active = self.state.get("active")
         done = [h["issue_id"] for h in self.state["history"]]
         deferred = sorted(self.state.get("deferred", {}))
@@ -1723,8 +1735,11 @@ class Runner:
                                          evidence_paths=paths)
             kind = "batch-paused"
         else:
+            external = summary.get("external") or []
+            outcomes = {i: "Done" if i in done else "Set aside" if i in deferred else "Waiting" if i in waiting
+                        else "Done outside the batch" if i in external else "Not started" for i in self.config["issues"]}
             body = messages.batch_finished(self.ctx, outcome=outcome, done=done, total=len(self.config["issues"]),
-                                           issues=issues, usage=summary.get("usage"),
+                                           issues=issues, usage=self.batch_usage(trajectory_result, outcomes),
                                            checkpoint=(summary.get("checkpoint") or {}).get("after"), deferred=deferred,
                                            evidence_paths=paths)
             kind = "batch-finished"

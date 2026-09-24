@@ -1,0 +1,44 @@
+[
+  {
+    "name": "regression",
+    "command": [
+      "python3",
+      "-m",
+      "regression"
+    ],
+    "started_at": "2026-09-23T10:30:00+00:00",
+    "finished_at": "2026-09-23T10:32:30+00:00",
+    "exit_code": 1,
+    "status": "failed",
+    "reused": false,
+    "log": "/absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d/validation-20260923T103000Z-0a1b2c3d/0/check-0.log"
+  },
+  {
+    "name": "docs",
+    "command": [
+      "python3",
+      "-m",
+      "docs"
+    ],
+    "started_at": "2026-09-23T10:32:30+00:00",
+    "finished_at": "2026-09-23T10:32:30+00:00",
+    "exit_code": 0,
+    "status": "passed",
+    "reused": true,
+    "log": "/absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d/validation-20260923T103000Z-0a1b2c3d/1/check-0.log"
+  },
+  {
+    "name": "pytest-extended",
+    "command": [
+      "python3",
+      "-m",
+      "pytest-extended"
+    ],
+    "started_at": "2026-09-23T10:32:30+00:00",
+    "finished_at": "2026-09-23T10:32:42+00:00",
+    "exit_code": 5,
+    "status": "empty",
+    "reused": false,
+    "log": "/absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d/validation-20260923T103000Z-0a1b2c3d/2/check-0.log"
+  }
+]

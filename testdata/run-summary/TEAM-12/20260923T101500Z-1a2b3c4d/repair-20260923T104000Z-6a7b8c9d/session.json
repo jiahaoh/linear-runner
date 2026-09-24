@@ -1,0 +1,33 @@
+{
+  "phase": "repair",
+  "backend": "codex",
+  "session_id": "sess-12-worker",
+  "requested_model": "gpt-6-luna",
+  "requested_reasoning_effort": "max",
+  "started_at": "2026-09-23T10:40:00+00:00",
+  "finished_at": "2026-09-23T10:52:40+00:00",
+  "wall_seconds": 760.0,
+  "exit_code": 0,
+  "selection": {
+    "profile": "Standard",
+    "backend": "codex",
+    "model": "gpt-6-luna",
+    "effort": "max",
+    "selection_source": "pool default"
+  },
+  "execution_evidence": {
+    "usage_events": [
+      {
+        "event_index": 9,
+        "usage": {
+          "input_tokens": 1889735,
+          "cached_input_tokens": 1771904,
+          "output_tokens": 47210,
+          "reasoning_output_tokens": 26050
+        }
+      }
+    ],
+    "completed_tool_calls": 9,
+    "failed_tool_calls": 0
+  }
+}

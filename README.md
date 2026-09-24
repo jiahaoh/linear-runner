@@ -581,7 +581,8 @@ schemas) and the human-review templates in `templates/`. Every comment opens wit
 sentence saying what happened and what, if anything, the owner needs to do, then a few short
 optional sections, and at most one `Evidence:` line of host paths. No JSON, tables or long
 hashes. The one exception to "no code blocks": each command the owner may run is in its own
-fenced `bash` block, after one plain sentence saying what it does. Commands start with
+fenced `bash` block, after one plain sentence saying what it does. The one exception to "no
+tables": the runner's usage tables (below). Model drafts may use neither. Commands start with
 `attention.command_prefix` and use `--batch <id>`. `python3 render_samples.py` writes one
 sample of each to [`docs/template-samples.md`](docs/template-samples.md).
 
@@ -612,6 +613,20 @@ batch. Worker and reviewer drafts are posted unchanged, and the runner's own iss
 batch summaries on the terminal issue) name issues as usual. `recover` prints a warning when
 the reason or note names an issue: it may still be written that way, but prefer describing
 the other issue when no link at all should appear.
+
+**Usage tables.** The `batch-finished` comment has a table with one row per issue of the
+batch (Issue | Outcome | Attempts | Input (cached) | Output | Tool calls | Time) and a bold
+batch total row. Its figures are those of `terminal-trajectory.*`: the same saved records
+and the same totals as `runner.py report` (see "Totals and marks" under "Context cost").
+Token counts are compact (812, 2.1k, 39k, 1.60M), cached input is in parentheses and is part
+of the input, times are model plus check time (45 s, 24 min, 1 h 05 min), `≤ N` is an
+attempt's upper bound, `≥ N` a total that misses what an attempt did not report, and `—` a
+figure that was not recorded (never 0). There is no cost column: the counters are not billed
+cost. When the table cannot be rendered the comment says so and points to the report. A
+table is allowed only in runner comments: the lint (`updates.lint(..., allow_tables=True)`)
+requires a header row, a delimiter row and rows of equal width in their own paragraph,
+still rejects JSON, long hashes and HTML comments in cells, and does not count table lines
+against `max_chars`/`max_lines`, which bound prose. Model drafts still may not use tables.
 
 Every lifecycle event is a NEW comment on the issue it concerns; nothing is edited:
 

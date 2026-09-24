@@ -377,20 +377,123 @@ def issues_prose(*, done=(), paused=None, deferred=(), waiting=None, pending=())
     return " ".join(parts) or "No issue was completed."
 
 
-def usage_prose(usage):
-    totals = (usage or {}).get("totals", {})
-    def amount(value):
-        return f"{value / 1e6:.1f}M" if value >= 1e6 else f"{value / 1e3:.0f}k" if value >= 1e3 else str(value)
-    if not isinstance(totals.get("input_tokens"), int) or not isinstance(totals.get("output_tokens"), int):
-        return "Usage telemetry was incomplete; see the terminal report." if usage and usage.get("sessions") else ""
-    cached = totals.get("cached_input_tokens")
-    return (f"About {amount(totals['input_tokens'])} input tokens"
-            + (f" ({amount(cached)} cached)" if isinstance(cached, int) else "")
-            + f" and {amount(totals['output_tokens'])} output tokens over {plural(usage.get('sessions', 0), 'model session')}"
-            + "; these are counters, not billed cost.")
+# --- Usage tables (run summary and batch totals) ----------------------------------------------
+# Figures come from reporting.trajectory (``run_summary``/``batch_summary``), the same
+# accounting as ``runner.py report``; this part only formats them.
+
+MARKS = {"upper-bound": "≤ ", "lower-bound": "≥ "}
+UNKNOWN = "—"
+
+
+def amount(value):
+    """A token count, compact: 812, 2.1k, 39k, 1.60M, 16.2M."""
+    value = int(value)
+    if abs(value) < 1_000:
+        return str(value)
+    if abs(value) < 9_950:
+        return f"{value / 1e3:.1f}k"
+    if abs(value) < 999_500:
+        return f"{value / 1e3:.0f}k"
+    if abs(value) < 9_995_000:
+        return f"{value / 1e6:.2f}M"
+    if abs(value) < 99_950_000:
+        return f"{value / 1e6:.1f}M"
+    return f"{value / 1e6:.0f}M"
+
+
+def duration(seconds):
+    """Seconds, compact: 45 s, 24 min, 1 h 05 min."""
+    seconds = round(seconds)
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    return f"{minutes // 60} h {minutes % 60:02d} min"
+
+
+def figure_text(value, number=amount):
+    """A figure (``{value, bound}``): "—" when unknown (never 0), else "≤ N"/"≥ N"/"N"."""
+    if value is None or value.get("value") is None:
+        return UNKNOWN
+    return MARKS.get(value.get("bound"), "") + number(value["value"])
+
+
+def input_cell(values):
+    """Input with cached input (a subset) in parentheses; just the input when cached is unknown."""
+    total, cached = values["input_tokens"], values["cached_input_tokens"]
+    text = figure_text(total)
+    if total["value"] is not None and cached["value"] is not None:
+        mark = MARKS.get(cached["bound"], "") if cached["bound"] != total["bound"] else ""
+        text += f" ({mark}{amount(cached['value'])})"
+    return text
+
+
+def tool_cell(values):
+    text = figure_text(values["tool_calls"], str)
+    failed = values["failed_tool_calls"]["value"]
+    return text + (f" ({failed} failed)" if values["tool_calls"]["value"] is not None and failed else "")
+
+
+def figure_cells(values):
+    """Input (cached), Output, Tool calls and Time cells for one row of figures."""
+    return [input_cell(values), figure_text(values["output_tokens"]), tool_cell(values),
+            figure_text(values["seconds"] if "seconds" in values else values["model_seconds"], duration)]
+
+
+def markdown_table(header, rows, total):
+    bold = [f"**{cell}**" if cell else "" for cell in total]
+    lines = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+    return "\n".join(lines + ["| " + " | ".join(str(c).replace("|", "\\|") for c in row) + " |" for row in [*rows, bold]])
+
+
+def usage_notes(cells):
+    """What the marks in a usage table mean; only marks that appear in ``cells`` are explained."""
+    text = " ".join(cells)
+    notes = ["Input includes cached input, shown in parentheses; time is model and check time, not waiting; these "
+             "are token counters, not billed cost."]
+    if "≤" in text:
+        notes.append("≤ marks an upper bound: that attempt's figure can include usage of an earlier failed attempt of "
+                     "the same session that reported none.")
+    if "≥" in text:
+        notes.append("≥ marks a lower bound: an attempt reported no figure, so the total may be higher.")
+    if UNKNOWN in cells:
+        notes.append(f"{UNKNOWN} means no figure was recorded.")
+    return " ".join(notes)
+
+
+RUN_HEADER = ["Stage", "Model", "Effort", "Input (cached)", "Output", "Tool calls", "Time"]
+BATCH_HEADER = ["Issue", "Outcome", "Attempts", "Input (cached)", "Output", "Tool calls", "Time"]
+
+
+def run_summary_table(summary):
+    """(table, notes) for ``trajectory.run_summary`` output."""
+    rows = [[row["stage"], row["model"] or UNKNOWN, row["effort"] or UNKNOWN, *figure_cells(row)]
+            for row in summary["rows"]]
+    rows.append(["Checks", UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, figure_text(summary["check_seconds"], duration)])
+    total = ["Total", "", "", *figure_cells(summary["total"])]
+    # The Checks row's dashes mean "not applicable"; they need no note.
+    return markdown_table(RUN_HEADER, rows, total), usage_notes([c for row in rows[:-1] + [total] for c in row])
+
+
+def batch_table(summary):
+    """(table, notes) for ``trajectory.batch_summary`` output."""
+    rows = [[row["issue"], row["outcome"], str(row["attempts"]), *figure_cells(row)] for row in summary["rows"]]
+    total = ["Batch total", "", str(summary["total"]["attempts"]), *figure_cells(summary["total"])]
+    return markdown_table(BATCH_HEADER, rows, total), usage_notes([c for row in rows + [total] for c in row])
+
+
+def run_summary(ctx, *, issue, outcome, summary, evidence_paths=()):
+    """The usage comment for one issue's run: after Done (``done``), or when the issue is set
+    aside by a rule or ``on_block`` (``deferred``) or by its owner (``set-aside``)."""
+    table, notes = run_summary_table(summary)
+    return render("run-summary", {"issue": issue, "attempts": plural(summary["attempts"], "model attempt"),
+                                  "table": table, "notes": notes, "evidence": evidence(*evidence_paths)},
+                  headline=outcome)
 
 
 def batch_finished(ctx, *, outcome, done, total, issues, usage=None, checkpoint=None, deferred=(), evidence_paths=()):
+    """``usage`` is ``trajectory.batch_summary`` output (None when it could not be rendered)."""
     if outcome == "partial" and deferred:
         steps = blocks(("Restore a set-aside issue:", command(ctx, "recover", "resume", "--issue", "<issue>", auth=True)),
                        ("Then start the batch again:", command(ctx, "launch")))
@@ -401,7 +504,9 @@ def batch_finished(ctx, *, outcome, done, total, issues, usage=None, checkpoint=
     return render("batch-finished", {"batch": ctx["batch"], "total": total,
                                      "mention": ctx["mention"] if outcome != "complete" else "",
                                      "done_count": len(done), "checkpoint": checkpoint or "", "issues": issues,
-                                     "usage": usage_prose(usage), "continue_steps": steps,
+                                     "usage": "\n\n".join(batch_table(usage)) if usage else
+                                     "The usage table could not be rendered from the saved records; see the terminal "
+                                     "trajectory report.", "continue_steps": steps,
                                      "evidence": evidence(*evidence_paths)}, headline=outcome)
 
 

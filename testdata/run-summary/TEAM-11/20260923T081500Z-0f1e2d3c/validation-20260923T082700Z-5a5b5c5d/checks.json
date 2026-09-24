@@ -1,0 +1,30 @@
+[
+  {
+    "name": "regression",
+    "command": [
+      "python3",
+      "-m",
+      "regression"
+    ],
+    "started_at": "2026-09-23T08:27:00+00:00",
+    "finished_at": "2026-09-23T08:29:29+00:00",
+    "exit_code": 0,
+    "status": "passed",
+    "reused": false,
+    "log": "/absolute/path/to/runs/TEAM-11/20260923T081500Z-0f1e2d3c/validation-20260923T082700Z-5a5b5c5d/0/check-0.log"
+  },
+  {
+    "name": "docs",
+    "command": [
+      "python3",
+      "-m",
+      "docs"
+    ],
+    "started_at": "2026-09-23T08:29:29+00:00",
+    "finished_at": "2026-09-23T08:29:37+00:00",
+    "exit_code": 0,
+    "status": "passed",
+    "reused": true,
+    "log": "/absolute/path/to/runs/TEAM-11/20260923T081500Z-0f1e2d3c/validation-20260923T082700Z-5a5b5c5d/1/check-0.log"
+  }
+]

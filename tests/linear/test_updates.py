@@ -144,7 +144,8 @@ class LintTests(unittest.TestCase):
                     draft = text.rsplit("\n\n_Written by", 1)[0]
                     self.assertEqual(TestDraftLint.lint(kind, draft), [])
                 else:
-                    self.assertEqual(updates.lint(text, kind="runner", limits=runner_limits, allow_commands=True), [])
+                    self.assertEqual(updates.lint(text, kind="runner", limits=runner_limits, allow_commands=True,
+                                                  allow_tables=True), [])
                     self.assertNotIn("- `", text)  # commands are never inline code in bullets
         for path in updates.TEMPLATE_DIR.glob("*.md"):
             self.assertNotIn("DRAFT", path.read_text())

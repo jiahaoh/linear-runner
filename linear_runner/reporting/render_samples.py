@@ -1,7 +1,9 @@
 """Render one sample Linear comment per human-review template into docs/template-samples.md.
 
 The samples use fictional fixture data (issues TEAM-10 to TEAM-15, placeholder paths) and
-the same builders the runner uses, so each sample is exactly the body Linear would get.
+the same builders the runner uses, so each sample is exactly the body Linear would get. The
+usage tables are rendered from the fictional saved records in ``testdata/run-summary`` with
+the report's accounting (``reporting.trajectory``), as the runner renders them.
 
     python3 render_samples.py            # rewrite docs/template-samples.md
     python3 render_samples.py --check    # exit 1 if the file is out of date
@@ -14,11 +16,13 @@ import sys
 from linear_runner.config import RUNNER_ROOT
 from linear_runner.linear import messages
 from linear_runner.linear import updates
+from linear_runner.reporting import trajectory
 
 ROOT = RUNNER_ROOT
 OUTPUT = ROOT / "docs" / "template-samples.md"
 RUN = "/absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d"
 STATE = "/absolute/path/to/controller/demo-batch"
+RECORDS = ROOT / "testdata" / "run-summary"  # fictional saved records for the usage tables
 CTX = {"batch": "demo-batch", "batch_arg": "demo-batch", "home": None,
        "prefix": "python3 /absolute/path/to/linear-runner/runner.py", "mention": "",
        "branch": "codex/demo-batch", "max_repairs": 2}
@@ -125,6 +129,10 @@ def samples():
         "The viewer check needs a headless browser, and none is installed on the host."), acceptance=[
         {"criterion": "The viewer opens the QC report", "satisfied": False, "evidence": "no browser on the host"}])
     status = f"{STATE}/supervisor.json"
+    usage = trajectory.from_roots([RECORDS])
+    team13 = "/absolute/path/to/runs/TEAM-13/20260923T130000Z-2b3c4d5e"
+    batch_usage = trajectory.batch_summary(usage, {"TEAM-10": "Done", "TEAM-11": "Done", "TEAM-12": "Done",
+                                                   "TEAM-13": "Set aside", "TEAM-14": "Waiting"})
     items = [
         ("Claim", "claim.md", "runner", "when work on an issue starts", "TEAM-12", "claim",
          messages.claim(CTX, issue="TEAM-12", plan=plan, check_count=2, criteria_count=3, run_dir=RUN)),
@@ -154,6 +162,10 @@ def samples():
          "TEAM-12", "done", messages.done(CTX, issue="TEAM-12", commit="4c44464d4ce9a0b1", criteria_count=3, repairs=1,
                                           run_dir=RUN, deliverables=DELIVERABLES,
                                           stages=[luna["implement"], luna["repair"], astra])),
+        ("Run summary after Done", "run-summary.md", "runner",
+         "after the Done comment, from the saved records of the issue's run", "TEAM-12", "run-summary",
+         messages.run_summary(CTX, issue="TEAM-12", outcome="done", summary=trajectory.run_summary(usage, "TEAM-12"),
+                              evidence_paths=[RUN])),
         ("Done, Claude-backed implementation", "done.md", "runner",
          "after Done is published, for an issue a Claude worker implemented", "TEAM-15", "done",
          messages.done(CTX, issue="TEAM-15", commit="7e6d5c4b3a291807", criteria_count=2, repairs=0, run_dir=team15,
@@ -198,6 +210,11 @@ def samples():
                                                         "rule_text": "defer issue when worker blocked 2 times on the same criterion"},
                            block=block, result=worker_blocked_13,
                            evidence_paths=["/absolute/path/to/runs/TEAM-13/20260923T130000Z-2b3c4d5e"])),
+        ("Run summary, issue set aside", "run-summary.md", "runner",
+         "after the deferred comment (or the recovery comment of `recover defer`), covering the attempts made",
+         "TEAM-13", "run-summary",
+         messages.run_summary(CTX, issue="TEAM-13", outcome="deferred", summary=trajectory.run_summary(usage, "TEAM-13"),
+                              evidence_paths=[team13])),
         ("Recovery recorded", "recovery.md", "runner", "when a launch carries out a recorded recovery", "TEAM-12",
          "recovery", messages.recovery(CTX, record=recovery, step="implement",
                                        note="The calibration table is data/calibration.csv; read it, do not recreate it.",
@@ -222,8 +239,7 @@ def samples():
          messages.batch_finished(CTX, outcome="partial", done=["TEAM-10", "TEAM-11", "TEAM-12"], total=5,
                                  issues=messages.issues_prose(done=["TEAM-10", "TEAM-11", "TEAM-12"],
                                                               deferred=["TEAM-13"], waiting={"TEAM-14": ["TEAM-13"]}),
-                                 usage={"sessions": 7, "totals": {"input_tokens": 18_400_000, "cached_input_tokens":
-                                                                  15_900_000, "output_tokens": 212_000}},
+                                 usage=batch_usage,
                                  deferred=["TEAM-13"],
                                  evidence_paths=[f"{STATE}/terminal-report.html", f"{STATE}/terminal-report.json"])),
         ("Batch paused", "batch-paused.md", "runner", "on the terminal issue and report issues when the batch pauses",

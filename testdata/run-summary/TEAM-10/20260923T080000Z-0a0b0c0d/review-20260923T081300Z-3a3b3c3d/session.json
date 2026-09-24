@@ -1,0 +1,33 @@
+{
+  "phase": "review",
+  "backend": "codex",
+  "session_id": "sess-10-review",
+  "requested_model": "gpt-6-astra",
+  "requested_reasoning_effort": "medium",
+  "started_at": "2026-09-23T08:13:00+00:00",
+  "finished_at": "2026-09-23T08:16:20+00:00",
+  "wall_seconds": 200.0,
+  "exit_code": 0,
+  "selection": {
+    "profile": "Standard",
+    "backend": "codex",
+    "model": "gpt-6-astra",
+    "effort": "medium",
+    "selection_source": "pool default"
+  },
+  "execution_evidence": {
+    "usage_events": [
+      {
+        "event_index": 9,
+        "usage": {
+          "input_tokens": 198020,
+          "cached_input_tokens": 180224,
+          "output_tokens": 4410,
+          "reasoning_output_tokens": 1980
+        }
+      }
+    ],
+    "completed_tool_calls": 18,
+    "failed_tool_calls": 0
+  }
+}
