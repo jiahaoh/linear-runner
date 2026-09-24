@@ -423,6 +423,15 @@ bytes and elapsed time. Exceeding a phase's soft budget (or missing usage teleme
 checkpoints the issue for explicit reconciliation (`recover budget`); resume does not
 reset it. Usage is the
 per-session maximum of cumulative counters summed over sessions; it is not billed cost.
+The attempt's `phase-usage.json` names its `basis`: `delta` (its cumulative session
+counter minus the session's previous counter, exact), `invocation` (per-call counters,
+exact), `cumulative-upper-bound` or `unavailable`. When an earlier attempt of the same
+session failed before any completed turn and recorded no counter, the resumed attempt's
+figure is its cumulative counter minus the last known one: an upper bound that also holds
+the failed attempt's unreported usage. The budget check uses it as is, so an upper bound
+under budget passes and one over budget checkpoints (the stop says "an upper bound").
+Telemetry counts as unavailable only when the attempt itself reports no counter; an
+unknown figure stays unknown, never zero.
 
 ## Context cost
 

@@ -644,6 +644,113 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(totals["totals"]["input_tokens"])
         self.assertEqual(totals["covered"], 0)
 
+    # --- Resumed-phase budget: the W-193 replay ---------------------------------------
+    # A Codex implement turn failed before any completed turn (no usage counter); the resumed
+    # turn completed with a cumulative counter of 1,602,748 input and 39,173 output tokens.
+
+    W193 = {"input_tokens": 1_602_748, "cached_input_tokens": 1_499_392, "output_tokens": 39_173,
+            "reasoning_output_tokens": 22_663}
+
+    def replay_implement(self, steps):
+        """Implement attempts in one session: each step is (usage counter or None, finished)."""
+        original = self.runner.run_session
+        def session(prompt, directory, **kwargs):
+            if not Path(directory).name.startswith("implement"):
+                return original(prompt, directory, **kwargs)
+            counter, finished = steps.pop(0)
+            self.calls.append("implement")
+            Path(directory).mkdir(parents=True)
+            (self.repo / "result.txt").write_text("ready")
+            identity = kwargs.get("resume") or "sess-resumed"
+            write_json(Path(directory) / "session.json", {
+                "session_id": identity, "started_at": runner_module.now(), "exit_code": 0 if finished else 1,
+                "execution_evidence": {"usage_events": [{"usage": counter}] if counter else None}})
+            if not finished:
+                self.runner.state["active"]["session_id"] = identity
+                self.runner.save()
+                raise RuntimeError(f"Codex failed or did not finish a turn; see {directory}")
+            result = {"issue_id": "DEV-1", "status": "ready", "commit": "", "summary": "Ready", "limitations": [],
+                      "acceptance": [{"criterion": "Produce validated output", "satisfied": True, "evidence": "ok"}]}
+            return result, [], identity
+        self.runner.run_session = session
+
+    def implement_usage(self):
+        run = Path(self.runner.state["history"][0]["run_dir"] if self.runner.state["history"]
+                   else self.runner.state["active"]["run_dir"])
+        return [json.loads(p.read_text()) for p in sorted(run.glob("implement-*/phase-usage.json"))]
+
+    def canary_budget(self, input_tokens=15_000_000):
+        self.policy["phases"]["phases"]["implement"]["budget"] = {"input_tokens": input_tokens,
+                                                                  "output_tokens": 150_000, "tool_calls": 250}
+
+    def test_resumed_phase_after_a_counterless_failure_uses_the_upper_bound(self):
+        self.canary_budget()
+        self.replay_implement([(None, False), (self.W193, True)])
+        with self.assertRaisesRegex(RuntimeError, "did not finish a turn"):
+            self.runner.execute(limit=1)
+        self.runner.execute(limit=1, resume=True)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+        self.assertEqual(self.calls, ["implement", "implement", "review"])
+        [usage] = self.implement_usage()  # the failed attempt never reached the budget check
+        self.assertEqual((usage["input_tokens"], usage["output_tokens"], usage["basis"]),
+                         (1_602_748, 39_173, "cumulative-upper-bound"))
+        # The session's cumulative counter counts once in the totals.
+        run = Path(self.runner.state["history"][0]["run_dir"])
+        totals = usage_totals([json.loads(p.read_text()) for p in run.glob("*/session.json")])
+        self.assertEqual(totals["totals"]["input_tokens"], 1_602_748 + 100)  # + the review session
+        self.assertEqual(totals["sessions"], 2)
+
+    def test_upper_bound_over_budget_still_checkpoints(self):
+        self.canary_budget(input_tokens=1_000_000)
+        self.replay_implement([(None, False), (self.W193, True)])
+        with self.assertRaisesRegex(RuntimeError, "did not finish a turn"):
+            self.runner.execute(limit=1)
+        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: input_tokens 1602748 > 1000000 \(an upper bound\)"):
+            self.runner.execute(limit=1, resume=True)
+        exceeded = self.runner.state["active"]["budget_exceeded"]
+        self.assertEqual((exceeded["basis"], exceeded["observed"]["input_tokens"]), ("cumulative-upper-bound", 1_602_748))
+        with self.assertRaisesRegex(RuntimeError, "reconciliation"):
+            self.runner.execute(limit=1, resume=True)
+
+    def test_current_attempt_without_a_counter_is_unavailable_never_zero(self):
+        self.canary_budget()
+        self.replay_implement([(self.W193, False), (None, True)])
+        with self.assertRaisesRegex(RuntimeError, "did not finish a turn"):
+            self.runner.execute(limit=1)
+        with self.assertRaisesRegex(RuntimeError, "telemetry unavailable.*input_tokens, output_tokens"):
+            self.runner.execute(limit=1, resume=True)
+        exceeded = self.runner.state["active"]["budget_exceeded"]
+        self.assertEqual(exceeded["basis"], "unavailable")
+        self.assertIsNone(exceeded["observed"]["input_tokens"])
+
+    def test_attempt_usage_bases(self):
+        from linear_runner.engine.runner import attempt_usage
+        run = self.root / "attempts"
+        def attempt(name, session, started, counter, invocation=None):
+            evidence = {"usage_events": [{"usage": counter}] if counter else None}
+            if invocation:
+                evidence["invocation_usage_events"] = [{"usage": invocation}]
+            write_json(run / name / "session.json", {"session_id": session, "started_at": started,
+                                                     "execution_evidence": evidence})
+            return run / name
+        first = attempt("implement-1", "a", "2026-01-01T00:00:00", {"input_tokens": 100, "output_tokens": 10})
+        self.assertEqual(attempt_usage(first)["basis"], "delta")  # a new session: its counter is exact
+        resumed = attempt("repair-2", "a", "2026-01-01T00:10:00", {"input_tokens": 250, "output_tokens": 30})
+        self.assertEqual((attempt_usage(resumed)["input_tokens"], attempt_usage(resumed)["basis"]), (150, "delta"))
+        attempt("repair-3", "a", "2026-01-01T00:20:00", None)  # failed: no counter
+        after_gap = attempt("repair-4", "a", "2026-01-01T00:30:00", {"input_tokens": 400, "output_tokens": 50})
+        usage = attempt_usage(after_gap)
+        self.assertEqual((usage["input_tokens"], usage["output_tokens"], usage["basis"]),
+                         (150, 20, "cumulative-upper-bound"))  # covers the failed attempt too
+        attempt("review-5", "b", "2026-01-01T00:05:00", None)  # another session's gap does not matter
+        self.assertEqual(attempt_usage(resumed)["basis"], "delta")
+        claude = attempt("implement-6", "c", "2026-01-01T00:40:00", {"input_tokens": 90},
+                         invocation={"input_tokens": 40, "output_tokens": 4})
+        self.assertEqual({k: attempt_usage(claude)[k] for k in ("input_tokens", "output_tokens", "basis")},
+                         {"input_tokens": 40, "output_tokens": 4, "basis": "invocation"})
+        empty = attempt_usage(attempt("implement-7", "d", "2026-01-01T00:50:00", None))
+        self.assertEqual((empty["input_tokens"], empty["basis"]), (None, "unavailable"))
+
     def test_report_snapshots_escape_content_and_preserve_versions(self):
         from linear_runner.reporting.report import render_report
         summary = {"outcome": "blocked", "history": [], "scope": "fixture", "error": "<script>alert(1)</script>", "usage": {}}

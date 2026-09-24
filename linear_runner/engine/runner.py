@@ -265,6 +265,56 @@ def usage_totals(records):
             "coverage": "runner sessions only; outer launch/reporting excluded unless imported separately; not billed cost"}
 
 
+USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
+
+
+def _last_counter(events):
+    usage = [e.get("usage") for e in events or [] if isinstance(e, dict) and isinstance(e.get("usage"), dict)]
+    return {k: v for k, v in usage[-1].items() if isinstance(v, int) and not isinstance(v, bool)} if usage else None
+
+
+def attempt_usage(directory):
+    """Token usage of one model attempt (``<run dir>/<phase>-<id>/``) for its phase budget.
+
+    ``basis`` says what the figures are:
+
+    * ``delta``: exact; the attempt's cumulative session counter minus the latest counter of
+      the same session recorded by an earlier attempt of this run (none: a new session);
+    * ``invocation``: exact; the CLI reports per-invocation counters (Claude Code);
+    * ``cumulative-upper-bound``: an earlier attempt of the same session after its latest
+      counter recorded none (it failed before a completed turn), so the figure also holds
+      that attempt's unreported usage: an upper bound, never an exact delta;
+    * ``unavailable``: this attempt reported no counter; every token figure is unknown.
+    """
+    directory = Path(directory)
+    path = directory / "session.json"
+    meta = read_json(path) if path.is_file() else {}
+    evidence = meta.get("execution_evidence") or {}
+    unknown = {k: None for k in USAGE_KEYS}
+    own = _last_counter(evidence.get("invocation_usage_events"))
+    if own is not None:
+        return dict(unknown, **{k: own.get(k) for k in USAGE_KEYS}, basis="invocation")
+    current = _last_counter(evidence.get("usage_events"))
+    if current is None:
+        return dict(unknown, basis="unavailable")
+    session, started = meta.get("session_id"), meta.get("started_at") or ""
+    previous, latest, missing = None, "", []
+    for sibling in directory.parent.glob("*/session.json") if session else ():
+        if sibling.parent == directory:
+            continue
+        other = read_json(sibling)
+        if other.get("session_id") != session or (started and (other.get("started_at") or "") > started):
+            continue
+        counter = _last_counter((other.get("execution_evidence") or {}).get("usage_events"))
+        if counter is None:
+            missing.append(other.get("started_at") or "")
+        elif previous is None or counter.get("input_tokens", 0) >= previous.get("input_tokens", 0):
+            previous, latest = counter, other.get("started_at") or ""
+    bound = any(not at or at >= latest for at in missing)
+    return dict(unknown, **{k: current[k] - (previous or {}).get(k, 0) for k in USAGE_KEYS if k in current},
+                basis="cumulative-upper-bound" if bound else "delta")
+
+
 def issue_contract(issue):
     return hashlib.sha256(json.dumps({k: issue.get(k) for k in
         ("id", "description", "projectId", "assigneeId", "projectMilestone", "relations")}, sort_keys=True).encode()).hexdigest()
@@ -911,8 +961,6 @@ class Runner:
         prompt += self.outbox_instructions(phase, attempt / "outbox")
         if writable:
             prompt += self.handoff_instructions(attempt)
-        before_records = [read_json(p) for p in Path(active["run_dir"]).glob("*/session.json")]
-        before = usage_totals(before_records)["totals"]
         try:
             result, events, session = self.run_session(prompt, attempt, phase=phase, model=selection["model"],
                                                        effort=selection["effort"], writable=writable, resume=resume,
@@ -947,19 +995,28 @@ class Runner:
         active["drafts"] = self.settle_outbox(active, phase, attempt, result)
         self.save(active=active)
         self.reconcile_events()
-        after = usage_totals([read_json(p) for p in Path(active["run_dir"]).glob("*/session.json")])["totals"]
-        delta = {k: after[k] - before[k] if after[k] is not None and before[k] is not None else None for k in after}
+        # This attempt's own usage (see attempt_usage): exact, or an upper bound when an earlier
+        # attempt of the same session recorded no counter; unknown only when this one has none.
+        delta = attempt_usage(attempt)
         delta["tool_calls"] = self.backend(selection["backend"]).tool_calls(events)
         write_json(attempt / "phase-usage.json", delta)
         # An explicitly reconciled allowance (recover budget) replaces the registry budget
         # for this issue's phase; it is recorded in state and never reset by resume.
         allowance = active.get("budget_allowances", {}).get(phase)
         budget = allowance["limits"] if allowance else self.policy["phases"]["phases"][phase]["budget"]
-        if any(delta.get(k) is None or delta[k] > v for k, v in budget.items()):
-            active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget}
+        unknown = sorted(k for k in budget if delta.get(k) is None)
+        over = sorted(k for k, v in budget.items() if delta.get(k) is not None and delta[k] > v)
+        if unknown or over:
+            active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget, "basis": delta["basis"]}
             self.save(active=active)
-            raise IssueBlocked("Phase soft budget exceeded or telemetry unavailable; reconcile before resume",
-                               "budget_exceeded")
+            if over:
+                bound = " (an upper bound)" if delta["basis"] == "cumulative-upper-bound" else ""
+                message = ("Phase soft budget exceeded: " + ", ".join(f"{k} {delta[k]} > {budget[k]}" for k in over)
+                           + bound + "; reconcile before resume")
+            else:
+                message = ("Phase soft budget telemetry unavailable: the attempt reported no usage for "
+                           + ", ".join(unknown) + "; reconcile before resume")
+            raise IssueBlocked(message, "budget_exceeded")
         return result
 
     # --- Risk-based review routing (batch opt-in; rule in registry profiles.review_routing)
