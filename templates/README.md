@@ -7,6 +7,8 @@ Linear comments that a person reads. Each file has a short front matter block (b
   a paragraph whose fields are all empty is left out. Commands appear in their own
   fenced `bash` blocks, each after one plain sentence saying what it does. `headline.<variant>`, and other
   `<group>.<variant>` entries, hold the wording the runner chooses between.
+  `run-summary.md` and the `{usage}` field of `batch-finished.md` hold the runner's usage
+  tables, the only Markdown tables a comment may have.
 * `author: worker` and `author: reviewer` templates (`draft-*.md`) show the model the
   shape of the draft it writes into its outbox. `<...>` lines are guidance to replace.
   `required:` names the sections a draft must have; any other heading must be one of

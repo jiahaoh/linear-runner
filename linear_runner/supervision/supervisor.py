@@ -14,6 +14,8 @@ It replaces per-batch supervise scripts. Under the project lock it:
   plain-language "done" comment was already posted by the runner);
 * posts a NEW "recovery" comment when it carries out a recorded recovery and removes the
   needs-input mark of the stop it recovers;
+* after an issue is set aside (a rule, ``on_block`` or ``recover defer``) posts its
+  "run-summary" comment (``Runner.post_run_summary``), as the runner does after Done;
 * stops at planned checkpoints, on STOP, or on a batch-level failure; on an issue-level
   block it applies a matching pre-authorized decision rule or the batch's ``on_block``
   policy (stop, or defer the issue and continue with independent issues);
@@ -132,6 +134,9 @@ class Supervisor:
         body = messages.recovery(self.r.ctx, record=record, step=(active or {}).get("step"), note=note,
                                  evidence_paths=[self.root / "recovery-log.jsonl"], stage=stage)
         self.r.emit(issue or self.config["terminal_issue"], "recovery", body, dedupe=record["id"])
+        parked = (self.state.get("parked") or {}).get(issue) if record["kind"] == "defer" else None
+        if parked:  # the owner set a started issue aside: summarize the attempts it made
+            self.r.post_run_summary(issue, parked["active"]["run_dir"], "set-aside", "set-aside:" + record["id"])
 
     def consume(self, pending):
         kind = pending["kind"]
@@ -294,6 +299,7 @@ class Supervisor:
             self.r.ctx, issue=issue, cause=cause, block=block, result=active.get("last_result"), who=who,
             draft=held["text"] if held else None, evidence_paths=[active["run_dir"], drafts.get("attempt")]),
             dedupe=block["id"])
+        self.r.post_run_summary(issue, active["run_dir"], "deferred", "deferred:" + block["id"])
         self.r.log(f"{issue}: deferred ({cause}); continuing with independent issues")
 
     # --- Terminal outcomes ------------------------------------------------------

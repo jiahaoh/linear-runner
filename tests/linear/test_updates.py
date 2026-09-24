@@ -356,7 +356,8 @@ class SilentStopTests(AttentionHarness):
         self.worker_blocks("DEV-2")
         self.launch()
         done_comments = self.linear.bodies("DEV-1")
-        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "review", "done"])
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "review", "done",
+                                                      "run-summary"])
         self.assertEqual(self.linear.kinds("DEV-2"), ["claim", "blocked"])
         body = self.linear.last("DEV-2", "blocked")
         self.assertEqual(first_line(body), "DEV-2 is paused because the worker reported that it cannot finish, "

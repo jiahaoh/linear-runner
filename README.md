@@ -614,19 +614,37 @@ batch summaries on the terminal issue) name issues as usual. `recover` prints a 
 the reason or note names an issue: it may still be written that way, but prefer describing
 the other issue when no link at all should appear.
 
-**Usage tables.** The `batch-finished` comment has a table with one row per issue of the
-batch (Issue | Outcome | Attempts | Input (cached) | Output | Tool calls | Time) and a bold
-batch total row. Its figures are those of `terminal-trajectory.*`: the same saved records
-and the same totals as `runner.py report` (see "Totals and marks" under "Context cost").
-Token counts are compact (812, 2.1k, 39k, 1.60M), cached input is in parentheses and is part
-of the input, times are model plus check time (45 s, 24 min, 1 h 05 min), `≤ N` is an
-attempt's upper bound, `≥ N` a total that misses what an attempt did not report, and `—` a
-figure that was not recorded (never 0). There is no cost column: the counters are not billed
-cost. When the table cannot be rendered the comment says so and points to the report. A
-table is allowed only in runner comments: the lint (`updates.lint(..., allow_tables=True)`)
-requires a header row, a delimiter row and rows of equal width in their own paragraph,
-still rejects JSON, long hashes and HTML comments in cells, and does not count table lines
-against `max_chars`/`max_lines`, which bound prose. Model drafts still may not use tables.
+**Run summary.** After the `done` comment (Done published and read back), the runner posts
+one more comment, `run-summary`: one sentence, then a table with one row per model attempt
+of the issue's run in start order (Implement, each Repair, Review or Lighter review;
+a stage that ran more than once is numbered, and an attempt that ended without a result or
+blocked says so), a "Checks" row with the runner's check time only, and a bold total row.
+Columns: Stage | Model | Effort | Input (cached) | Output | Tool calls | Time. An issue set
+aside by a decision rule or `on_block` gets the same comment after its `deferred` comment,
+and an issue the owner sets aside with `recover defer` after the `recovery` comment that
+carries it out, covering the attempts it made. Stops (`blocked`, `batch-paused`) have no
+table. The comment is rendered from the run's saved records with `runner.py report`'s
+accounting (`trajectory.run_summary`), so its figures are the report's. It goes through the
+event ledger like every comment, keyed by the occurrence (`done:<run dir>`,
+`deferred:<block id>`, `set-aside:<recovery id>`), so a restarted runner never posts it
+twice; but nothing waits for it: when rendering or posting fails the runner logs it and
+continues (Done, the read-back and the lifecycle record do not depend on it), and a recorded
+pending comment is posted by the next reconcile, like any pending event.
+
+**Usage tables.** Besides the run summary, the `batch-finished` comment has a table with one
+row per issue of the batch (Issue | Outcome | Attempts | Input (cached) | Output | Tool
+calls | Time) and a bold batch total row. Its figures are those of `terminal-trajectory.*`:
+the same saved records and the same totals as `runner.py report` (see "Totals and marks"
+under "Context cost"). In both tables token counts are compact (812, 2.1k, 39k, 1.60M),
+cached input is in parentheses and is part of the input, times are model plus check time (45
+s, 24 min, 1 h 05 min), `≤ N` is an attempt's upper bound, `≥ N` a total that misses what an
+attempt did not report, and `—` a figure that was not recorded (never 0). There is no cost
+column: the counters are not billed cost. When the table cannot be rendered the comment says
+so and points to the report. A table is allowed only in runner comments: the lint
+(`updates.lint(..., allow_tables=True)`) requires a header row, a delimiter row and rows of
+equal width in their own paragraph, still rejects JSON, long hashes and HTML comments in
+cells, and does not count table lines against `max_chars`/`max_lines`, which bound prose.
+Model drafts still may not use tables.
 
 Every lifecycle event is a NEW comment on the issue it concerns; nothing is edited:
 
@@ -638,6 +656,7 @@ Every lifecycle event is a NEW comment on the issue it concerns; nothing is edit
 | `validation` | runner | after each validation run |
 | `review` | reviewer (its `summary`), runner fallback | when the review is accepted |
 | `done` | runner | after Done is published and read back |
+| `run-summary` | runner | after `done`, and after `deferred` or a `recover defer` recovery comment |
 | `blocked` | runner, quoting the worker or reviewer | when the batch pauses (see "Stops") |
 | `deferred` | runner | when a rule or `on_block` sets the issue aside |
 | `recovery` | runner | when a launch carries out a recorded recovery |
@@ -649,7 +668,9 @@ pending before the write and as posted after the comment is read back. The comme
 one hidden line, `<!-- linear-runner <batch>/<issue>/<kind>/<n> -->`. If a write's response
 or the following save is lost, the next run finds the comment by that line and adopts it, so
 an event is never posted twice. A failed write keeps the batch from advancing; the pending
-event is posted when the batch resumes, without rerunning models.
+event is posted when the batch resumes, without rerunning models. The `run-summary` comment
+is the exception on the first write: its failure is logged and the batch goes on, and it is
+posted by the next reconcile.
 
 **Outbox.** Model sessions have no Linear MCP. Each phase attempt has an
 `outbox/` directory, and the prompt tells the worker to write drafts there as
@@ -694,7 +715,8 @@ recovery whose expected state still matches exactly. Then it:
    the terminal issue and `supervision.report_issues`.
 
 When it carries out a recorded recovery it first posts a `recovery` comment on the issue
-and removes the needs-input mark of the stop it recovers.
+and removes the needs-input mark of the stop it recovers. When an issue is set aside (a rule,
+`on_block` or `recover defer`) it also posts the issue's `run-summary` comment.
 
 **Exit status.** Every orderly outcome exits 0: a planned checkpoint, STOP, a `partial` or
 complete queue, and a recorded pause (a classified stop with its blocked comment, including

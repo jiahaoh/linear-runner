@@ -706,7 +706,8 @@ class EngineTests(unittest.TestCase):
         self.linear.fail_posts = False
         self.runner.execute(limit=1, resume=True)
         self.assertEqual(self.linear.data["statusType"], "completed")
-        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "review", "done", "batch-finished"])
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "review", "done", "run-summary",
+                                                      "batch-finished"])
         self.assertFalse([e for e in self.runner.state["events"].values() if e["status"] == "pending"])
 
     def test_linear_client_appends_new_comments_and_never_edits(self):

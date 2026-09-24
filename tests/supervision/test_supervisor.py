@@ -140,7 +140,7 @@ class LaunchAndSupervisorTests(Harness):
                              runner_module.hashlib.sha256((run / "final-result.json").read_bytes()).hexdigest())
             self.assertTrue(state["lifecycle"][issue]["synced_at"])
             # One NEW plain-language comment per lifecycle event on the owning issue.
-            expected = ["claim", "ready", "validation", "review", "done"]
+            expected = ["claim", "ready", "validation", "review", "done", "run-summary"]
             self.assertEqual(self.linear.kinds(issue), expected + (["batch-finished"] if issue == "DEV-3" else []))
         self.assertTrue(self.linear.last("DEV-3", "batch-finished").startswith(
             "Batch fixture finished: all 3 issues are Done, so no action is needed."))
@@ -803,7 +803,7 @@ class RevalidateTests(Harness):
         self.assertEqual(recorded["consumed"]["launch_id"], json.loads(self.output[-1])["launch_id"])
         self.assertEqual([e["event"] for e in verify_log(self.state_dir)], ["recorded", "consumed"])
         self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "blocked", "recovery", "validation",
-                                                      "review", "done"])
+                                                      "review", "done", "run-summary"])
         self.assertIn("re-runs the checks for DEV-1 on the current source without a model",
                       self.linear.last("DEV-1", "recovery"))
 
@@ -1136,7 +1136,7 @@ class OnBlockPolicyTests(Harness):
         self.assertTrue(state["deferred"]["DEV-1"]["park"]["parked_ref"].startswith("refs/linear-runner/parked/fixture/DEV-1/"))
         self.assertNotIn("rule_applications", state)
         self.assertEqual([e["event"] for e in verify_log(self.state_dir)], ["deferred"])
-        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "deferred"])
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "deferred", "run-summary"])
         self.assertTrue(self.linear.last("DEV-1", "deferred").startswith("DEV-1 was set aside after it blocked"))
         self.assertEqual(self.linear.kinds("TRACK-1"), ["batch-finished"])
         self.assertEqual(self.linear.kinds("DEV-3")[-1], "batch-finished")

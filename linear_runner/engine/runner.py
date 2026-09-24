@@ -758,6 +758,26 @@ class Runner:
     def reconcile_events(self):
         self.ledger.reconcile()
 
+    def post_run_summary(self, issue, run_dir, outcome, dedupe):
+        """Post the ``run-summary`` comment: what each model attempt and the runner's checks of
+        ``run_dir`` used, rendered from the saved records with the report's accounting
+        (``trajectory.run_summary``). ``outcome`` is ``done``, ``deferred`` or ``set-aside``;
+        ``dedupe`` names the occurrence (the run, the block or the recovery) so a restarted
+        runner finds its event instead of posting it twice.
+
+        It goes through the ledger like every event (saved as pending before the write), but
+        the lifecycle never depends on it: a rendering or posting failure is logged and the
+        caller continues; a pending event is posted by the next ``reconcile_events``."""
+        try:
+            from linear_runner.reporting import trajectory
+            result = trajectory.from_roots([run_dir], issues=[issue])
+            body = messages.run_summary(self.ctx, issue=issue, outcome=outcome,
+                                        summary=trajectory.run_summary(result, issue), evidence_paths=[run_dir])
+            return self.emit(issue, "run-summary", body, dedupe=dedupe)
+        except Exception as error:  # never blocks Done, a deferral or a recovery
+            self.log(f"Run summary for {issue} not posted yet (a recorded event is retried with the outbox): {error}")
+            return None
+
     def outbox_instructions(self, phase, outbox):
         """The owner-update instructions: the draft rules come from ``updates.draft_rules``, i.e.
         from the same lint limits and templates the controller checks drafts against."""
@@ -1536,6 +1556,7 @@ class Runner:
                                                    deliverables=self.final_deliverables(active),
                                                    stages=active.get("stages")),
                       dedupe="done:" + active["run_dir"])
+            self.post_run_summary(issue, active["run_dir"], "done", "done:" + active["run_dir"])
             result = active["accepted_result"]
             write_json(Path(active["run_dir"]) / "final-result.json", result)
             self.manifest(active, result)

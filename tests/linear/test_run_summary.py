@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 from linear_runner import cli
 from linear_runner.linear import messages, updates
@@ -41,6 +42,16 @@ class FormatTests(unittest.TestCase):
                          ["812", "2.1k", "9.9k", "39k", "999k", "1.60M", "16.2M", "123M"])
         self.assertEqual([messages.duration(v) for v in (45, 59.4, 1_452, 3_570, 3_900, 7_260)],
                          ["45 s", "59 s", "24 min", "1 h 00 min", "1 h 05 min", "2 h 01 min"])
+
+    def test_stage_names(self):
+        attempts = [{"phase": "implement", "exit_code": 1, "status": None}, {"phase": "implement", "status": "ready"},
+                    {"phase": "repair", "status": "blocked"},
+                    {"phase": "review", "status": "ready", "selection_source": "low-risk review rule"}]
+        result = {"attempts": [dict(a, issue="X-1", requested_model="m", requested_effort="e", attempt=str(i),
+                                    usage_delta=None, usage_basis="unavailable") for i, a in enumerate(attempts)],
+                  "validation_audit": [], "summaries": [], "pending": []}
+        self.assertEqual([r["stage"] for r in trajectory.run_summary(result, "X-1")["rows"]],
+                         ["Implement 1 (failed)", "Implement 2", "Repair 1 (blocked)", "Lighter review"])
 
     def test_unknown_is_a_dash_never_zero(self):
         unknown = trajectory.figure(None)
@@ -205,6 +216,108 @@ class BatchCommentTests(Recorded):
         # The same figures as the terminal trajectory report written next to it.
         report = json.loads((self.state_dir / "terminal-trajectory.json").read_text())
         self.assertEqual(report["comparison"][0]["totals"]["input_tokens"], {"value": 600, "bound": "exact"})
+
+
+    def test_a_set_aside_issue_gets_the_table_after_its_deferred_comment(self):
+        self.hooks[("DEV-1", "implement")] = self.blocked()
+        self.launch()
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "deferred", "run-summary"])
+        body = self.linear.last("DEV-1", "run-summary")
+        self.assertTrue(body.startswith("DEV-1 was set aside, and this is what its 1 model attempt and the runner's "
+                                        "checks used until then;"))
+        self.assertEqual(self.table(body)[2:], [
+            "| Implement (blocked) | astra | medium | 100 (40) | 5 | 4 (1 failed) | 30 s |",
+            "| Checks | — | — | — | — | — | — |",
+            "| **Total** |  |  | **100 (40)** | **5** | **4 (1 failed)** | **30 s** |"])
+        event = next(e for e in self.state()["events"].values() if e["kind"] == "run-summary")
+        self.assertEqual(event["dedupe"], "deferred:DEV-1#1")
+
+
+REPAIRED_CHECK = [{"name": "output", "kind": "code", "tier": "default", "inputs": ["result.txt"], "cwd": ".",
+                   "command": ["${python}", "-c", "from pathlib import Path; "
+                                                 "assert Path('result.txt').read_text() == 'fixed'"]}]
+
+
+class DoneCommentTests(Recorded):
+    BATCH = {"issues": ["DEV-1"], "terminal_issue": "DEV-1"}
+    PROJECT = {"checks": REPAIRED_CHECK}
+
+    def setUp(self):
+        super().setUp()
+        self.hooks[("DEV-1", "repair")] = lambda result: (self.repo / "result.txt").write_text("fixed")
+
+    def test_done_is_followed_by_the_run_summary_with_a_checks_row(self):
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "ready", "validation", "review",
+                                                      "done", "run-summary", "batch-finished"])
+        body = self.linear.last("DEV-1", "run-summary")
+        self.assertTrue(body.startswith("DEV-1 is Done, and this is what its 3 model attempts and the runner's checks "
+                                        "used; no action is needed."))
+        rows = self.table(body)
+        # Implement (1st call, 100 input), a failed validation, Repair 1 resuming that session (counter 200, so
+        # 100 more), a passing validation and Review (a new session, 300).
+        self.assertEqual(rows[2:5], ["| Implement | astra | medium | 100 (40) | 5 | 4 (1 failed) | 30 s |",
+                                     "| Repair 1 | luna | max | 100 (40) | 5 | 4 (1 failed) | 30 s |",
+                                     "| Review | astra | medium | 300 (120) | 15 | 4 (1 failed) | 30 s |"])
+        self.assertRegex(rows[5], r"^\| Checks \| — \| — \| — \| — \| — \| \d+ s \|$")
+        self.assertRegex(rows[6], r"^\| \*\*Total\*\* \|  \|  \| \*\*500 \(200\)\*\* \| \*\*25\*\* \| "
+                                  r"\*\*12 \(3 failed\)\*\* \| \*\*(1|2) min\*\* \|$")
+        self.assertEqual(updates.lint(body.rsplit("\n\n<!--", 1)[0], kind="runner", limits=RUNNER_LIMITS,
+                                      allow_tables=True), [])
+        # The same records through `runner.py report` give the same totals.
+        run = Path(self.state()["history"][0]["run_dir"])
+        payload, _ = report_json(run)
+        self.assertEqual(payload["summaries"][0]["totals"]["input_tokens"], {"value": 500, "bound": "exact"})
+        self.assertEqual(payload["summaries"][0]["totals"]["tool_calls"], {"value": 12, "bound": "exact"})
+
+    def test_a_failed_summary_post_never_blocks_done_and_is_retried_once(self):
+        original = self.linear.post_comment
+        def flaky(issue, body, marker, **kwargs):
+            if "/run-summary/" in marker:
+                raise RuntimeError("Linear offline during the run summary post")
+            return original(issue, body, marker, **kwargs)
+        self.linear.post_comment = flaky
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        state = self.state()
+        # Done was published, read back and recorded; the lifecycle read-back ran.
+        self.assertEqual((self.done(), self.linear.data["statusType"]), (["DEV-1"], "completed"))
+        self.assertTrue(state["lifecycle"]["DEV-1"]["synced_at"])
+        self.assertEqual(state["events"]["DEV-1/run-summary/1"]["status"], "pending")
+        self.assertNotIn("run-summary", self.linear.kinds("DEV-1"))
+        # The next reconcile (any later launch or phase) posts the recorded body, once.
+        self.linear.post_comment = original
+        runner = self.make_runner()
+        runner.reconcile_events()
+        runner.reconcile_events()
+        self.assertEqual(self.linear.kinds("DEV-1").count("run-summary"), 1)
+        self.assertEqual(self.linear.last("DEV-1", "run-summary").split("\n\n<!--")[0],
+                         state["events"]["DEV-1/run-summary/1"]["body"].split("\n\n<!--")[0])
+
+    def test_a_rendering_failure_is_logged_and_done_still_completes(self):
+        with unittest.mock.patch.object(trajectory, "run_summary", side_effect=ValueError("broken records")):
+            self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.done(), ["DEV-1"])
+        self.assertNotIn("run-summary", self.linear.kinds("DEV-1"))
+
+
+class StopCommentTests(Recorded):
+    def test_a_stop_has_no_table_and_an_owner_set_aside_gets_one(self):
+        self.hooks[("DEV-2", "implement")] = self.blocked()
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        self.assertEqual(self.linear.kinds("DEV-2"), ["claim", "blocked"])
+        self.assertFalse(self.table(self.linear.last("DEV-2", "blocked")))
+        self.assertFalse(self.table(self.linear.last("DEV-3", "batch-paused")))
+        # The owner sets the paused issue aside (`recover defer`): its recovery comment is followed by the table.
+        record = self.recover("defer", issue="DEV-2", restore_worktree=True)
+        self.launch()
+        self.assertEqual(self.linear.kinds("DEV-2"), ["claim", "blocked", "recovery", "run-summary"])
+        body = self.linear.last("DEV-2", "run-summary")
+        self.assertTrue(body.startswith("DEV-2 was set aside by its owner, and this is what its 1 model attempt"))
+        self.assertIn("| Implement (blocked) | astra | medium |", body)
+        event = next(e for e in self.state()["events"].values() if e["issue"] == "DEV-2" and e["kind"] == "run-summary")
+        self.assertEqual(event["dedupe"], "set-aside:" + record["id"])
+        rows = self.table(self.linear.last("DEV-3", "batch-finished"))
+        self.assertTrue(rows[3].startswith("| DEV-2 | Set aside | 1 | "))
 
 
 if __name__ == "__main__":
