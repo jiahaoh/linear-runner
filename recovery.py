@@ -12,6 +12,13 @@ No command accepts work, deletes history or resets usage, repair or escalation c
 * ``resume``  - continue the saved active issue from its saved step (or restore a
   deferred, parked issue with ``--issue``). Optional ``--note-file`` (owner text given to
   later model phases) and ``--repin-contract`` (adopt an edited live issue before acceptance).
+  At a repair that finished ``blocked`` it needs ``--note-file``: the worker then gets the
+  next repair slot with the note. An interrupted repair cannot be resumed.
+* ``revalidate`` - at a ``repair`` or ``validate`` stop after checks ran (a repair that
+  finished blocked or was interrupted, or checks still failing): re-run the checks on the
+  current worktree source with no model call and without using a repair slot. Passing
+  checks continue to commit, delivery, review and publication; failing checks enter the
+  normal repair loop with the remaining repair budget.
 * ``review``  - re-run only the independent review of the frozen commit, optionally after
   re-running delivery (``--redeliver``, the previous packet is kept).
 * ``budget``  - reconcile a soft-budget checkpoint with an explicitly recorded new allowance.
@@ -34,7 +41,7 @@ from runner import (IssueBlocked, git, fingerprint, issue_contract, now, run_id,
                     validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
-KINDS = ("resume", "review", "budget", "publish", "defer", "cancel")
+KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel")
 # Steps before independent acceptance, where an edited issue contract may be re-pinned.
 PRE_ACCEPTANCE = ("implement", "validate", "commit", "delivery", "review")
 PARK_REF = "refs/linear-runner/parked"
@@ -172,6 +179,26 @@ def _repin(runner, active, identifier):
             "old_criteria": old_criteria, "new_criteria": review_criteria(live)}
 
 
+def repair_outcome(state):
+    """How the active issue's last dispatched repair ended: ``blocked`` (it finished and
+    reported blocked) or ``interrupted`` (no result: killed, timed out, Codex failed).
+
+    New state records ``active.repair_blocked`` (the repair number that ended blocked); state
+    written before that field falls back to the issue's latest stop.
+    """
+    active = state["active"]
+    if active.get("repair_blocked") is not None:
+        return "blocked" if active["repair_blocked"] == active.get("repairs") else "interrupted"
+    stops = [s for s in state.get("stops", []) if s.get("issue") == active["issue_id"]]
+    if stops and stops[-1].get("step") == "repair" and stops[-1].get("event") == "worker_blocked":
+        return "blocked"
+    return "interrupted"
+
+
+def _repairs_left(runner, active):
+    return runner.policy["phases"]["max_repairs"] - active.get("repairs", 0)
+
+
 def recover_resume(runner, *, reason, authorized_by, then="continue", note_file=None, repin=False, issue=None):
     _preflight(runner, reason, authorized_by)
     identifier = "R-" + run_id()
@@ -183,7 +210,23 @@ def recover_resume(runner, *, reason, authorized_by, then="continue", note_file=
         if active.get("budget_exceeded"):
             raise RecoveryError("A soft-budget checkpoint needs `recover budget` with an explicit allowance")
         if active["step"] == "repair":
-            raise RecoveryError("An interrupted repair consumed its slot; inspect it, this phase has no generic recovery")
+            name, left = active["issue_id"], _repairs_left(runner, active)
+            limit = runner.policy["phases"]["max_repairs"]
+            if repair_outcome(runner.state) == "interrupted":
+                raise RecoveryError(f"The repair of {name} was interrupted and consumed its slot, so it cannot be "
+                                    "resumed. `recover revalidate` re-runs the checks on the current source without "
+                                    "a model; `recover defer` sets the issue aside")
+            if not note_file:
+                raise RecoveryError(
+                    f"The repair of {name} finished with status blocked, so a plain resume would only repeat it. "
+                    "Use `recover revalidate` to re-run the checks without a model after fixing their "
+                    "configuration or environment (no repair slot is used), or `recover resume --note-file F` "
+                    f"to give the worker a note for one more repair ({left} of {limit} repairs left)")
+            if left <= 0:
+                raise RecoveryError(f"The repair of {name} finished with status blocked and all {limit} repairs are "
+                                    "used; `recover revalidate` re-runs the checks without a model, or `recover "
+                                    "defer` sets the issue aside")
+            details["repair_retry"] = {"repairs_used": active["repairs"], "max_repairs": limit}
     elif runner.state.get("phase") != "paused":
         raise RecoveryError("Nothing to resume: no active issue and the controller is not paused")
     active = runner.state.get("active")
@@ -197,6 +240,26 @@ def recover_resume(runner, *, reason, authorized_by, then="continue", note_file=
     elif repin or note_file:
         raise RecoveryError("--repin-contract and --note-file need an active issue")
     return _record(runner, "resume", reason=reason, authorized_by=authorized_by, then=then, details=details)
+
+
+def recover_revalidate(runner, *, reason, authorized_by, then="continue"):
+    """Re-run validation on the current source: no model call, no repair slot used."""
+    _preflight(runner, reason, authorized_by)
+    active = _active(runner, ("repair", "validate"))
+    if active.get("budget_exceeded"):
+        raise RecoveryError("A soft-budget checkpoint needs `recover budget` with an explicit allowance")
+    previous = Path(active.get("validation_dir") or "") / "checks.json"
+    if not active.get("validation_dir") or not previous.is_file():
+        raise RecoveryError(f"{active['issue_id']} has not run its checks yet; `recover resume` runs them")
+    from delivery import check_passed
+    records = json.loads(previous.read_text())
+    identifier = "R-" + run_id()
+    details = {"id": identifier, "issue": active["issue_id"], "step": active["step"],
+               "repair": repair_outcome(runner.state) if active["step"] == "repair" else None,
+               "previous_validation": active["validation_dir"],
+               "previously_failing": [r.get("name") for r in records if not check_passed(r)],
+               "repairs_used": active.get("repairs", 0), "max_repairs": runner.policy["phases"]["max_repairs"]}
+    return _record(runner, "revalidate", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 
 def recover_review(runner, *, reason, authorized_by, then="continue", note_file=None, repin=False, redeliver=False):
@@ -408,5 +471,5 @@ def block_record(runner, active, error, launch_id):
 
 
 __all__ = ["IssueBlocked", "KINDS", "RecoveryError", "append_log", "verify_log", "expected_state", "park", "unpark",
-           "defer", "block_record", "recover_resume", "recover_review", "recover_budget", "recover_publish",
+           "defer", "block_record", "repair_outcome", "recover_resume", "recover_revalidate", "recover_review", "recover_budget", "recover_publish",
            "recover_defer", "recover_cancel"]

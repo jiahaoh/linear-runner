@@ -46,6 +46,11 @@ READY_RESULT = dict(BLOCKED_RESULT, status="ready", summary=(
     "from the configured data folder."), acceptance=[dict(e, satisfied=True, evidence="checked") for e in
                                                      BLOCKED_RESULT["acceptance"]],
                     limitations=["Error bars use 200 bootstrap samples; more would take several minutes per tile"])
+REPAIR_BLOCKED_RESULT = dict(BLOCKED_RESULT, summary=(
+    "The only failing check is pytest-extended: it selected no tests because this issue moved those tests into "
+    "the default run. Bringing the marker back would undo the issue, so I changed nothing."), acceptance=[
+    dict(BLOCKED_RESULT["acceptance"][2], satisfied=False,
+         evidence="pytest-extended exited 5 with every test deselected")])
 REVIEW_RESULT = dict(READY_RESULT, summary=(
     "The committed work meets all three criteria and the report reads well. The error bars match a manual "
     "bootstrap on two tiles."))
@@ -156,6 +161,12 @@ def samples():
          messages.blocked(CTX, issue="TEAM-12", classification="environment", error=(
              "Linear OAuth expired; refresh with the owning CLI and resume"), step="validate",
              evidence_paths=[RUN, f"{STATE}/state.json"])),
+        ("Blocked or stopped, a repair finished blocked", "blocked.md", "runner (quotes the worker)",
+         "when a repair ends with status blocked instead of ready", "TEAM-12", "blocked",
+         messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="worker_blocked",
+                          error=("Repair did not report ready: the only failing check is pytest-extended, which "
+                                 "selected no tests"), step="repair", phase="repair", repairs=1,
+                          result=REPAIR_BLOCKED_RESULT, evidence_paths=[RUN, RUN + "/repair-20260923T104000Z-6a7b8c9d"])),
         ("Issue deferred", "deferred.md", "runner", "when a decision rule or on_block policy sets an issue aside",
          "TEAM-13", "deferred",
          messages.deferred(CTX, issue="TEAM-13", cause={"rule": "rule-0a1b2c3d4e5f",
@@ -166,6 +177,13 @@ def samples():
          "recovery", messages.recovery(CTX, record=recovery, step="implement",
                                        note="The calibration table is data/calibration.csv; read it, do not recreate it.",
                                        evidence_paths=[f"{STATE}/recovery-log.jsonl"])),
+        ("Recovery recorded, revalidate", "recovery.md", "runner", "when a launch carries out a revalidate recovery",
+         "TEAM-12", "recovery",
+         messages.recovery(CTX, record={"id": "R-20260923T121500Z-1d2e3f4a", "kind": "revalidate",
+                                        "authorized_by": "Owner", "then": "continue",
+                                        "reason": "The pytest-extended check now allows an empty selection",
+                                        "details": {"issue": "TEAM-12", "step": "repair"}},
+                           step="validate", evidence_paths=[f"{STATE}/recovery-log.jsonl"])),
         ("Batch finished", "batch-finished.md", "runner", "on the terminal issue and report issues when the batch ends",
          "TEAM-14", "batch-finished",
          messages.batch_finished(CTX, outcome="partial", done=["TEAM-10", "TEAM-11", "TEAM-12"], total=5,

@@ -130,10 +130,21 @@ class Supervisor:
 
     def consume(self, pending):
         kind = pending["kind"]
-        self.r.allowed_phases = {"publish": set(), "review": {"review"}}.get(kind)
-        if kind in ("resume", "review", "budget", "publish") and pending.get("then") == "stop":
+        record = next(r for r in self.state.get("recoveries", []) if r["id"] == pending["id"])
+        # revalidate runs the checks without a model; only the repair loop and review may follow.
+        self.r.allowed_phases = {"publish": set(), "review": {"review"}, "revalidate": {"repair", "review"}}.get(kind)
+        if kind in ("resume", "revalidate", "review", "budget", "publish") and pending.get("then") == "stop":
             self.scope = "active"
         self.redeliver = bool(pending.get("redeliver"))
+        active = self.state.get("active")
+        if kind == "revalidate" and active:
+            # Back to the validate step: the repair count and escalation are kept as they are.
+            active.setdefault("revalidations", []).append({
+                "recovery": pending["id"], "launch_id": self.launch_id, "at": now(), "from_step": active["step"],
+                "repairs": active.get("repairs", 0), "previous_validation": active.get("validation_dir")})
+            active["step"] = "validate"
+        elif kind == "resume" and active and active["step"] == "repair" and record.get("details", {}).get("repair_retry"):
+            active["repair_retry"] = pending["id"]
         for record in self.state.get("recoveries", []):
             if record["id"] == pending["id"]:
                 record["consumed"] = {"launch_id": self.launch_id, "at": now()}

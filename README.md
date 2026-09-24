@@ -240,7 +240,9 @@ elsewhere stops the batch for reconciliation.
 5. **Repair.** At most `max_repairs` (≤ 2) repairs, shared across resumes and profiles.
    After an unsuccessful repair, one escalation to the registry's `escalation_profile` is
    available. An unchanged failing input stops recovery; an interrupted repair consumes
-   its slot.
+   its slot. A repair that finishes with status `blocked` also used its slot; the state
+   records it (`active.repair_blocked`) so the blocked comment and `recover resume` can tell
+   it from an interrupted repair (see "Stop, recovery and continuation").
 6. **Commit.** The controller commits the validated, unchanged source itself. Any worker
    commit or other history change stops the batch.
 7. **Delivery.** Optional `delivery_checks` receive `RUNNER_DELIVERY_CONTEXT` (a JSON file
@@ -586,6 +588,8 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | Situation | Command (then `launch --batch $B`) |
 | --- | --- |
 | Resume the active issue from its saved step (for example a blocked worker) | `recover resume --batch $B --reason R --authorized-by A [--note-file F] [--then stop]` |
+| A repair finished `blocked`, or was interrupted, or checks still fail at `validate`, and you fixed the check configuration or environment: re-run the checks on the current source, no model, no repair slot | `recover revalidate --batch $B --reason R --authorized-by A [--then stop]` |
+| A repair finished `blocked` and the worker should try again with your note (uses the next repair slot) | `recover resume --batch $B --note-file F --reason R --authorized-by A` |
 | Re-run only the independent review of the frozen commit | `recover review --batch $B --reason R --authorized-by A [--redeliver] [--repin-contract] [--note-file F]` |
 | Soft-budget checkpoint | `recover budget --batch $B --phase P --input-tokens N --output-tokens N --tool-calls N --reason R --authorized-by A` |
 | Publication or its read-back failed after acceptance | `recover publish --batch $B --reason R --authorized-by A` |
@@ -596,6 +600,17 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 
 Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
 and appended to later model prompts; it does not change acceptance criteria.
+`revalidate` needs an active issue stopped at `repair` or `validate` whose checks already
+ran (a repair that finished `blocked` or was interrupted, or checks that still failed). The
+launch that carries it out sets the step back to `validate` and runs the checks on the
+current worktree source without any model call; the repair count and escalation stay as
+they are. Passing checks continue to commit, delivery, review and publication; failing
+checks enter the normal repair loop with the repairs that are left (an unchanged failure
+still stops at once). Only the repair and review model phases may run after it. At a repair
+that finished `blocked`, a plain `resume` is refused with a pointer to `revalidate` or to
+`resume --note-file F`, which gives the worker one more repair (the next slot, with the
+single escalation) and is refused once every repair is used. An interrupted repair cannot
+be resumed; `revalidate` or `defer` are its recoveries.
 `--repin-contract` adopts an edited live issue before acceptance only, keeping the
 previous intake and issue beside it. `--redeliver` re-runs delivery for the frozen commit
 and keeps the old packet as `delivery-superseded-<id>`. `review` allows only the review

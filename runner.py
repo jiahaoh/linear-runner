@@ -729,6 +729,7 @@ class Runner:
         phase = (active.get("budget_exceeded") or {}).get("phase") or drafts.get("phase")
         return messages.blocked(self.ctx, issue=stop["issue"], classification=stop["class"], event=stop["event"],
                                 error=stop["error"], step=stop["step"], phase=phase, result=active.get("last_result"),
+                                repairs=active.get("repairs"),
                                 who=who, draft=held["text"] if held else None, draft_problem=rejected.get("problem"),
                                 draft_path=rejected.get("path"),
                                 evidence_paths=[active.get("run_dir"), drafts.get("attempt"), self.root / "state.json"])
@@ -1185,9 +1186,12 @@ class Runner:
             active["step"] = "validate"; self.save(active=active)
             self.post_ready(active, result)
         if active["step"] == "repair":
-            # An interrupted dispatched repair consumes its slot; never silently reset it.
-            raise RuntimeError("Repair interrupted; inspect its recorded result before explicit recovery")
-        escalation_profile = self.policy["profiles"]["escalation_profile"]
+            # A dispatched repair consumed its slot; never silently reset it. Only an owner's
+            # recorded `recover resume --note-file` after a repair that finished blocked sets
+            # ``repair_retry``: the worker then gets the next repair slot (with the note).
+            if not active.get("repair_retry"):
+                raise RuntimeError("Repair interrupted; inspect its recorded result before explicit recovery")
+            self.repair(active, issue)
         while active["step"] == "validate":
             self.save(phase="validating")
             passed = self.run_checks(active)
@@ -1204,26 +1208,7 @@ class Runner:
                 raise IssueBlocked("Repeated unchanged failure or repair limit exhausted; failing: "
                                    + ", ".join(c["name"] for c in failures), "checks_failed")
             active["failure_key"] = failure_key
-            selected = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
-            if active["repairs"] and selected["profile"] != escalation_profile and not active.get("escalation"):
-                active["escalation"] = escalation_profile
-                active["escalation_reason"] = "A prior bounded repair did not satisfy checks"
-            active["repairs"] += 1; active["step"] = "repair"; self.save(active=active, phase="repairing")
-            self.emit(issue, "validation", messages.validation(self.ctx, issue=issue, records=records, passed=False,
-                                                               repair=active["repairs"], directory=active["validation_dir"]),
-                      dedupe=active["validation_dir"])
-            resume, seed, switch = self.worker_session(active, "repair")
-            result = self.model_phase(active, "repair", seed + f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
-                                      "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
-                                      "Return readiness with evidence, or blocked. Preserve scientific contracts.", resume=resume,
-                                      session_meta=switch)
-            if result.get("status") != "ready" or result.get("issue_id") != issue:
-                raise IssueBlocked("Repair did not report ready: " + messages.short_cause(result.get("summary") or
-                                                                                        "no summary given", 300),
-                                   "worker_blocked")
-            self.record_deliverables(active, result)
-            active["step"] = "validate"; self.save(active=active)
-            self.post_ready(active, result)
+            self.repair(active, issue, records=records)
         if active["step"] == "commit":
             current = git(self.repo, "rev-parse", "HEAD")
             if current != active["starting_commit"]:
@@ -1304,6 +1289,43 @@ class Runner:
                 self.state["history"].append({"issue_id": issue, "commit": active["commit"], "run_dir": active["run_dir"], "completed_at": now()})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
+
+    def repair(self, active, issue, records=None):
+        """One bounded repair of the failing checks in ``active["validation_dir"]``.
+
+        ``records`` is the failing validation that asks for it (its comment is posted here);
+        without it this is the owner-authorized retry of a repair that finished blocked.
+        Either way the repair takes the next slot of the shared ``max_repairs`` budget, and
+        after an unsuccessful repair the single escalation applies.
+        """
+        if active["repairs"] >= self.policy["phases"]["max_repairs"]:
+            raise IssueBlocked("Repair limit exhausted", "checks_failed")
+        escalation_profile = self.policy["profiles"]["escalation_profile"]
+        selected = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
+        if active["repairs"] and selected["profile"] != escalation_profile and not active.get("escalation"):
+            active["escalation"] = escalation_profile
+            active["escalation_reason"] = "A prior bounded repair did not satisfy checks"
+        active["repairs"] += 1; active["step"] = "repair"; active.pop("repair_retry", None)
+        self.save(active=active, phase="repairing")
+        if records is not None:
+            self.emit(issue, "validation", messages.validation(self.ctx, issue=issue, records=records, passed=False,
+                                                               repair=active["repairs"], directory=active["validation_dir"]),
+                      dedupe=active["validation_dir"])
+        resume, seed, switch = self.worker_session(active, "repair")
+        result = self.model_phase(active, "repair", seed + f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
+                                  "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
+                                  "Return readiness with evidence, or blocked. Preserve scientific contracts.", resume=resume,
+                                  session_meta=switch)
+        if result.get("status") != "ready" or result.get("issue_id") != issue:
+            # The repair finished (it was not interrupted): recovery offers revalidate or a
+            # note-based retry for it, never a silent resume.
+            active["repair_blocked"] = active["repairs"]; self.save(active=active)
+            raise IssueBlocked("Repair did not report ready: " + messages.short_cause(result.get("summary") or
+                                                                                    "no summary given", 300),
+                               "worker_blocked")
+        self.record_deliverables(active, result)
+        active["step"] = "validate"; self.save(active=active)
+        self.post_ready(active, result)
 
     def deliver(self, active):
         """Project delivery checks, then the optional generic integrity step (no model)."""
@@ -1611,6 +1633,8 @@ def build_parser():
     budget.add_argument("--input-tokens", type=int, required=True)
     budget.add_argument("--output-tokens", type=int, required=True)
     budget.add_argument("--tool-calls", type=int, required=True)
+    kinds.add_parser("revalidate", parents=[common, authority, then],
+                     help="re-run the checks on the current source at a repair or validate stop (no model, no repair slot)")
     kinds.add_parser("publish", parents=[common, authority, then], help="reconcile publication of an accepted review; no model")
     kinds.add_parser("cancel", parents=[common, authority], help="withdraw a pending recovery that was not launched")
     defer_issue = kinds.add_parser("defer", parents=[common, authority], help="defer an issue; the queue continues without it")
@@ -1670,6 +1694,8 @@ def recover(args, runner):
         limits = {"input_tokens": args.input_tokens, "output_tokens": args.output_tokens, "tool_calls": args.tool_calls}
         return recovery.recover_budget(runner, phase=args.phase, limits=limits, then=args.then,
                                        note_file=args.note_file, **common)
+    if args.kind == "revalidate":
+        return recovery.recover_revalidate(runner, then=args.then, **common)
     if args.kind == "publish":
         return recovery.recover_publish(runner, then=args.then, **common)
     if args.kind == "cancel":

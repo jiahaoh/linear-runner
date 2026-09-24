@@ -623,6 +623,179 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
             verify_log(self.state_dir)
 
 
+# Exit code from a file outside the worktree (missing: 1): an "environment" the owner can fix.
+ENV_CHECK = "import sys; from pathlib import Path; p = Path(sys.argv[1]); sys.exit(int(p.read_text()) if p.exists() else 1)"
+
+
+class RevalidateTests(Harness):
+    """A repair that finished blocked, an interrupted repair and `recover revalidate`."""
+
+    def setUp(self):
+        super().setUp()
+        self.flag = self.root / "environment-exit-code"
+        self.setUp_checks()
+
+    def pause_at_blocked_repair(self):
+        self.hooks[("DEV-1", "repair")] = self.blocked(times=1)
+        entry = self.launch()
+        self.assertEqual(entry["started"]["outcome"], "blocked")
+        state = self.state()
+        self.assertEqual((state["phase"], state["active"]["step"], state["active"]["repairs"]), ("paused", "repair", 1))
+        self.assertEqual(state["active"]["repair_blocked"], 1)
+        return state
+
+    def test_blocked_repair_offers_revalidate_and_a_note_based_resume(self):
+        self.pause_at_blocked_repair()
+        body = self.linear.last("DEV-1", "blocked")
+        self.assertNotIn("interrupted", body)
+        self.assertIn("re-run the checks on the current source without a model (no repair slot is used):\n\n```bash\n"
+                      "python3 ", body)
+        self.assertIn("recover revalidate --batch fixture", body)
+        self.assertIn("recover resume --note-file <note file> --batch fixture", body)
+        self.assertIn("recover defer --issue DEV-1 --restore-worktree", body)
+        self.assertIn("if their configuration or environment was wrong, fix it and re-run the checks", body)
+        with self.assertRaisesRegex(RecoveryError, r"finished with status blocked.*recover revalidate.*--note-file F.*"
+                                                   r"\(1 of 2 repairs left\)"):
+            self.recover("resume")
+        self.assertIsNone(self.state().get("pending_recovery"))
+        # State written before ``repair_blocked`` existed is read from the issue's latest stop.
+        path = self.state_dir / "state.json"
+        state = json.loads(path.read_text()); del state["active"]["repair_blocked"]; path.write_text(json.dumps(state))
+        self.assertEqual(recovery.repair_outcome(state), "blocked")
+        with self.assertRaisesRegex(RecoveryError, "finished with status blocked"):
+            self.recover("resume")
+        state["stops"][-1]["event"] = None
+        self.assertEqual(recovery.repair_outcome(state), "interrupted")
+
+    def test_revalidate_after_fixing_the_environment_uses_no_model_and_no_repair_slot(self):
+        self.pause_at_blocked_repair()
+        self.flag.write_text("0")  # the owner fixed the environment
+        with self.assertRaisesRegex(RecoveryError, "--authorized-by"):
+            self.recover("revalidate", authorized_by=" ")
+        record = self.recover("revalidate")
+        self.assertEqual((record["kind"], record["details"]["step"], record["details"]["repair"]), ("revalidate", "repair", "blocked"))
+        self.assertEqual((record["details"]["previously_failing"], record["details"]["repairs_used"]), (["environment"], 1))
+        before = list(self.calls)
+        entry = self.launch()  # no --clear-stop: the recovery was recorded against this marker
+        self.assertEqual(entry["started"]["outcome"], "complete")
+        self.assertEqual(before, [("DEV-1", "implement"), ("DEV-1", "repair")])
+        self.assertEqual(self.calls[2], ("DEV-1", "review"))  # revalidation itself called no model
+        run = Path(self.state()["history"][0]["run_dir"])
+        self.assertEqual(len(list(run.glob("repair-*"))), 1)
+        self.assertEqual(len(list(run.glob("validation-*"))), 2)
+        state = self.state()
+        self.assertEqual(self.done(), ["DEV-1", "DEV-2", "DEV-3"])
+        recorded = state["recoveries"][0]
+        self.assertEqual(recorded["consumed"]["launch_id"], json.loads(self.output[-1])["launch_id"])
+        self.assertEqual([e["event"] for e in verify_log(self.state_dir)], ["recorded", "consumed"])
+        self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "ready", "validation", "blocked", "recovery", "validation",
+                                                      "review", "done"])
+        self.assertIn("re-runs the checks for DEV-1 on the current source without a model",
+                      self.linear.last("DEV-1", "recovery"))
+
+    def test_failing_revalidation_enters_the_repair_loop_with_the_remaining_budget(self):
+        self.pause_at_blocked_repair()
+        self.flag.write_text("2")  # a different failure after the owner's change
+        def fixes(result):
+            self.flag.write_text("0")
+        self.hooks[("DEV-1", "repair")] = fixes
+        self.recover("revalidate", then="stop")
+        entry = self.launch()
+        self.assertEqual(entry["started"]["outcome"], "checkpoint")  # --then stop
+        self.assertEqual(self.calls, [("DEV-1", "implement"), ("DEV-1", "repair"), ("DEV-1", "repair"),
+                                      ("DEV-1", "review")])
+        run = Path(self.state()["history"][0]["run_dir"])
+        self.assertEqual(self.done(), ["DEV-1"])
+        self.assertEqual(len(list(run.glob("repair-*"))), 2)
+        self.assertEqual(self.linear.last("DEV-1", "done").count("2 repairs"), 1)
+
+    def test_unchanged_failure_after_revalidation_stops_without_a_repair(self):
+        self.pause_at_blocked_repair()
+        self.recover("revalidate")
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        state = self.state()
+        self.assertEqual((state["active"]["step"], state["active"]["repairs"], state["stops"][-1]["event"]),
+                         ("validate", 1, "checks_failed"))
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(state["active"]["revalidations"][0]["from_step"], "repair")
+        body = self.linear.last("DEV-1", "blocked")
+        self.assertIn("recover revalidate --batch fixture", body)
+        self.recover("revalidate")  # a revalidate stop at validate may itself be revalidated
+        self.flag.write_text("0")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+
+    def test_note_based_resume_retries_the_blocked_repair_in_the_next_slot(self):
+        self.pause_at_blocked_repair()
+        note = self.root / "note.md"; note.write_text("The environment flag file is expected to hold 0.")
+        def fixes(result):
+            self.flag.write_text("0")
+        self.hooks[("DEV-1", "repair")] = fixes
+        record = self.recover("resume", note_file=str(note))
+        self.assertEqual(record["details"]["repair_retry"], {"repairs_used": 1, "max_repairs": 2})
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.calls[:4], [("DEV-1", "implement"), ("DEV-1", "repair"), ("DEV-1", "repair"),
+                                          ("DEV-1", "review")])
+        self.assertIn("The environment flag file is expected to hold 0.", self.prompts[2])
+        self.assertIn("one more repair of the failing checks, with the owner's note", self.linear.last("DEV-1", "recovery"))
+
+    def test_note_based_resume_needs_a_repair_slot(self):
+        registry = copy.deepcopy(TEST_REGISTRY)
+        registry["phases"]["max_repairs"] = 1
+        self.home, self.batch = make_home(self.root, self.repo, registry=registry,
+                                          batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"})
+        self.setUp_checks()
+        self.pause_at_blocked_repair()
+        body = self.linear.last("DEV-1", "blocked")
+        self.assertIn("recover revalidate", body)
+        self.assertNotIn("--note-file", body)  # no repair slot is left
+        note = self.root / "note.md"; note.write_text("Try again.")
+        with self.assertRaisesRegex(RecoveryError, "all 1 repairs are used"):
+            self.recover("resume", note_file=str(note))
+
+    def setUp_checks(self):
+        """Add the ``environment`` check; its inputs (README.md) never change, so its failure
+        identity changes only with its exit code."""
+        path = self.home / "projects" / "fixture.json"
+        project = json.loads(path.read_text())
+        project["checks"].append({"name": "environment", "kind": "code", "tier": "default", "inputs": ["README.md"],
+                                  "cwd": ".", "command": ["${python}", "-c", ENV_CHECK, str(self.flag)]})
+        path.write_text(json.dumps(project))
+
+    def test_interrupted_repair_keeps_its_wording_and_can_be_revalidated(self):
+        def interrupted(result):
+            raise RuntimeError("Codex failed or did not finish a turn; see the attempt")
+        self.hooks[("DEV-1", "repair")] = interrupted
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        state = self.state()
+        self.assertEqual((state["active"]["step"], state["stops"][-1]["event"], state["stops"][-1]["class"]),
+                         ("repair", None, "environment"))
+        body = self.linear.last("DEV-1", "blocked")
+        self.assertIn("An interrupted repair cannot be resumed, but you can re-run the checks", body)
+        self.assertIn("recover revalidate --batch fixture", body)
+        self.assertNotIn("--note-file", body)
+        with self.assertRaisesRegex(RecoveryError, "was interrupted and consumed its slot"):
+            self.recover("resume", note_file=str(self.batch))
+        self.assertEqual(self.recover("revalidate")["details"]["repair"], "interrupted")
+        self.flag.write_text("0")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.state()["history"][0]["issue_id"], "DEV-1")
+
+    def test_revalidate_needs_a_repair_or_validate_stop_after_checks(self):
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.launch()
+        with self.assertRaisesRegex(RecoveryError, r"at step 'implement'; this recovery needs \['repair', 'validate'\]"):
+            self.recover("revalidate")
+        path = self.state_dir / "state.json"
+        state = json.loads(path.read_text())
+        state["active"]["step"] = "validate"
+        path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(RecoveryError, "has not run its checks yet"):
+            self.recover("revalidate")
+        args = ["--batch", str(self.batch), "--home", str(self.home)]
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            main(["recover", "revalidate", *args, "--authorized-by", "Owner"])
+
+
 class OnBlockPolicyTests(Harness):
     BATCH = {"supervision": {"on_block": "continue_independent", "report_issues": ["TRACK-1"]}}
 

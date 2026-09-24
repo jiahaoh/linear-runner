@@ -162,11 +162,34 @@ def own_words(*, who, result=None, draft=None, draft_problem=None, draft_path=No
     return "\n\n".join(parts)
 
 
-def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classification=None):
-    """The exact commands to continue after a stop, each in its own bash block."""
+def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classification=None, repairs=None):
+    """The exact commands to continue after a stop, each in its own bash block.
+
+    At the repair step the wording depends on how the repair ended: one that finished with
+    status blocked offers ``revalidate`` (the owner fixed configuration or the environment),
+    ``resume --note-file`` (the worker tries again, while repairs are left) and ``defer``;
+    only a truly interrupted repair is called interrupted.
+    """
     launch = ("Then start the batch again:", command(ctx, "launch"))
     if issue is None:
         return blocks(("Record the recovery:", command(ctx, "recover", "resume", auth=True)), launch)
+    defer = command(ctx, "recover", "defer", "--issue", issue, "--restore-worktree", auth=True)
+    aside = ("Or set the issue aside instead and let the batch continue:", defer)
+    revalidate = command(ctx, "recover", "revalidate", auth=True)
+    if step == "repair" and event == "worker_blocked":
+        items = [("If you fixed the configuration or the environment the failing checks depend on, re-run the "
+                  "checks on the current source without a model (no repair slot is used):", revalidate)]
+        left = None if repairs is None else ctx["max_repairs"] - repairs
+        if left is None or left > 0:
+            items.append(("Or, to let the worker try one more repair, give it a note (the repair uses the next "
+                          "repair slot):", command(ctx, "recover", "resume", "--note-file", "<note file>", auth=True)))
+        return blocks(*items, launch, aside)
+    if step == "repair":
+        return blocks(("An interrupted repair cannot be resumed, but you can re-run the checks on the current source "
+                       "without a model (the interrupted repair keeps its used slot):", revalidate), launch, aside)
+    if event == "checks_failed":
+        return blocks(("After fixing the configuration or the environment the failing checks depend on, re-run the "
+                       "checks on the current source without a model:", revalidate), launch, aside)
     if event == "budget_exceeded":
         primary = ("Record the new budget allowance for the phase:",
                    command(ctx, "recover", "budget", "--phase", phase or "<phase>", "--input-tokens", "<N>",
@@ -176,21 +199,16 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
                    "--repin-contract after clarifying a criterion):", command(ctx, "recover", "review", auth=True))
     elif step in ("publish", "done"):
         primary = ("Record a publish-only recovery (no model runs):", command(ctx, "recover", "publish", auth=True))
-    elif step == "repair":
-        primary = None
     else:
         primary = ("Record the recovery (you can add --note-file with a note for the worker):",
                    command(ctx, "recover", "resume", auth=True))
-    defer = command(ctx, "recover", "defer", "--issue", issue, "--restore-worktree", auth=True)
-    if primary is None:
-        return blocks(("An interrupted repair cannot be resumed, so set the issue aside:", defer), launch)
     if classification in ("environment", "runner-defect"):
         return blocks(primary, launch)
-    return blocks(primary, launch, ("Or set the issue aside instead and let the batch continue:", defer))
+    return blocks(primary, launch, aside)
 
 
 def blocked(ctx, *, issue, classification, event=None, error="", step=None, phase=None, result=None, who="worker",
-            draft=None, draft_problem=None, draft_path=None, evidence_paths=()):
+            draft=None, draft_problem=None, draft_path=None, evidence_paths=(), repairs=None):
     subject = issue or f"Batch {ctx['batch']}"
     values = {"subject": subject, "phase": phase or step or "model", "step": step or "current",
               "error": short_cause(error, 300)}
@@ -199,13 +217,14 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
     happened = variant("blocked", "happened", event if known else "other", values)
     if event in ("review_blocked", "checks_failed", "delivery_failed"):
         happened += f" The runner reported: {short_cause(error, 300)}."
-    needed = variant("blocked", "needed", event if known else classification, values)
+    needed = variant("blocked", "needed", "repair_blocked" if event == "worker_blocked" and step == "repair"
+                     else event if known else classification, values)
     words = own_words(who=who, result=result, draft=draft, draft_problem=draft_problem, draft_path=draft_path) \
         if event in ("worker_blocked", "review_blocked", "checks_failed", "budget_exceeded") else ""
     return render("blocked", {"subject": subject, "mention": ctx["mention"], "cause": cause, "what_happened": happened,
                               "own_words": words, "needed": needed,
                               "continue_steps": recovery_steps(ctx, issue=issue, event=event, step=step, phase=phase,
-                                                               classification=classification),
+                                                               classification=classification, repairs=repairs),
                               "evidence": evidence(*evidence_paths)}, headline=classification)
 
 
@@ -223,7 +242,7 @@ def deferred(ctx, *, issue, cause, block, result=None, who="worker", draft=None,
                                "evidence": evidence(*evidence_paths)})
 
 
-RECOVERY_KINDS = ("resume", "review", "budget", "publish", "defer")
+RECOVERY_KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer")
 
 
 def recovery(ctx, *, record, step=None, note=None, evidence_paths=()):
@@ -234,6 +253,8 @@ def recovery(ctx, *, record, step=None, note=None, evidence_paths=()):
     action = variant("recovery", "kind", kind, values)
     if kind == "review" and details.get("redeliver"):
         action += " Delivery is re-run first; the previous packet is kept."
+    if kind == "resume" and details.get("repair_retry"):
+        action += " The worker gets one more repair of the failing checks, with the owner's note."
     return render("recovery", {"kind": record["kind"], "subject": subject, "authorized_by": record["authorized_by"],
                                "action": action, "reason": plain(record["reason"], 300).rstrip(".") + ".",
                                "then": variant("recovery", "then", record.get("then") or "continue"),

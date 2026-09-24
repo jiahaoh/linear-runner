@@ -537,6 +537,18 @@ class MessageTests(unittest.TestCase):
         self.assertIn("failing: regression", body)
         repair = messages.recovery_steps(ctx, issue="TEAM-1", step="repair")
         self.assertIn("An interrupted repair cannot be resumed", repair)
+        self.assertIn("recover revalidate", repair)
+        self.assertNotIn("--note-file", repair)
+        finished = messages.recovery_steps(ctx, issue="TEAM-1", step="repair", event="worker_blocked", repairs=1)
+        self.assertNotIn("interrupted", finished)
+        self.assertEqual([line.split(" --batch")[0].split("runner.py ")[1] for line in finished.splitlines()
+                          if "runner.py" in line],
+                         ["recover revalidate", "recover resume --note-file <note file>", "launch",
+                          "recover defer --issue TEAM-1 --restore-worktree"])
+        exhausted = messages.recovery_steps(ctx, issue="TEAM-1", step="repair", event="worker_blocked", repairs=2)
+        self.assertNotIn("--note-file", exhausted)
+        failing = messages.recovery_steps(ctx, issue="TEAM-1", step="validate", event="checks_failed")
+        self.assertIn("recover revalidate", failing)
         batch = messages.blocked(ctx, issue=None, classification="environment", error="Linear HTTP 502", step=None)
         self.assertTrue(first_line(batch).startswith("Batch demo-batch is paused by a host or service problem"))
 
