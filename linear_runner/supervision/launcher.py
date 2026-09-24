@@ -48,8 +48,8 @@ import time
 from linear_runner import backends
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
 from linear_runner.supervision.recovery import expected_state
-from linear_runner.engine.runner import (PHASES, Runner, fingerprint, git, issue_contract, now, project_lock,
-                                         published_contract_matches, resolve_profile, run_id)
+from linear_runner.engine.runner import (PHASES, Runner, contract_matches, fingerprint, git, now, project_lock,
+                                         resolve_profile, run_id)
 from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor, pid_alive
 
 PREFLIGHT_NAME = "preflight.json"
@@ -170,10 +170,11 @@ def _check_linear(runner, supervisor):
         live = linear.issue(active["issue_id"])
         runner.verify_issue(live)
         runner.verify_live_state(live, active["step"])
-        if issue_contract(live) != active["contract"] and not (
-                active["step"] in ("publish", "done") and published_contract_matches(live, active["issue"])):
-            raise LaunchError(f"{active['issue_id']} scope/dependencies/ownership changed since intake; "
-                              "use --repin-contract in the recovery if the edit is authorized")
+        if not contract_matches(live, active):
+            hint = ("use `recover publish --accept-contract-drift` if only fields outside the accepted criteria and "
+                    "scope changed" if active["step"] in ("publish", "done") else
+                    "use --repin-contract in the recovery if the edit is authorized")
+            raise LaunchError(f"{active['issue_id']} scope/dependencies/ownership changed since intake; {hint}")
         if active["step"] in ("review", "publish", "done"):
             runner.verify_frozen(active)
         for phase in PHASES:

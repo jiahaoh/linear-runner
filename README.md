@@ -418,6 +418,19 @@ elsewhere stops the batch for reconciliation.
    other description byte, identity, ownership, milestone and dependency must match.
    It never closes a human gate or the project.
 
+**Issue contract.** Intake pins a SHA-256 of the issue's `id`, `description`, `projectId`,
+`assigneeId`, `projectMilestone` and the `blocks`, `blockedBy` and `duplicateOf` relations
+(`issue_contract`), and keeps the full issue as the intake snapshot (`active.issue`). Every
+resume, the launch preflight, publication and the lifecycle read-back compare the live issue
+with it; a difference stops the batch. `relatedTo` is not part of it: Linear adds related
+links by itself whenever a description or comment (the runner's own comments included)
+mentions another issue, and re-creates them from description mentions after removal, so they
+say nothing about scope. Title, labels and status are outside the contract too. State pinned
+by an earlier runner version stored a hash that included the related links; the runner
+checks that stored hash against the intake snapshot (under either field set) and then
+compares the snapshot and the live issue with the current field set, so a paused batch
+continues without a new batch.
+
 Each phase records requested and observed model/effort, usage, prompt and tool-output
 bytes and elapsed time. Exceeding a phase's soft budget (or missing usage telemetry)
 checkpoints the issue for explicit reconciliation (`recover budget`); resume does not

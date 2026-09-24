@@ -315,9 +315,54 @@ def attempt_usage(directory):
                 basis="cumulative-upper-bound" if bound else "delta")
 
 
+# The issue contract: what the runner was authorized to do and what the reviewer accepted.
+# Linear creates ``relatedTo`` links by itself whenever a description or comment mentions
+# another issue (including the runner's own comments), so related links are not scope.
+CONTRACT_FIELDS = ("id", "description", "projectId", "assigneeId", "projectMilestone")
+CONTRACT_RELATIONS = ("blocks", "blockedBy", "duplicateOf")
+
+
+def contract_fields(issue):
+    """The contract fields of ``issue``; relations are limited to CONTRACT_RELATIONS."""
+    relations = issue.get("relations") or {}
+    return dict({k: issue.get(k) for k in CONTRACT_FIELDS},
+                relations={k: relations.get(k) for k in CONTRACT_RELATIONS})
+
+
 def issue_contract(issue):
+    return hashlib.sha256(json.dumps(contract_fields(issue), sort_keys=True).encode()).hexdigest()
+
+
+def legacy_issue_contract(issue):
+    """The contract hash runner versions before W-194 pinned: the whole ``relations`` object,
+    related links included. Used only to check a stored hash against its intake snapshot."""
     return hashlib.sha256(json.dumps({k: issue.get(k) for k in
         ("id", "description", "projectId", "assigneeId", "projectMilestone", "relations")}, sort_keys=True).encode()).hexdigest()
+
+
+def pinned_contract(active):
+    """The pinned contract of ``active`` under the current field set.
+
+    It is recomputed from the stored intake snapshot (``active["issue"]``) rather than taken
+    from the stored hash, so state pinned by an older runner (whose hash included related
+    links) is compared with the same field set as the live issue. The stored hash must still
+    match that snapshot under the current or the legacy formula; otherwise the snapshot is
+    not the one that was pinned and nothing is compared.
+    """
+    snapshot = active["issue"]
+    current = issue_contract(snapshot)
+    if active.get("contract") not in (current, legacy_issue_contract(snapshot)):
+        raise RuntimeError("The saved intake snapshot does not match its pinned contract hash (the scope record "
+                           "changed outside the runner); reconcile intake")
+    return current
+
+
+def contract_matches(live, active):
+    """The live issue still has the pinned contract; at ``publish``/``done`` its published
+    form (ticked checklist, ``[x]``/``[X]``) matches too."""
+    if issue_contract(live) == pinned_contract(active):
+        return True
+    return active["step"] in ("publish", "done") and published_contract_matches(live, active["issue"])
 
 
 def published_issue(issue):
@@ -1347,9 +1392,11 @@ class Runner:
             self.save(active=active, phase="implementing")
         live = self.linear.issue(issue)
         self.verify_issue(live)
-        if (issue_contract(live) != active["contract"] and not
-                (active["step"] in {"publish", "done"} and published_contract_matches(live, active["issue"]))):
-            raise RuntimeError("Issue scope/dependencies/ownership changed; reconcile intake")
+        if not contract_matches(live, active):
+            raise RuntimeError("Issue scope/dependencies/ownership changed; reconcile intake"
+                               + ("" if active["step"] not in ("publish", "done") else
+                                  " (if only fields outside the accepted criteria and scope changed, "
+                                  "`recover publish --accept-contract-drift` re-pins it)"))
         self.verify_live_state(live, active["step"])
         if active["step"] == "implement":
             self.emit(issue, "claim", messages.claim(
@@ -1443,7 +1490,7 @@ class Runner:
         if active["step"] == "publish":
             self.check_gates(); self.verify_frozen(active); self.verify_contract(active)
             live = self.linear.issue(issue); self.verify_issue(live)
-            if issue_contract(live) != active["contract"] and not published_contract_matches(live, active["issue"]):
+            if not contract_matches(live, active):
                 raise RuntimeError("Acceptance scope changed since intake")
             validate_review_result(active["accepted_result"], active["issue"], active["commit"])
             published = published_issue(active["issue"])

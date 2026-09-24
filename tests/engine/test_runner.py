@@ -528,6 +528,71 @@ class EngineTests(unittest.TestCase):
         for before, after in [("Prose X", "Prose x"), ("Example `[X]`", "Example `[x]`")]:
             self.assertFalse(published_contract_matches(dict(live, description=after), dict(original, description=before)))
 
+    # --- The issue contract: scope fields only, related links excluded -------------
+
+    RELATED = [{"id": "OTHER-7", "title": "An unrelated issue that mentions this one"}]
+
+    def test_related_links_are_not_part_of_the_contract(self):
+        issue = dict(copy.deepcopy(self.linear.data), relations={"blocks": [], "blockedBy": [{"id": "PRE-1"}],
+                                                                 "duplicateOf": None})
+        pinned = issue_contract(issue)
+        for related in (self.RELATED, self.RELATED + [{"id": "OTHER-8", "title": "a comment mention"}], []):
+            with self.subTest(related=related):
+                self.assertEqual(issue_contract(dict(issue, relations=dict(issue["relations"], relatedTo=related))),
+                                 pinned)
+        removed = dict(issue, relations={k: v for k, v in issue["relations"].items()})
+        self.assertEqual(issue_contract(removed), pinned)
+        changes = {"blocks": [{"id": "NEXT-1"}], "blockedBy": [], "duplicateOf": {"id": "DUP-1"}}
+        for relation, value in changes.items():
+            with self.subTest(relation=relation):
+                self.assertNotEqual(issue_contract(dict(issue, relations=dict(issue["relations"], **{relation: value}))),
+                                    pinned)
+        for field, value in {"description": "- [ ] Produce other output", "projectMilestone": {"id": "later"},
+                             "projectId": "other", "assigneeId": "someone", "id": "DEV-2"}.items():
+            with self.subTest(field=field):
+                self.assertNotEqual(issue_contract(dict(issue, **{field: value})), pinned)
+        # Fields outside the contract (title, labels, status) never change it.
+        self.assertEqual(issue_contract(dict(issue, title="Renamed", labels=["Maintenance"], status="Done")), pinned)
+        live = published_issue(dict(issue, relations=dict(issue["relations"], relatedTo=self.RELATED)))
+        self.assertTrue(published_contract_matches(live, issue))
+
+    def test_state_pinned_with_related_links_verifies_against_the_snapshot(self):
+        # State written by an older runner: the stored hash covered the whole relations object.
+        from linear_runner.engine.runner import legacy_issue_contract, pinned_contract
+        self.linear.data["relations"] = {"blocks": [], "blockedBy": [], "relatedTo": list(self.RELATED),
+                                         "duplicateOf": None}
+        original = self.linear.call
+        def interrupted(name, **args):
+            if args.get("state") == "Done":
+                raise RuntimeError("interrupted write")
+            return original(name, **args)
+        self.linear.call = interrupted
+        with self.assertRaisesRegex(RuntimeError, "interrupted write"):
+            self.runner.execute(limit=1)
+        self.linear.call = original
+        active = self.runner.state["active"]
+        self.assertEqual(active["step"], "publish")
+        active["contract"] = legacy_issue_contract(active["issue"])
+        self.runner.save()
+        # Linear adds a related link (a new issue or a comment mentions this one).
+        self.linear.data["relations"]["relatedTo"].append({"id": "OTHER-8", "title": "Filed later"})
+        self.assertNotEqual(legacy_issue_contract(self.linear.data), active["contract"])  # the old check failed here
+        self.assertEqual(pinned_contract(active), issue_contract(self.linear.data))
+        # A snapshot that matches neither formula is not trusted.
+        tampered = dict(active, issue=dict(active["issue"], description="- [ ] Something else"))
+        with self.assertRaisesRegex(RuntimeError, "does not match its pinned contract hash"):
+            pinned_contract(tampered)
+        # A substantive change still stops, then the paused publication completes without a model.
+        self.linear.others["NEW-1"] = {"id": "NEW-1", "statusType": "completed"}
+        self.linear.data["relations"]["blockedBy"] = [{"id": "NEW-1"}]
+        with self.assertRaisesRegex(RuntimeError, "scope/dependencies/ownership changed"):
+            self.runner.execute(limit=1, resume=True)
+        self.linear.data["relations"]["blockedBy"] = []
+        self.runner.execute(limit=1, resume=True)
+        self.assertEqual(self.calls, ["implement", "review"])
+        self.assertEqual(self.linear.data["statusType"], "completed")
+        self.assertEqual(len(self.runner.state["history"]), 1)
+
     def test_readback_mismatch_blocks_advancement(self):
         original = self.linear.call
         def dropped(name, **args):

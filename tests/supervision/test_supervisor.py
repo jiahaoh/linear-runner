@@ -513,6 +513,36 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         self.assertEqual(self.linear.data["statusType"], "completed")
         self.assertTrue((self.state_dir / "lifecycle" / "DEV-1" / "readback.json").is_file())
 
+    def pause_at_publish(self):
+        """Run DEV-1 to acceptance, then fail the Done write: the batch pauses at publish."""
+        original = self.linear.call
+        def interrupted(name, **args):
+            if args.get("state") == "Done":
+                raise RuntimeError("interrupted write")
+            return original(name, **args)
+        self.linear.call = interrupted
+        self.launch()
+        self.linear.call = original
+        self.assertEqual(self.state()["active"]["step"], "publish")
+
+    def test_paused_batch_pinned_with_related_links_publishes_without_a_new_batch(self):
+        # The canary shape: state pinned by an older runner, whose contract hash covered the
+        # related links, then Linear added a related link while the batch was paused.
+        self.linear.data["relations"] = {"blocks": [], "blockedBy": [], "duplicateOf": None,
+                                         "relatedTo": [{"id": "DEV-3", "title": "Terminal issue"}]}
+        self.pause_at_publish()
+        path = self.state_dir / "state.json"
+        state = json.loads(path.read_text())
+        state["active"]["contract"] = runner_module.legacy_issue_contract(state["active"]["issue"])
+        path.write_text(json.dumps(state))
+        self.linear.data["relations"]["relatedTo"].append({"id": "DEV-9", "title": "Filed later, mentions DEV-1"})
+        self.recover("publish", then="stop")
+        before = list(self.calls)
+        entry = self.launch()
+        self.assertEqual((entry["started"]["outcome"], self.calls, self.done()), ("checkpoint", before, ["DEV-1"]))
+        self.assertEqual(self.linear.data["statusType"], "completed")
+        self.assertTrue((self.state_dir / "lifecycle" / "DEV-1" / "readback.json").is_file())
+
     def test_resume_blocked_worker_with_recorded_note(self):
         self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
         self.launch()
