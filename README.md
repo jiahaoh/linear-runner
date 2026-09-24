@@ -533,7 +533,20 @@ subsets; a missing counter is unknown, never zero; an unfinished invocation is l
 and not counted. An attempt that follows an attempt of the same session without a counter (a
 failed turn) has only an upper bound for its delta: the attempts table shows it as `≤ N` and
 the JSON gives `usage_basis: "cumulative-upper-bound"` (`measure` marks its "input added" the
-same way); the session's counter still counts once in the totals. The `--check-*` options compare against recorded totals field by field. At
+same way); the session's counter still counts once in the totals. Tool calls are the CLI's
+completed tool calls (failed ones are a subset).
+
+**Totals and marks.** The report tables and the runner's run summary comments (see "Linear
+updates") compute totals with one function (`trajectory.totals`), so they show the same
+figures. A total is the sum of what the attempts reported, and it is exact only when every
+attempt in it reported the figure. Otherwise it is shown as `≥ N`: at least N, because an
+attempt reported nothing and may have used more. An attempt's own `≤ N` does not make a total
+an upper bound: its excess can only be usage that the counterless attempt before it did not
+report, and that attempt is part of the same total, so the total never over-counts (a
+total is `≤ N` only if an upper-bound part had no counterless attempt beside it). Nothing
+known is "unknown" in the report and "—" in comments, never zero. The JSON keeps each
+issue's `usage` (null when a session had no counter) and adds `totals`, each figure as
+`{value, bound}` with `bound` `exact`, `lower-bound` or `upper-bound`. The `--check-*` options compare against recorded totals field by field. At
 every terminal outcome the supervisor also writes `terminal-trajectory.{json,md,html}` next to
 the terminal report from the batch's run directories; a rendering failure is logged and never
 blocks the terminal report.

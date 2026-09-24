@@ -63,6 +63,25 @@ class TrajectoryTests(unittest.TestCase):
         self.assertEqual([p["attempt"] for p in self.result["pending"]], ["review-20260101T041000Z-0000003c"])
         self.assertIsNone(self.result["comparison"][1]["input_tokens"])
 
+    def test_totals_match_usage_and_mark_what_was_not_reported(self):
+        for summary in self.result["summaries"][:2]:  # every session of TEAM-1 and TEAM-2 reported
+            for key in records.USAGE_KEYS:
+                self.assertEqual(summary["totals"][key], {"value": summary["usage"][key], "bound": trajectory.EXACT})
+        team3 = self.result["summaries"][2]  # one counterless attempt, nothing known
+        self.assertEqual(team3["totals"]["input_tokens"], {"value": None, "bound": None})
+        complete, partial = self.result["comparison"]
+        self.assertEqual(complete["totals"]["input_tokens"], {"value": 4_030_000, "bound": trajectory.EXACT})
+        # TEAM-3 reported nothing: the group total is what was reported, as a lower bound.
+        self.assertEqual(partial["totals"]["input_tokens"], {"value": 4_030_000, "bound": trajectory.LOWER})
+        self.assertEqual(complete["totals"]["tool_calls"], {"value": 28, "bound": trajectory.EXACT})
+        self.assertEqual(partial["totals"]["tool_calls"], {"value": 28, "bound": trajectory.LOWER})
+        # Model plus executed check time (reused checks add nothing).
+        team2 = self.result["summaries"][1]
+        self.assertEqual(team2["totals"]["seconds"]["value"], 2_400.0 + 110.0)
+        markdown = trajectory.render_markdown(self.result)
+        self.assertIn("| with unknown | 3 | 8 | 6 | 5 | 3,720.0 | 185.0 | ≥ 4,030,000 |", markdown)
+        self.assertIn("| TEAM-3 | 1 | 1 | 0 | 300.0 | 300.0 | unknown | unknown | unknown |", markdown)
+
     def test_reused_checks_add_no_time_and_delivery_is_separate(self):
         team2 = next(s for s in self.result["summaries"] if s["issue"] == "TEAM-2")
         self.assertEqual(team2["validation_seconds"], 110.0)
@@ -151,6 +170,19 @@ class UpperBoundTests(unittest.TestCase):
         self.assertIn("upper bound", markdown)
         self.assertIn("≤ 1,602,748", trajectory.render_html(result))
 
+    def test_totals_are_a_lower_bound_never_an_upper_bound(self):
+        result = trajectory.from_roots(self.roots)
+        summary = result["summaries"][0]
+        # The counterless first attempt may have used more than its session's counter shows; the
+        # ≤ attempt's excess can only be that attempt's usage, so the total is at least the sum.
+        self.assertEqual(summary["totals"]["input_tokens"], {"value": 1_802_748, "bound": trajectory.LOWER})
+        self.assertEqual(summary["totals"]["input_tokens"]["value"], summary["usage"]["input_tokens"])
+        self.assertIn("| ≥ 1,802,748 | ≥ 1,649,392 | ≥ 42,173 | ≥ 23,663 |", trajectory.render_markdown(result))
+        rows = trajectory.run_summary(result, "TEAM-7")["rows"]
+        self.assertEqual([(r["stage"], r["input_tokens"]["value"], r["input_tokens"]["bound"]) for r in rows],
+                         [("Implement 1 (failed)", None, None), ("Implement 2", 1_602_748, trajectory.UPPER),
+                          ("Review", 200_000, trajectory.EXACT)])
+
     def test_measure_marks_the_upper_bound(self):
         from linear_runner.reporting import measure
         report = measure.measure(self.roots)
@@ -159,6 +191,18 @@ class UpperBoundTests(unittest.TestCase):
                          [("unavailable", None), ("cumulative-upper-bound", 1_602_748), ("delta", 200_000)])
         self.assertEqual(report["totals"]["input_added_upper_bound_phases"], ["implement"])
         self.assertIn("≤ 1,602,748", measure.render_markdown(report))
+
+
+class FigureTests(unittest.TestCase):
+    def test_add_marks_totals(self):
+        f, add = trajectory.figure, trajectory.add
+        self.assertEqual(add([f(1), f(2)]), f(3))
+        self.assertEqual(add([f(1), f(None)]), f(1, trajectory.LOWER))
+        self.assertEqual(add([f(1, trajectory.LOWER), f(2)]), f(3, trajectory.LOWER))
+        self.assertEqual(add([f(5, trajectory.UPPER), f(None), f(2)]), f(7, trajectory.LOWER))
+        self.assertEqual(add([f(5, trajectory.UPPER), f(2)]), f(7, trajectory.UPPER))
+        self.assertEqual(add([f(None), f(None)]), {"value": None, "bound": None})
+        self.assertEqual(add([]), {"value": None, "bound": None})
 
 
 if __name__ == "__main__":

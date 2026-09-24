@@ -97,6 +97,11 @@ def delta_basis(item, gap):
     return UPPER_BOUND if gap and not item.get("invocation_scoped") else "delta"
 
 
+def _count(value):
+    """A recorded count, or ``None`` when it was not recorded (never 0 for missing)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def read_invocation(path):
     meta = read_json(path)
     located = locate(path)
@@ -127,6 +132,8 @@ def read_invocation(path):
         "compact_token_limit": meta.get("compact_token_limit"),
         "counter": counter_of(meta),
         "invocation_scoped": bool((meta.get("execution_evidence") or {}).get("invocation_usage_events")),
+        "tool_calls": _count((meta.get("execution_evidence") or {}).get("completed_tool_calls")),
+        "failed_tool_calls": _count((meta.get("execution_evidence") or {}).get("failed_tool_calls")),
         "source": str(path), "sha256": sha256(path), "copies": [],
     }
 
