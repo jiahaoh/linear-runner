@@ -138,27 +138,45 @@
       }
     },
     "model_overrides": {
-      "description": "Explicit pool entries per issue and phase: <model> or <model>@<effort>. The entry must be in the issue's pool for that phase (registry pools); preflight fails otherwise.",
+      "description": "Pool entries named by the batch, per phase: <model> or <model>@<effort>. Batch-wide values apply to every issue; issues.<id> values win over them, and both win over issue labels. Each must be in that phase's pool for the issue (registry pools); preflight fails otherwise.",
       "type": "object",
-      "propertyNames": {
-        "$ref": "#/$defs/issue"
-      },
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "minProperties": 1,
-        "properties": {
-          "implement": {
-            "type": "string",
-            "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+      "additionalProperties": false,
+      "properties": {
+        "implement": {
+          "type": "string",
+          "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+        },
+        "repair": {
+          "type": "string",
+          "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+        },
+        "review": {
+          "type": "string",
+          "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+        },
+        "issues": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/issue"
           },
-          "repair": {
-            "type": "string",
-            "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
-          },
-          "review": {
-            "type": "string",
-            "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "implement": {
+                "type": "string",
+                "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+              },
+              "repair": {
+                "type": "string",
+                "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+              },
+              "review": {
+                "type": "string",
+                "pattern": "^[^\\s@]+(@[^\\s@]+)?$"
+              }
+            }
           }
         }
       }

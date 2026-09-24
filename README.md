@@ -56,7 +56,6 @@ the checkout root, which is also `${runner_root}`.
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
-| `examples/draft-pools/` | DRAFT model pools (W-190) as a private-registry overlay; not loaded unless copied into `<home>/registry/` |
 | `prompts/` | Generic worker guidance |
 | `testdata/` | Fictional runner records for the renderer and measurement tests |
 | `tests/` | Offline tests, laid out like the package (`tests/engine/`, `tests/backends/`, ...); shared fixtures in `tests/fixtures.py`; `tests/test_public_tree.py` fails on private identifiers in any tracked file |
@@ -186,19 +185,38 @@ A task-kind pool replaces the `*` pool of the same profile and phase; `*` must c
 profile and phase. The profile comes from `profiles.json` as before (issue label, phase
 override, review floor, low-risk review, escalation).
 
-* The first entry is the default. Another entry runs only when it is named: an issue label
-  `model:<model>` or `model:<model>@<effort>` (for implement and repair; the review stays on
-  its own pool), or the batch's `model_overrides`, e.g.
-  `{"DEV-7": {"implement": "claude-opus-5-5", "review": "gpt-6-astra@high"}}`.
-* A named entry must be in that phase's pool; otherwise preflight fails before the claim.
-  Two `model:` labels, or a label that conflicts with the batch, also fail. A model is never
-  substituted, and Claude's `--fallback-model` is never used.
-* The single escalation uses the escalation profile's (Deep) pool for the same task kind and
-  phase: the named entry if that pool has it, else its first entry.
-* Each `session.json` records `backend`, `selection` (pool, pool index, `model_source`: pool
-  default, issue label or batch) and `backend_details`; the claim comment names the backend.
+Every phase (implement, repair, review) has its own pool and default, and the same override
+mechanism. `<name>` is `<model>` or `<model>@<effort>`:
+
+* Issue labels `implement-model:<name>`, `repair-model:<name>`, `review-model:<name>`, and the
+  shorthand `model:<name>` for implement and repair; a phase label wins over the shorthand.
+* The batch's `model_overrides`, batch-wide per phase and per issue, wins over labels (per
+  issue before batch-wide): `{"review": "claude-opus-5-5", "issues": {"TEAM-1": {"implement":
+  "gpt-6-luna"}}}`.
+* The first entry is the default. A named entry must be in that phase's pool (after review
+  floors); otherwise preflight fails before the claim. Nothing is substituted, and Claude's
+  `--fallback-model` is never used. The same model may implement and review.
+* The single escalation uses the Deep pool of the same task kind and phase: it keeps a named
+  model the Deep pool has (at the Deep pool's effort), otherwise the Deep default.
+* Each `session.json` records `backend`, `selection` (pool, pool index, `model_source`, and
+  lower-precedence names in `shadowed_requests`) and `backend_details`.
 * A worker session cannot move between CLIs: when repair or escalation selects another
   backend, the next phase starts a fresh session seeded with a handoff.
+
+Settled pools (first entry is the default; Claude runs only when named until the W-191 canary):
+
+| Profile | Implement / repair | Review |
+| --- | --- | --- |
+| Deep | gpt-6-astra high, claude-opus-5-5 high | gpt-6-astra high, claude-opus-5-5 high |
+| Standard (Research, Validation) | gpt-6-astra medium, claude-opus-5-5 medium | gpt-6-astra medium, claude-opus-5-5 medium |
+| Standard (Implementation, Maintenance) | gpt-6-luna max, claude-opus-5-5 medium | gpt-6-astra medium, claude-opus-5-5 medium |
+| Economy | gpt-6-luna max, claude-opus-5-5 medium | gpt-6-luna max, claude-sonnet-5 medium (low-risk review only) |
+
+Review floors still apply (Research, Validation and Deep issues are reviewed from the Deep
+pool). Claude needs `site.executables.claude` when a default entry or a batch override uses it;
+an issue label naming Claude on a site without it fails preflight. Adding the executable to a
+site changes the configuration fingerprint of its batches, so a paused batch then needs
+`recover repin-config`.
 
 | | Codex (`codex exec`) | Claude Code (`claude -p`) |
 | --- | --- | --- |

@@ -41,14 +41,17 @@ class LayeredConfigTests(unittest.TestCase):
     def test_settled_registry_values(self):
         policy, sources, _ = config.load_registry(self.root / "no-home")
         self.assertEqual(policy["labels"]["task_kinds"], ["Research", "Implementation", "Validation", "Maintenance"])
-        # The single mappings of earlier batches are each pool's only (first) entry.
-        firsts = {profile: config.pool_for(policy, "Implementation", profile, phase)[1][0]
-                  for profile in ("Deep", "Standard", "Economy") for phase in config.PHASES}
-        self.assertEqual(firsts, {"Deep": {"backend": "codex", "model": "gpt-6-astra", "effort": "high"},
-                                  "Standard": {"backend": "codex", "model": "gpt-6-astra", "effort": "medium"},
-                                  "Economy": {"backend": "codex", "model": "gpt-6-luna", "effort": "max"}})
-        self.assertEqual({len(entries) for kind in policy["pools"]["pools"].values() for phases in kind.values()
-                          for entries in phases.values()}, {1})
+        # Codex is every pool's default; Claude entries follow (named only).
+        firsts = {(kind, profile, phase): config.pool_for(policy, kind, profile, phase)[1][0]
+                  for kind in policy["labels"]["task_kinds"] for profile in ("Deep", "Standard", "Economy")
+                  for phase in config.PHASES}
+        self.assertEqual({e["backend"] for e in firsts.values()}, {"codex"})
+        self.assertEqual(firsts[("Research", "Deep", "review")]["model"], "gpt-6-astra")
+        self.assertEqual((firsts[("Implementation", "Standard", "implement")]["model"],
+                          firsts[("Implementation", "Standard", "implement")]["effort"]), ("gpt-6-luna", "max"))
+        self.assertEqual(firsts[("Validation", "Standard", "implement")]["effort"], "medium")
+        self.assertEqual({e["effort"] for _, _, e in config.pool_entries(policy) if e["model"] == "gpt-6-luna"}, {"max"})
+        self.assertFalse({"gpt-6-sol", "claude-fable-5-1"} & {e["model"] for _, _, e in config.pool_entries(policy)})
         self.assertNotIn("gpt-5.6-luna", policy["models"]["models"])
         self.assertEqual(policy["linear"]["states"], {"in_progress": "In Progress", "review": "In Review", "done": "Done"})
         phases = policy["phases"]

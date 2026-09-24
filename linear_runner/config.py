@@ -445,9 +445,15 @@ def load_config(batch_path, home=None):
         batch_label)
     check_compaction(policy, config["context_controls"])
     overrides = copy.deepcopy(batch.get("model_overrides", {}))
-    outside = sorted(set(overrides) - set(config["issues"]))
+    outside = sorted(set(overrides.get("issues", {})) - set(config["issues"]))
     if outside:
-        raise ConfigError(f"{batch_label}.model_overrides: {outside} not in the issue allowlist")
+        raise ConfigError(f"{batch_label}.model_overrides.issues: {outside} not in the issue allowlist")
+    named = [(f"{phase}", name) for phase, name in overrides.items() if phase != "issues"]
+    named += [(f"issues.{issue}.{phase}", name) for issue, phases in overrides.get("issues", {}).items()
+              for phase, name in phases.items()]
+    for where, name in named:
+        if name.partition("@")[0] not in policy["models"]["models"]:
+            raise ConfigError(f"{batch_label}.model_overrides.{where}: unknown model {name!r}")
     put("model_overrides", overrides, batch_label)
     if "worktree" in batch:
         put("worktree", str(_path(batch["worktree"], batch_path.parent, variables, f"{batch_label}.worktree")), batch_label)
@@ -566,9 +572,14 @@ def load_config(batch_path, home=None):
     put("codex", variables["codex"], site_label)
     if "claude" in variables:
         put("claude", variables["claude"], site_label)
-    used = sorted({entry["backend"] for _, _, entry in pool_entries(policy)})
-    if "claude" in used and "claude" not in variables:
-        raise ConfigError("site.executables.claude: registry pools use the claude backend, so the site must name its executable")
+    # Claude entries that run by default, or that the batch names, need the executable now;
+    # an issue label naming one fails preflight later if it is missing.
+    defaults = {entries[0]["backend"] for kind in policy["pools"]["pools"].values()
+                for phases in kind.values() for entries in phases.values()}
+    named = {policy["models"]["models"][name.partition("@")[0]]["backend"] for _, name in named}
+    if "claude" in defaults | named and "claude" not in variables:
+        raise ConfigError("site.executables.claude: a default pool entry or a batch model_overrides entry runs on "
+                          "the claude backend, so the site must name its executable")
     put("model_catalog", str(_path(site["model_catalog"], site_path.parent, builtins, "site.model_catalog")), site_label)
     put("artifact_root", str(_path(site["artifact_root"], site_path.parent, builtins, "site.artifact_root")), site_label)
     state_root = _path(site["state_root"], site_path.parent, builtins, "site.state_root")

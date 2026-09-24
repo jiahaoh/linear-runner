@@ -1,9 +1,12 @@
 {
   "notes": [
-    "Settled policy: the model/effort pairs used by earlier batches, one entry per pool (gpt-6-luna replaces gpt-5.6-luna).",
-    "pools[task kind or *][profile][phase] is an ordered list of {backend, model, effort}; * applies to every task kind and must cover every profile and phase, and a task-kind key replaces single pools.",
-    "The first entry is the default. Another entry runs only when the issue has the label model:<model> or model:<model>@<effort> (implement and repair) or the batch names it in model_overrides (any phase); it must be in that pool, otherwise preflight fails. No model is ever substituted.",
-    "The profile comes from profiles.json (issue label, phase override, review floor, low-risk review, escalation). An escalation uses the escalation profile's pool for the same task kind and phase: the named entry if that pool has it, else its first entry."
+    "Settled policy (W-190). pools[task kind or *][profile][phase] is an ordered list of {backend, model, effort}; * applies to every task kind and must cover every profile and phase, and a task-kind entry replaces the * pool of that profile and phase.",
+    "The first entry is each phase's default; Codex is first everywhere. Claude entries run only when named, until the Claude canary (W-191) has run.",
+    "Naming an entry: issue labels implement-model:<name>, repair-model:<name>, review-model:<name>, or model:<name> for implement and repair (a phase label wins over it); the batch model_overrides (per issue, then batch-wide) wins over labels. <name> is <model> or <model>@<effort>. A name outside that phase's pool fails preflight; nothing is substituted.",
+    "An escalation uses the Deep pool of the same task kind and phase: it keeps a named model that pool has (at the pool's effort), otherwise it uses the pool's first entry; the session records which.",
+    "Deep: gpt-6-astra high, then claude-opus-5-5 high. Standard: gpt-6-astra medium, then claude-opus-5-5 medium, except Implementation and Maintenance implement/repair, which use gpt-6-luna max, then claude-opus-5-5 medium. Economy: gpt-6-luna max, then claude-opus-5-5 medium; its review (reached only by the low-risk review rule) gpt-6-luna max, then claude-sonnet-5 medium.",
+    "Accepted cost trade-off: in the W-186 canary a gpt-6-luna max review used 876k input tokens in 336 s, more than the astra-medium implementation it reviewed (378k in 145 s); astra-medium reviews used 327-544k in 127-175 s. Luna stays at max effort.",
+    "Not in any pool for now: gpt-6-sol and claude-fable-5-1."
   ],
   "pools": {
     "*": {
@@ -13,6 +16,11 @@
             "backend": "codex",
             "model": "gpt-6-astra",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "high"
           }
         ],
         "repair": [
@@ -20,12 +28,22 @@
             "backend": "codex",
             "model": "gpt-6-astra",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "high"
           }
         ],
         "review": [
           {
             "backend": "codex",
             "model": "gpt-6-astra",
+            "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
             "effort": "high"
           }
         ]
@@ -36,6 +54,11 @@
             "backend": "codex",
             "model": "gpt-6-astra",
             "effort": "medium"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "repair": [
@@ -43,12 +66,22 @@
             "backend": "codex",
             "model": "gpt-6-astra",
             "effort": "medium"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "review": [
           {
             "backend": "codex",
             "model": "gpt-6-astra",
+            "effort": "medium"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
             "effort": "medium"
           }
         ]
@@ -59,6 +92,11 @@
             "backend": "codex",
             "model": "gpt-6-luna",
             "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "repair": [
@@ -66,6 +104,11 @@
             "backend": "codex",
             "model": "gpt-6-luna",
             "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "review": [
@@ -73,6 +116,67 @@
             "backend": "codex",
             "model": "gpt-6-luna",
             "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-sonnet-5",
+            "effort": "medium"
+          }
+        ]
+      }
+    },
+    "Implementation": {
+      "Standard": {
+        "implement": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
+          }
+        ],
+        "repair": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
+          }
+        ]
+      }
+    },
+    "Maintenance": {
+      "Standard": {
+        "implement": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
+          }
+        ],
+        "repair": [
+          {
+            "backend": "codex",
+            "model": "gpt-6-luna",
+            "effort": "max"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ]
       }

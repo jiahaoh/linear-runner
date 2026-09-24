@@ -106,31 +106,57 @@ RESULT_SCHEMA = {
 }
 
 
-# Worker phases an issue ``model:`` label applies to; the review follows its pool unless the
-# batch names a review entry (model_overrides), which keeps the reviewer independent.
-LABEL_PHASES = ("implement", "repair")
-
-
 def issue_labels(issue):
     return [v.get("name") if isinstance(v, dict) else v for v in issue.get("labels", [])]
 
 
+# Issue labels that name a pool entry: ``<phase>-model:<name>`` for one phase, and the
+# shorthand ``model:<name>`` for implement and repair (a phase label wins over it).
+MODEL_LABELS = {f"{phase}-{MODEL_LABEL}": (phase,) for phase in PHASES}
+MODEL_LABELS[MODEL_LABEL] = ("implement", "repair")
+_MODEL_LABEL = re.compile(r"^(?:([a-z]+)-)?model:(.*)$")
+
+
+def label_requests(issue):
+    """``{phase: (name, label)}`` from the issue's model labels (phase labels over the shorthand)."""
+    found = {}
+    for label in issue_labels(issue):
+        match = _MODEL_LABEL.match(label) if isinstance(label, str) else None
+        if not match:
+            continue
+        prefix = (match.group(1) + "-" if match.group(1) else "") + MODEL_LABEL
+        if prefix not in MODEL_LABELS:
+            raise RuntimeError(f"{issue['id']}: unknown model label {label!r}; use model:, implement-model:, "
+                               "repair-model: or review-model:")
+        if prefix in found:
+            raise RuntimeError(f"{issue['id']}: at most one {prefix}<name> label is allowed")
+        found[prefix] = (match.group(2).strip(), label)
+    requests = {}
+    for prefix in (MODEL_LABEL, *(p for p in MODEL_LABELS if p != MODEL_LABEL)):  # shorthand first, then overridden
+        if prefix in found:
+            for phase in MODEL_LABELS[prefix]:
+                requests[phase] = found[prefix]
+    return requests
+
+
 def requested_model(config, issue, phase):
-    """``(name, source)`` of an explicitly named pool entry for ``phase``, else ``(None, None)``."""
-    names = [label[len(MODEL_LABEL):].strip() for label in issue_labels(issue)
-             if isinstance(label, str) and label.startswith(MODEL_LABEL)]
-    if len(names) > 1:
-        raise RuntimeError(f"{issue['id']}: at most one {MODEL_LABEL}<name> label is allowed; found {len(names)}")
-    label = names[0] if names and phase in LABEL_PHASES else None
-    batch = ((config.get("model_overrides") or {}).get(issue["id"]) or {}).get(phase)
-    if label and batch and label != batch:
-        raise RuntimeError(f"{issue['id']}: label {MODEL_LABEL}{label} conflicts with the batch model_overrides "
-                           f"{phase} entry {batch!r}")
-    if batch:
-        return batch, "batch model_overrides"
-    if label:
-        return label, f"issue label {MODEL_LABEL}{label}"
-    return None, None
+    """``(name, source, shadowed)``: the explicitly named pool entry for ``phase`` and where it
+    came from, by precedence: batch per-issue, batch-wide, issue phase label, issue ``model:``
+    label; ``shadowed`` lists lower-precedence names that were not used. ``(None, None, [])``
+    when nothing is named."""
+    overrides = config.get("model_overrides") or {}
+    candidates = []
+    per_issue = ((overrides.get("issues") or {}).get(issue["id"]) or {}).get(phase)
+    if per_issue:
+        candidates.append((per_issue, f"batch model_overrides.issues.{issue['id']}.{phase}"))
+    if overrides.get(phase):
+        candidates.append((overrides[phase], f"batch model_overrides.{phase}"))
+    labelled = label_requests(issue).get(phase)
+    if labelled:
+        candidates.append((labelled[0], f"issue label {labelled[1]}"))
+    if not candidates:
+        return None, None, []
+    return candidates[0][0], candidates[0][1], [f"{name} ({source})" for name, source in candidates[1:]]
 
 
 def resolve_profile(config, issue, phase, escalation=None, light=None):
@@ -140,9 +166,10 @@ def resolve_profile(config, issue, phase, escalation=None, light=None):
     ``light`` is the lighter review profile allowed by the low-risk review rule (see
     ``Runner.review_risk``); it replaces the issue's profile and the default review floor, but
     the task-kind and profile floors still apply, and an escalation ignores it. A named entry
-    must be in the pool (RuntimeError otherwise; never substituted), except that an escalation
-    uses the escalation pool's first entry when that pool lacks it, and a batch-named review
-    entry missing from the lighter pool keeps the normal review.
+    must be in the phase's pool (RuntimeError otherwise; never substituted). An escalation
+    keeps the named model when the escalation pool has it (at that pool's effort) and
+    otherwise uses the pool's first entry; a named review entry missing from the lighter pool
+    keeps the normal review.
     """
     policy = config["policy"]
     routing = policy["profiles"]
@@ -151,7 +178,7 @@ def resolve_profile(config, issue, phase, escalation=None, light=None):
     profiles = [v for v in policy["labels"]["profiles"] if v in labels]
     if len(types) != 1 or len(profiles) != 1:
         raise RuntimeError(f"{issue['id']}: require exactly one task-type and execution-profile label")
-    requested, source = requested_model(config, issue, phase)
+    requested, source, shadowed = requested_model(config, issue, phase)
     if phase == "review" and light and not escalation and requested:
         _, light_pool = pool_for(policy, types[0], light, phase)
         if match_entry(light_pool, requested) is None:
@@ -170,21 +197,24 @@ def resolve_profile(config, issue, phase, escalation=None, light=None):
         lighter = bool(light and not escalation and selected == light)
     key, pool = pool_for(policy, types[0], selected, phase)
     index, model_source = 0, "pool default"
-    if requested:
+    if requested and escalation:
+        # Keep the named model if the escalation pool has it (at that pool's effort).
+        index = match_entry(pool, requested.partition("@")[0])
+        model_source = (f"{source}, kept in the escalation pool" if index is not None else
+                        f"escalation pool default ({source} names {requested!r}, which that pool does not have)")
+        index = index or 0
+    elif requested:
         index = match_entry(pool, requested)
-        if index is not None:
-            model_source = source
-        elif escalation:
-            index, model_source = 0, f"pool default ({source} names {requested!r}, not in the escalation pool)"
-        else:
+        if index is None:
             raise RuntimeError(f"{issue['id']}: {source} names {requested!r}, which is not in the {key} model pool "
                                f"[{', '.join(entry_name(e) for e in pool)}]; name an entry of that pool or remove it "
                                "(no substitution)")
+        model_source = source
     value = pool[index]
     return {"task_type": types[0], "issue_profile": profiles[0], "profile": selected,
             "backend": value["backend"], "model": value["model"], "effort": value["effort"], "phase": phase,
             "pool": key, "pool_entries": [f"{e['backend']}:{entry_name(e)}" for e in pool], "pool_index": index,
-            "model_source": model_source, "requested_entry": requested,
+            "model_source": model_source, "requested_entry": requested, "shadowed_requests": shadowed,
             "routing_version": routing["routing_version"],
             "selection_source": "escalation" if escalation else "low-risk review rule" if lighter else
                 "approved phase override/review floor" if phase in overrides or selected != profiles[0] else "issue labels"}

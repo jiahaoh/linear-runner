@@ -18,11 +18,28 @@ def write(path, value):
     return path
 
 
+# Task-kind pools of the public registry (Standard implement/repair). A private override is
+# deep-merged, so test registries restate them to keep the ``*`` pools in effect.
+KIND_POOLS = ("Implementation", "Maintenance")
+
+
+def set_pools(registry, profile, phases):
+    """Set ``*`` pools of ``profile`` ({phase: entries}) and restate them for KIND_POOLS."""
+    pools = registry["pools"]["pools"]
+    pools["*"][profile] = {phase: list(entries) for phase, entries in phases.items()}
+    if profile == "Standard":
+        for kind in KIND_POOLS:
+            pools.setdefault(kind, {})["Standard"] = {p: list(phases[p]) for p in ("implement", "repair")}
+    return registry
+
+
 def pools_from(mapping, backend="codex"):
-    """A ``*`` pool registry with one entry per profile and phase: {profile: (model, effort)}."""
-    return {"pools": {"*": {profile: {phase: [{"backend": backend, "model": model, "effort": effort}]
-                                      for phase in ("implement", "repair", "review")}
-                            for profile, (model, effort) in mapping.items()}}}
+    """A pool registry with one entry per profile and phase: {profile: (model, effort)}."""
+    registry = {"pools": {"pools": {"*": {}}}}
+    for profile, (model, effort) in mapping.items():
+        set_pools(registry, profile, {phase: [{"backend": backend, "model": model, "effort": effort}]
+                                      for phase in ("implement", "repair", "review")})
+    return registry["pools"]
 
 
 # Small private-registry override used by engine tests: fake model IDs and tiny budgets.

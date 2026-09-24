@@ -12,7 +12,7 @@ import unittest
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import Runner, git, resolve_profile, usage_totals
 from linear_runner.linear.attention import classify_stop
-from tests.fixtures import TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, make_home
+from tests.fixtures import TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, make_home, set_pools
 from tests.linear.test_updates import GOOD_PROGRESS
 
 OPUS_MEDIUM = {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
@@ -24,9 +24,8 @@ def claude_registry(deep=(OPUS_HIGH, ASTRA_HIGH)):
     registry = copy.deepcopy(TEST_REGISTRY)
     registry["models"]["models"]["claude-opus-5-5"] = {"backend": "claude", "efforts": ["medium", "high"]}
     registry["profiles"]["phase_overrides"] = {}
-    star = registry["pools"]["pools"]["*"]
-    star["Standard"] = {phase: [OPUS_MEDIUM] for phase in ("implement", "repair", "review")}
-    star["Deep"] = {phase: list(deep) for phase in ("implement", "repair", "review")}
+    set_pools(registry, "Standard", {phase: [OPUS_MEDIUM] for phase in ("implement", "repair", "review")})
+    set_pools(registry, "Deep", {phase: list(deep) for phase in ("implement", "repair", "review")})
     return registry
 
 
