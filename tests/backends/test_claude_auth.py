@@ -21,7 +21,7 @@ from linear_runner.linear.attention import classify_stop
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch
 from linear_runner.supervision.supervisor import supervise
 from tests.engine.test_claude_engine import claude_registry
-from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home
+from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home, fake_codex
 from tests.supervision.test_supervisor import Harness
 
 TOKEN = "fake-oauth-token-never-recorded"
@@ -273,7 +273,7 @@ class TokenReachesOnlyTheChildTests(Fixture):
             project = {"checks": [{"name": "output", "kind": "code", "tier": "default", "inputs": ["result.txt"],
                                    "cwd": ".", "command": [sys.executable, "-c", check_script]}]}
         self.home, self.batch = make_home(self.root, self.repo, registry=claude_registry(), project=project,
-                                          site={"executables": {"codex": "codex", "claude": str(executable),
+                                          site={"executables": {"codex": str(fake_codex(self.root)[0]), "claude": str(executable),
                                                                 "python": sys.executable},
                                                 "claude": {"auth": auth}})
 

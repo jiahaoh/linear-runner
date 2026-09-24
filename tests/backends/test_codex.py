@@ -9,7 +9,8 @@ import unittest
 
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import RESULT_SCHEMA, Runner, write_json
-from tests.fixtures import FakeLinear, TEST_REGISTRY, make_home
+from linear_runner.backends.codex import CodexBackend
+from tests.fixtures import FakeLinear, TEST_REGISTRY, fake_codex, make_home
 
 
 class CodexCommandTests(unittest.TestCase):
@@ -126,3 +127,22 @@ class CompactionArgvTests(unittest.TestCase):
         for bad in (10, "150000"):
             with self.assertRaises(ConfigError):
                 self.runner({"compact_token_limit": bad})
+
+
+class CodexIdentityTests(unittest.TestCase):
+    """What identifies the installed CLI (local commands only) with the fake executable."""
+
+    def test_version_line_and_login_mode_without_the_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executable, _ = fake_codex(tmp)
+            backend = CodexBackend({"codex": str(executable)})
+            self.assertEqual((backend.executable, backend.version_text()), (str(executable), "codex-cli 0.156.1"))
+            self.assertEqual(backend.auth_identity(), {"mode": "ChatGPT"})
+            fake_codex(tmp, version="0.157.0", login="Logged in using an API key - sk-proj-***xyz")
+            self.assertEqual(backend.version_text(), "codex-cli 0.157.0")
+            self.assertEqual(backend.auth_identity(), {"mode": "an API key"})
+            fake_codex(tmp, login="Not logged in")
+            self.assertEqual(backend.auth_identity(), {"mode": "not logged in"})
+        with self.assertRaisesRegex(RuntimeError, "Codex CLI unavailable"):
+            CodexBackend({"codex": "/nonexistent/codex"}).version_text()
+

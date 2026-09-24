@@ -4,13 +4,17 @@ Everything Codex-specific lives here: sandbox/approval flags for writable and re
 sessions, ``resume``, the model and ``model_reasoning_effort`` selection, the optional
 ``model_auto_compact_token_limit``, disabling the Linear MCP server (the controller owns
 every Linear read and write), ``--output-schema`` and ``-o`` for the structured result,
-the ``--json`` event stream (``thread.started``, ``turn.completed``, ``item.completed``)
-and the host CLI model catalog (``site.model_catalog``, normally ``models_cache.json``).
+the ``--json`` event stream (``thread.started``, ``turn.completed``, ``item.completed``),
+the host CLI model catalog (``site.model_catalog``, normally ``models_cache.json``) and what
+identifies the installed CLI for the launch start check (``--version``, ``login status``).
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
 
 from linear_runner.config import read_json
 
@@ -55,6 +59,33 @@ class CodexBackend:
     def __init__(self, config):
         # The resolved configuration: ``codex`` (the executable), ``artifact_root`` and ``model_catalog``.
         self.config = config
+
+    @property
+    def executable(self):
+        return self.config["codex"]
+
+    # --- The installed CLI (launch start check identity) ---------------------------------
+
+    def _local(self, *argv):
+        """A short local CLI command (no model call)."""
+        try:
+            return subprocess.run([self.executable, *argv], capture_output=True, text=True, timeout=60,
+                                  stdin=subprocess.DEVNULL, env=self.environment(dict(os.environ)))
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(f"Codex CLI unavailable: {error}") from None
+
+    def version_text(self):
+        """``codex --version`` (for example ``codex-cli 0.156.1``), or None."""
+        done = self._local("--version")
+        lines = (done.stdout or done.stderr or "").strip().splitlines()
+        return lines[0].strip() if done.returncode == 0 and lines else None
+
+    def auth_identity(self):
+        """How the CLI is logged in, from ``codex login status`` ("ChatGPT", "an API key"); never
+        the account or a key."""
+        done = self._local("login", "status")
+        match = re.search(r"Logged in using ([A-Za-z][A-Za-z ]*)", f"{done.stdout}\n{done.stderr}")
+        return {"mode": match.group(1).strip() if match else "not logged in"}
 
     # --- Model catalog ---------------------------------------------------------------
 

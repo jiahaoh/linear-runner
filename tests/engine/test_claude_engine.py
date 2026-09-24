@@ -12,7 +12,7 @@ import unittest
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import Runner, git, resolve_profile, usage_totals
 from linear_runner.linear.attention import classify_stop
-from tests.fixtures import TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, make_home, set_pools
+from tests.fixtures import TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, make_home, set_pools, fake_codex
 from tests.linear.test_updates import GOOD_PROGRESS
 
 OPUS_MEDIUM = {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
@@ -47,7 +47,7 @@ class ClaudeEngineTests(unittest.TestCase):
                                    "command": [sys.executable, "-c", "from pathlib import Path; "
                                                f"assert Path('result.txt').read_text() == {check!r}"]}]}
         home, batch = make_home(self.root, self.repo, registry=registry or claude_registry(), project=project,
-                                site={"executables": {"codex": "codex", "claude": str(executable), "python": sys.executable}})
+                                site={"executables": {"codex": str(fake_codex(self.root)[0]), "claude": str(executable), "python": sys.executable}})
         config, _ = pin_resolution(load_config(batch, home), self.linear)
         return Runner(config, self.linear)
 

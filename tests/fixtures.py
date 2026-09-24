@@ -53,15 +53,64 @@ TEST_REGISTRY = {
 }
 
 
+# A fake `codex` executable (no model or network): `--version` and `login status` from the plan,
+# and `exec` answers the launch start check (`{"ok": true}`) or, for other schemas, returns its
+# argv. Each `exec` call appends {argv, cwd} to the plan's "calls". Plan keys: version, login,
+# start_error (an error event + turn.failed, exit 1), stderr_error (stderr only, exit 1).
+FAKE_CODEX = r'''
+import json, os, pathlib, sys
+PLAN = pathlib.Path(__PLAN__)
+plan = json.loads(PLAN.read_text())
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex-cli " + plan.get("version", "0.156.1")); sys.exit(0)
+if args[:2] == ["login", "status"]:
+    print(plan.get("login", "Logged in using ChatGPT"), file=sys.stderr); sys.exit(0)
+sys.stdin.read()
+plan.setdefault("calls", []).append({"argv": args, "cwd": os.getcwd()})
+PLAN.write_text(json.dumps(plan))
+if plan.get("stderr_error"):
+    print(plan["stderr_error"], file=sys.stderr); sys.exit(1)
+print(json.dumps({"type": "thread.started", "thread_id": "fixture-thread-%d" % len(plan["calls"])}), flush=True)
+if plan.get("start_error"):
+    print(json.dumps({"type": "error", "message": plan["start_error"]}), flush=True)
+    print(json.dumps({"type": "turn.failed", "error": {"message": plan["start_error"]}}), flush=True)
+    sys.exit(1)
+schema = json.loads(pathlib.Path(args[args.index("--output-schema") + 1]).read_text())
+result = {"ok": True} if set(schema.get("properties", {})) == {"ok"} else {"argv": args}
+pathlib.Path(args[args.index("-o") + 1]).write_text(json.dumps(result))
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 12, "output_tokens": 3}}), flush=True)
+'''
+
+
+def fake_codex(root, **plan):
+    """Write the fake ``codex`` executable and its plan under ``root``; return (executable, plan path).
+    An existing plan is kept (its recorded calls too) unless ``plan`` values are given."""
+    root = Path(root)
+    path = root / "fake-codex-plan.json"
+    if plan or not path.exists():
+        write(path, dict(json.loads(path.read_text()) if path.exists() else {}, **plan))
+    executable = root / "fake-codex-cli"
+    executable.write_text(f"#!{sys.executable}\n" + FAKE_CODEX.replace("__PLAN__", repr(str(path))))
+    executable.chmod(0o755)
+    return executable, path
+
+
+def fake_codex_calls(path):
+    return json.loads(Path(path).read_text()).get("calls", [])
+
+
 def make_home(root, repo, *, registry=None, site=None, workspace=None, project=None, batch=None):
-    """Write site/workspace/project/batch layers under ``root/home``; return (home, batch path)."""
+    """Write site/workspace/project/batch layers under ``root/home``; return (home, batch path).
+    The site's ``codex`` is the fake executable (``fake_codex``): a launch preflight starts it."""
     root, home = Path(root), Path(root) / "home"
+    codex, _ = fake_codex(root)
     write(home / "guidance.md", "Implement a tiny fixture only.")
     write(root / "models.json", {"models": [{"slug": model, "supported_reasoning_levels": [{"effort": e} for e in ("medium", "high", "max")]}
                                             for model in ("astra", "luna")]})
     for name, value in (registry if registry is not None else TEST_REGISTRY).items():
         write(home / "registry" / f"{name}.json", value)
-    write(home / "site.json", dict({"executables": {"codex": "codex", "python": sys.executable},
+    write(home / "site.json", dict({"executables": {"codex": str(codex), "python": sys.executable},
                                     "state_root": str(root / "state"), "artifact_root": str(root / "runs"),
                                     "model_catalog": str(root / "models.json")}, **(site or {})))
     write(home / "workspaces" / "test.json", dict({"slug": "test", "auth": {"token_env": "TEST_LINEAR_TOKEN"},
@@ -176,7 +225,8 @@ class FakeLinear:
 # Step keys: write {relative: text} (in the cwd), outbox (a progress draft), acceptance (list
 # overriding the one built from the prompt), status, error (an API error result, exit 1),
 # auth_error (the W-191 "Failed to refresh OAuth token" error result, exit 1), usage (raw
-# Claude usage).
+# Claude usage). The launch start check (a `{"ok"}` schema) consumes no step: it is appended to
+# "start_checks" and fails with an error result when the plan has "start_error".
 FAKE_CLAUDE = r'''
 import json, os, pathlib, re, sys
 PLAN = pathlib.Path(__PLAN__)
@@ -196,6 +246,22 @@ if args[:2] == ["auth", "status"]:
 prompt = sys.stdin.read()
 def opt(name):
     return args[args.index(name) + 1] if name in args else None
+if set(json.loads(opt("--json-schema"))["properties"]) == {"ok"}:  # the launch start check
+    session = opt("--session-id")
+    plan.setdefault("start_checks", []).append({"argv": args, "cwd": os.getcwd(), "model": opt("--model"),
+                                                "effort": opt("--effort"), "oauth_token": token})
+    PLAN.write_text(json.dumps(plan))
+    def emit(event):
+        print(json.dumps(dict(event, session_id=session)), flush=True)
+    emit({"type": "system", "subtype": "init", "model": opt("--model"), "tools": [], "mcp_servers": []})
+    if plan.get("start_error"):
+        emit({"type": "result", "subtype": "success", "is_error": True, "terminal_reason": "api_error",
+              "result": plan["start_error"], "usage": {}, "modelUsage": {}})
+        sys.exit(1)
+    emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "structured_output": {"ok": True},
+          "usage": {"input_tokens": 3, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                    "output_tokens": 4}, "modelUsage": {opt("--model"): {}}})
+    sys.exit(0)
 log = plan.setdefault("log", [])
 step = plan.get("steps", [])[len(log)] if len(log) < len(plan.get("steps", [])) else {}
 session = opt("--resume") or opt("--session-id")

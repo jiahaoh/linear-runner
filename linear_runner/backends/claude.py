@@ -307,6 +307,24 @@ class ClaudeBackend:
     def version(self):
         return parse_version(self._probe("version", ["--version"])[1])
 
+    def version_text(self):
+        """``claude --version`` (for example ``2.1.281 (Claude Code)``), or None."""
+        code, text = self._probe("version", ["--version"])
+        lines = (text or "").strip().splitlines()
+        return lines[0].strip() if code == 0 and lines else None
+
+    def auth_identity(self):
+        """The auth mode and the token file path or variable name (see ``auth_reference``); for a
+        token file also its modification time, so a replaced token counts as a change. Never the
+        token or anything derived from it."""
+        record = auth_reference(self.config)
+        if record["mode"] == "oauth-token-file":
+            try:
+                record["token_file_mtime_ns"] = os.stat(record["oauth_token_file"]).st_mtime_ns
+            except OSError:
+                record["token_file_mtime_ns"] = None
+        return record
+
     @property
     def auth_mode(self):
         return auth_mode(self.config)

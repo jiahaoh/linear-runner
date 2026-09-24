@@ -13,7 +13,7 @@ from linear_runner.backends.claude import ClaudeBackend, normalized_usage
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import RESULT_SCHEMA, Runner, usage_totals, write_json
 from linear_runner.linear.attention import classify_stop
-from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home
+from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home, fake_codex
 
 SAMPLES = Path(__file__).resolve().parent / "claude_samples"
 
@@ -211,7 +211,7 @@ class SessionTests(unittest.TestCase):
     def runner(self, steps):
         executable, self.plan = fake_claude(self.root, steps)
         home, batch = make_home(self.root, self.repo, site={"executables": {
-            "codex": "codex", "claude": str(executable), "python": "python3"}})
+            "codex": str(fake_codex(self.root)[0]), "claude": str(executable), "python": "python3"}})
         config, _ = pin_resolution(load_config(batch, home), FakeLinear())
         return Runner(config, FakeLinear())
 

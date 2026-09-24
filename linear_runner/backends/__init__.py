@@ -9,6 +9,8 @@ process group, timeout, environment and PID in state), the outbox poll while it 
 A backend only knows its own CLI. It
 
 * declares what it can do (``capabilities``; see ``CAPABILITY_KEYS``);
+* identifies the installed CLI for the launch start check (``executable``, ``version_text``,
+  ``auth_identity``; see ``linear_runner.supervision.backend_start``);
 * checks that a selected model/effort is available (``check_selection``) and summarizes its
   catalog for launch preflight (``catalog_report``);
 * builds the argv that starts or resumes a session from a ``SessionRequest``: a prompt
@@ -66,6 +68,14 @@ class Backend(Protocol):
     name: str   # registry key
     label: str  # how errors and logs name the CLI, e.g. "Codex"
     capabilities: dict  # see CAPABILITY_KEYS
+
+    executable: str  # the configured CLI executable (a path or a name looked up on PATH)
+
+    def version_text(self) -> str | None:
+        """The CLI's own version line (a local command, no model call)."""
+
+    def auth_identity(self) -> dict:
+        """How the CLI authenticates (a mode, a file path or variable name); never a secret."""
 
     def check_selection(self, selection: dict) -> None:
         """Raise RuntimeError unless ``selection['model']``/``['effort']`` is available; never substitute."""
