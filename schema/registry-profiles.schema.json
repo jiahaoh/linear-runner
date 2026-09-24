@@ -100,7 +100,7 @@
       }
     },
     "review_routing": {
-      "description": "Optional risk-based review routing; review floors still apply.",
+      "description": "Low-risk review rule; a batch opts in with context_controls.low_risk_review. Review floors still apply.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -111,7 +111,6 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "enabled",
             "profile",
             "issue_profiles",
             "task_kinds",
@@ -122,9 +121,6 @@
             "gate_labels"
           ],
           "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
             "profile": {
               "$ref": "#/$defs/label"
             },

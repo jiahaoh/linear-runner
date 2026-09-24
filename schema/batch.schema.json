@@ -4,26 +4,87 @@
   "description": "Names the project, the ordered issue allowlist, gates and the dedicated branch. Policy comes from the registry, not the batch.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "project", "issues", "terminal_issue", "branch"],
+  "required": [
+    "id",
+    "project",
+    "issues",
+    "terminal_issue",
+    "branch"
+  ],
   "properties": {
-    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
-    "project": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
-    "issues": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
-    "terminal_issue": {"$ref": "#/$defs/issue"},
-    "branch": {"$ref": "#/$defs/text"},
-    "worktree": {"$ref": "#/$defs/text"},
-    "guidance_files": {"type": "array", "items": {"$ref": "#/$defs/text"}},
-    "required_done": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "issues": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "terminal_issue": {
+      "$ref": "#/$defs/issue"
+    },
+    "branch": {
+      "$ref": "#/$defs/text"
+    },
+    "worktree": {
+      "$ref": "#/$defs/text"
+    },
+    "guidance_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
+    "required_done": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
     "supervision": {
       "description": "Supervisor behavior for this queue: planned checkpoints, blocking policy, extra report destinations, decision rules and baseline checks.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "stop_after": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
-        "on_block": {"description": "Issue-level block without a matching rule: stop (default) pauses the batch; continue_independent defers the issue and continues with independent issues.", "enum": ["stop", "continue_independent"]},
-        "report_issues": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/issue"}},
-        "decision_rules": {"enum": ["honor", "ignore"]},
-        "baseline_checks": {"type": "boolean"}
+        "stop_after": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/issue"
+          }
+        },
+        "on_block": {
+          "description": "Issue-level block without a matching rule: stop (default) pauses the batch; continue_independent defers the issue and continues with independent issues.",
+          "enum": [
+            "stop",
+            "continue_independent"
+          ]
+        },
+        "report_issues": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/issue"
+          }
+        },
+        "decision_rules": {
+          "enum": [
+            "honor",
+            "ignore"
+          ]
+        },
+        "baseline_checks": {
+          "type": "boolean"
+        }
       }
     },
     "human_gates": {
@@ -31,18 +92,52 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["issue_id", "comment_id", "author_id", "approval_text"],
+        "required": [
+          "issue_id",
+          "comment_id",
+          "author_id",
+          "approval_text"
+        ],
         "properties": {
-          "issue_id": {"$ref": "#/$defs/issue"},
-          "comment_id": {"$ref": "#/$defs/text"},
-          "author_id": {"$ref": "#/$defs/text"},
-          "approval_text": {"$ref": "#/$defs/text"}
+          "issue_id": {
+            "$ref": "#/$defs/issue"
+          },
+          "comment_id": {
+            "$ref": "#/$defs/text"
+          },
+          "author_id": {
+            "$ref": "#/$defs/text"
+          },
+          "approval_text": {
+            "$ref": "#/$defs/text"
+          }
+        }
+      }
+    },
+    "context_controls": {
+      "description": "Per-batch opt-in context-cost controls (all off by default); part of the pinned, fingerprinted batch configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bounded_sessions": {
+          "description": "Continue long worker sessions in a fresh session from a handoff (thresholds in registry phases.bounded_sessions).",
+          "type": "boolean"
+        },
+        "low_risk_review": {
+          "description": "Allow the lighter review of registry profiles.review_routing.light_review for low-risk issues.",
+          "type": "boolean"
         }
       }
     }
   },
   "$defs": {
-    "text": {"type": "string", "minLength": 1},
-    "issue": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"}
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issue": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
   }
 }

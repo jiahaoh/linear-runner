@@ -45,19 +45,15 @@
       "$ref": "#/$defs/positive"
     },
     "bounded_sessions": {
-      "description": "Opt-in: continue worker phases in a fresh Codex session seeded with a handoff file instead of resuming a long session.",
+      "description": "Thresholds for bounded worker sessions; a batch opts in with context_controls.bounded_sessions.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "enabled",
         "input_threshold_tokens",
         "handoff_after_implement",
         "max_handoff_bytes"
       ],
       "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
         "input_threshold_tokens": {
           "$ref": "#/$defs/positive"
         },

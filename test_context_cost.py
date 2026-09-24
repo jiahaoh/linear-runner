@@ -111,7 +111,7 @@ class ReplayTests(unittest.TestCase):
 
 def bounded_registry(**settings):
     registry = copy.deepcopy(TEST_REGISTRY)
-    registry["phases"]["bounded_sessions"] = dict({"enabled": True, "input_threshold_tokens": 1000,
+    registry["phases"]["bounded_sessions"] = dict({"input_threshold_tokens": 1000,
                                                     "handoff_after_implement": True, "max_handoff_bytes": 4000},
                                                    **settings)
     return registry
@@ -123,6 +123,7 @@ class BoundedSessionTests(Harness):
                            "command": [sys.executable, "-c", "from pathlib import Path; "
                                        "assert Path('result.txt').read_text() == 'fixed'"]}]}
     REGISTRY = bounded_registry()
+    BATCH = {"context_controls": {"bounded_sessions": True}}
     FAILING_REPAIRS = 0
     WRITE_HANDOFF = True
 
@@ -253,12 +254,13 @@ class BelowThresholdTests(BoundedSessionTests):
 
 
 class DisabledTests(BoundedSessionTests):
-    REGISTRY = TEST_REGISTRY
+    # Thresholds are in the registry, but this batch does not opt in.
+    REGISTRY = bounded_registry(input_threshold_tokens=50)
+    BATCH = {}
 
     def test_default_off_resumes_and_asks_for_no_handoff(self):
-        self.assertFalse(json.loads((Path(__file__).resolve().parent / "registry" / "phases.json").read_text())
-                         ["bounded_sessions"]["enabled"])
-        self.run_issue()
+        runner = self.run_issue()
+        self.assertEqual(runner.config["context_controls"], {"bounded_sessions": False, "low_risk_review": False})
         self.assertEqual(self.phases(), [("implement", None), ("repair", "DEV-1-implement-1"), ("review", None)])
         self.assertNotIn("handoff.json", self.prompts[0])
 
@@ -266,7 +268,7 @@ class DisabledTests(BoundedSessionTests):
 def risk_registry(**settings):
     registry = copy.deepcopy(TEST_REGISTRY)
     registry["profiles"]["review_routing"] = {"light_review": dict({
-        "enabled": True, "profile": "Economy", "issue_profiles": ["Economy", "Standard"],
+        "profile": "Economy", "issue_profiles": ["Economy", "Standard"],
         "task_kinds": ["Maintenance", "Implementation"], "max_changed_files": 8, "max_changed_lines": 300,
         "max_repairs": 0, "opt_out_labels": ["Full review"], "gate_labels": ["Human gate"]}, **settings)}
     return registry
@@ -274,6 +276,7 @@ def risk_registry(**settings):
 
 class RiskBase(Harness):
     REGISTRY = risk_registry()
+    BATCH = {"context_controls": {"low_risk_review": True}}
 
     def review_selection(self, labels=None):
         if labels is not None:
@@ -331,6 +334,7 @@ class RiskLargeDiffTests(RiskBase):
 
 class RiskAfterRepairTests(BoundedSessionTests):
     REGISTRY = risk_registry()
+    BATCH = {"context_controls": {"low_risk_review": True}}
 
     def test_repaired_issue_keeps_the_normal_review(self):
         self.run_issue()
@@ -342,8 +346,8 @@ class RiskAfterRepairTests(BoundedSessionTests):
 
 
 class RiskGateRelationTests(RiskBase):
-    BATCH = {"human_gates": [{"issue_id": "GATE-1", "comment_id": "c1", "author_id": "owner",
-                              "approval_text": "approved"}]}
+    BATCH = dict(RiskBase.BATCH, human_gates=[{"issue_id": "GATE-1", "comment_id": "c1", "author_id": "owner",
+                                               "approval_text": "approved"}])
 
     def test_issue_blocked_by_a_human_gate_keeps_the_normal_review(self):
         self.linear.others["GATE-1"] = {"id": "GATE-1", "statusType": "completed"}
@@ -355,13 +359,30 @@ class RiskGateRelationTests(RiskBase):
 
 
 class RiskDefaultOffTests(Harness):
-    def test_registry_default_is_off(self):
+    def test_rule_is_in_the_registry_but_off_unless_the_batch_opts_in(self):
         rule = json.loads((Path(__file__).resolve().parent / "registry" / "profiles.json").read_text())
-        self.assertFalse(rule["review_routing"]["light_review"]["enabled"])
+        self.assertEqual(rule["review_routing"]["light_review"]["profile"], "Economy")
         self.make_runner().execute(limit=1)
         run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())
         self.assertEqual(json.loads(next(run.glob("review-*/session.json")).read_text())["selection"]["profile"],
                          "Standard")
+        self.assertEqual(json.loads((run / "review-risk.json").read_text())["failed"], ["not enabled for this batch"])
+
+
+class ContextControlsConfigTests(Harness):
+    def test_controls_are_validated_and_fingerprinted(self):
+        from config import ConfigError, config_fingerprint, load_config
+        base = load_config(self.batch, self.home)
+        self.assertEqual(base["context_controls"], {"bounded_sessions": False, "low_risk_review": False})
+        batch = json.loads(self.batch.read_text())
+        self.batch.write_text(json.dumps(dict(batch, context_controls={"low_risk_review": True})))
+        enabled = load_config(self.batch, self.home)
+        self.assertEqual(enabled["_sources"]["context_controls.low_risk_review"], "batch fixture")
+        self.assertNotEqual(config_fingerprint(enabled), config_fingerprint(base))
+        for bad in ({"bounded": True}, {"bounded_sessions": "yes"}):
+            self.batch.write_text(json.dumps(dict(batch, context_controls=bad)))
+            with self.assertRaises(ConfigError):
+                load_config(self.batch, self.home)
 
 
 class TerminalTrajectoryTests(Harness):

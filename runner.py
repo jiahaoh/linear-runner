@@ -828,7 +828,7 @@ class Runner:
                                "budget_exceeded")
         return result
 
-    # --- Risk-based review routing (opt-in; registry profiles.review_routing) ---------
+    # --- Risk-based review routing (batch opt-in; rule in registry profiles.review_routing)
 
     def review_risk(self, active):
         """Evaluate the low-risk review rule on the frozen, validated commit (no model).
@@ -836,9 +836,9 @@ class Runner:
         Returns ``{"eligible", "profile", "failed", "diff"}``; ``profile`` is the lighter
         review profile only when every condition holds. Floors are applied by resolve_profile.
         """
-        rule = (self.policy["profiles"].get("review_routing") or {}).get("light_review") or {}
-        if not rule.get("enabled"):
-            return {"eligible": False, "profile": None, "failed": ["rule disabled"], "diff": None}
+        rule = (self.policy["profiles"].get("review_routing") or {}).get("light_review")
+        if not rule or not self.config.get("context_controls", {}).get("low_risk_review"):
+            return {"eligible": False, "profile": None, "failed": ["not enabled for this batch"], "diff": None}
         issue = active["issue"]
         labels = [v.get("name") if isinstance(v, dict) else v for v in issue.get("labels", [])]
         policy_labels = self.policy["labels"]
@@ -878,11 +878,11 @@ class Runner:
         return {"eligible": not failed, "profile": rule["profile"] if not failed else None, "failed": failed,
                 "diff": {"files": files, "lines": lines}, "rule": rule}
 
-    # --- Bounded worker sessions (opt-in; registry phases.bounded_sessions) ------------
+    # --- Bounded worker sessions (batch opt-in; thresholds in registry phases.bounded_sessions)
 
     def bounded_policy(self):
-        policy = self.policy["phases"].get("bounded_sessions") or {}
-        return policy if policy.get("enabled") else None
+        policy = self.policy["phases"].get("bounded_sessions")
+        return policy if policy and self.config.get("context_controls", {}).get("bounded_sessions") else None
 
     def handoff_instructions(self, attempt):
         policy = self.bounded_policy()
@@ -1502,6 +1502,7 @@ def summarize(config):
             "runner": config["runner"], "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
+            "context_controls": config["context_controls"],
             "contract": config["contract"], "layers": config["_layers"]}
 
 

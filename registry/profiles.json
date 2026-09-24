@@ -3,7 +3,7 @@
     "Settled policy: the model/effort pairs used by earlier batches.",
     "Review floor: Deep for Research, Validation and Deep-labelled issues; Standard otherwise.",
     "No phase overrides; one escalation to Deep after an unsuccessful repair.",
-    "Proposed, not yet settled (W-181): review_routing.light_review is off. When enabled, a review may use the lighter profile only if every deterministic check passed on the first validation (no repair or escalation), the issue has an allowed profile and task-kind label, no opt-out or gate label, is not blocked by a batch human-gate issue, and the committed diff is small. The Research, Validation and Deep review floors still apply, and the opt-out label restores the normal review."
+    "review_routing.light_review defines the low-risk review; a batch turns it on with context_controls.low_risk_review (off by default). The review may then use the lighter profile only if every deterministic check passed on the first validation (no repair or escalation), delivery checks passed, the issue has an allowed profile and task-kind label, no opt-out or gate label, is not blocked by a batch human-gate issue, and the committed diff is small. The Research, Validation and Deep review floors still apply, and the 'Full review' label restores the normal review."
   ],
   "routing_version": "issue-phase-v1",
   "order": [
@@ -39,7 +39,6 @@
   "phase_overrides": {},
   "review_routing": {
     "light_review": {
-      "enabled": false,
       "profile": "Economy",
       "issue_profiles": [
         "Economy",

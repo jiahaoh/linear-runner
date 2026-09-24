@@ -32,6 +32,8 @@ META_KEYS = ("_sources", "_layers")
 UNFINGERPRINTED = ("launcher", "attention")
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
 # Defaults for the supervisor (batch layer) and launcher (site layer).
+# Per-batch opt-in context-cost controls (thresholds and rules live in the registry).
+CONTEXT_CONTROL_DEFAULTS = {"bounded_sessions": False, "low_risk_review": False}
 SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [], "decision_rules": "honor",
                         "baseline_checks": False}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
@@ -368,6 +370,8 @@ def load_config(batch_path, home=None):
     if outside:
         raise ConfigError(f"{batch_label}.supervision.stop_after: {outside} not in the issue allowlist")
     put("supervision", supervision, batch_label)
+    put("context_controls", dict(CONTEXT_CONTROL_DEFAULTS, **copy.deepcopy(batch.get("context_controls", {}))),
+        batch_label)
     if "worktree" in batch:
         put("worktree", str(_path(batch["worktree"], batch_path.parent, variables, f"{batch_label}.worktree")), batch_label)
     else:

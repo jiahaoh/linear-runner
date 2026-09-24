@@ -68,8 +68,8 @@ model does not allow) are errors.
 | --- | --- |
 | `models.json` | Effort IDs the CLI accepts; models policy may select and their allowed efforts |
 | `labels.json` | Task-kind labels and profile labels (exactly one of each per issue) |
-| `profiles.json` | Profile → model/effort, profile order, review floors, phase overrides, escalation target, routing version, opt-in `review_routing` |
-| `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout, opt-in `bounded_sessions` |
+| `profiles.json` | Profile → model/effort, profile order, review floors, phase overrides, escalation target, routing version, the `review_routing` low-risk rule |
+| `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout, `bounded_sessions` thresholds |
 | `linear.json` | Default workflow state names and whether a milestone is required |
 
 | Layer | Fields |
@@ -77,7 +77,7 @@ model does not allow) are errors.
 | Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` |
-| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision` |
+| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls` |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -267,8 +267,16 @@ per-session maximum of cumulative counters summed over sessions; it is not bille
 
 Batch-3 measurements showed that almost all input tokens are cached re-reads of the session
 context: cost follows the number of model calls times the context size, not the number of
-invocations. These controls keep the context small. Items marked *proposed* are off or
-unsettled until the owner decides; their values live in the registry with notes.
+invocations. These controls keep the context small. Bounded sessions and the low-risk review
+are off unless a batch opts in:
+
+```json
+"context_controls": {"bounded_sessions": false, "low_risk_review": false}
+```
+
+Both default to `false`, are schema-validated, and are part of the pinned, fingerprinted batch
+configuration (turning one on for a running batch refuses a resume like any other change).
+The thresholds and the rule itself stay in the registry.
 
 **Compact intake and shared contract.** A project may name a `contract_file`: one versioned
 file with the rules every issue follows. Its SHA-256 is part of the pinned configuration,
@@ -306,9 +314,9 @@ every terminal outcome the supervisor also writes `terminal-trajectory.{json,md,
 the terminal report from the batch's run directories; a rendering failure is logged and never
 blocks the terminal report.
 
-**Bounded worker sessions (proposed; off).** `registry/phases.json` `bounded_sessions`:
-`enabled` (false), `input_threshold_tokens` (5,000,000), `handoff_after_implement` (true),
-`max_handoff_bytes` (12,000). When enabled, workers are asked to write
+**Bounded worker sessions (batch opt-in `context_controls.bounded_sessions`).**
+`registry/phases.json` `bounded_sessions`: `input_threshold_tokens` (5,000,000),
+`handoff_after_implement` (true), `max_handoff_bytes` (12,000). When a batch opts in, workers are asked to write
 `<attempt>/handoff.json` (`templates/handoff.md`, `schema/handoff.schema.json`). A worker session
 whose cumulative input reached the threshold, or the first repair after implement, is not
 resumed: the next phase starts a fresh session whose prompt carries the handoff. A missing,
@@ -317,8 +325,8 @@ structured result, the diff and the latest checks. Each switch is recorded in st
 new attempt's `session.json` (`handoff`: source, reason, path, hash); repairs, the single
 escalation, issue identity, frozen-source checks and per-session usage attribution carry over.
 
-**Low-risk review routing (proposed; off).** `registry/profiles.json`
-`review_routing.light_review`: with `enabled`, the review may use `profile` (Economy) when all
+**Low-risk review routing (batch opt-in `context_controls.low_risk_review`).**
+`registry/profiles.json` `review_routing.light_review`: when a batch opts in, the review may use `profile` (Economy) when all
 of these hold: the issue's profile label is in `issue_profiles` (Economy, Standard) and its task
 kind in `task_kinds` (Maintenance, Implementation); it has no `opt_out_labels` ("Full review")
 or `gate_labels` ("Human gate") label and is not blocked by a batch human-gate issue; the first
