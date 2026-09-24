@@ -161,6 +161,18 @@ class PoolValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, r"missing \['Deep/review'\]"):
             config_module.check_policy(policy)
 
+    def test_draft_pools_overlay_is_valid_and_marked_draft(self):
+        home = Path(config_module.RUNNER_ROOT) / "examples" / "draft-pools"
+        policy, sources, _ = config_module.load_registry(home)
+        self.assertEqual(sources["policy.pools.pools.Implementation.Standard.implement"], "private registry/pools.json")
+        for name in ("pools", "models"):
+            self.assertTrue(json.loads((home / "registry" / f"{name}.json").read_text())["notes"][0].startswith("DRAFT"))
+        # The owner's rule: Standard and Economy implementation use only gpt-6-luna or claude-opus-5-5 at medium.
+        for profile in ("Standard", "Economy"):
+            _, entries = config_module.pool_for(policy, "Implementation", profile, "implement")
+            self.assertEqual([(e["model"], e["effort"]) for e in entries],
+                             [("gpt-6-luna", "medium"), ("claude-opus-5-5", "medium")])
+
     def test_claude_pools_need_the_executable(self):
         home, batch = make_home(self.root, self.repo, registry=registry())
         with self.assertRaisesRegex(ConfigError, "site.executables.claude"):

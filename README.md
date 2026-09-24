@@ -2,8 +2,9 @@
 
 A sequential controller for explicitly authorized Linear issue batches. Deterministic
 Python owns scheduling, gates, Linear synchronization, checks, the Git commit and
-publication. Codex CLI is invoked only for three bounded phases: implementation,
-repair and an independent read-only review. No extra Python packages are required.
+publication. A model CLI (Codex CLI or Claude Code) is invoked only for three bounded
+phases: implementation, repair and an independent read-only review. No extra Python
+packages are required.
 
 The engine has no project-specific prompts, owner, workspace or toolchain. Policy lives
 in the public `registry/`; everything private (hosts, workspaces, projects, batches)
@@ -12,9 +13,10 @@ authorization rules belong in project or batch guidance files. One command,
 `runner.py launch`, runs a model-free preflight, starts a host supervisor and exits; no
 outer model session is needed to start, continue or recover a batch.
 
-Requires Python 3.10+, Git, a POSIX host (tested on Linux), an authenticated Codex CLI and
-a Linear credential reachable through an environment variable or the Codex credential
-cache. CLI event parsing was established on Codex CLI 0.154.0; probe changed versions
+Requires Python 3.10+, Git, a POSIX host (tested on Linux), an authenticated Codex CLI (and,
+for Claude-backed pools, Claude Code logged in with a claude.ai subscription) and a Linear
+credential reachable through an environment variable or the Codex credential cache. CLI event
+parsing was established on Codex CLI 0.154.0 and Claude Code 2.1.281; probe changed versions
 before unattended use.
 
 ## Layout
@@ -35,6 +37,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/engine/intake.py` | Worker intake packets: compact schema 2 (default) and the full schema 1 |
 | `linear_runner/backends/__init__.py` | The model-backend interface (`SessionRequest`, `Backend`) and the backend registry |
 | `linear_runner/backends/codex.py` | Everything Codex-specific: the `codex exec` argv, its JSONL events, execution evidence and the host model catalog |
+| `linear_runner/backends/claude.py` | Everything Claude Code-specific: the `claude -p` argv and isolation flags, its stream-json events, execution evidence and the probe-verified model list |
 | `linear_runner/linear/client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint; append-only comments with read-back |
 | `linear_runner/linear/updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
 | `linear_runner/linear/messages.py` | Builds each human-review comment from saved state |
@@ -53,11 +56,12 @@ the checkout root, which is also `${runner_root}`.
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
+| `examples/draft-pools/` | DRAFT model pools (W-190) as a private-registry overlay; not loaded unless copied into `<home>/registry/` |
 | `prompts/` | Generic worker guidance |
 | `testdata/` | Fictional runner records for the renderer and measurement tests |
 | `tests/` | Offline tests, laid out like the package (`tests/engine/`, `tests/backends/`, ...); shared fixtures in `tests/fixtures.py`; `tests/test_public_tree.py` fails on private identifiers in any tracked file |
 
-Run the tests from the checkout root; they need no network, Linear, Codex or systemd:
+Run the tests from the checkout root; they need no network, Linear, model CLI or systemd:
 
 ```bash
 python3 -m unittest -v                          # everything
@@ -84,18 +88,19 @@ model does not allow) are errors.
 
 | Registry file | Holds |
 | --- | --- |
-| `models.json` | Effort IDs the CLI accepts; models policy may select and their allowed efforts |
+| `models.json` | Effort IDs the CLIs accept; models policy may select, the backend that runs each and their allowed efforts |
 | `labels.json` | Task-kind labels and profile labels (exactly one of each per issue) |
-| `profiles.json` | Profile → model/effort, profile order, review floors, phase overrides, escalation target, routing version, the `review_routing` low-risk rule |
+| `profiles.json` | Profile order, review floors, phase overrides, escalation target, routing version, the `review_routing` low-risk rule |
+| `pools.json` | Ordered `{backend, model, effort}` pools per task kind (or `*`), profile and phase (see "Model backends and pools") |
 | `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout, `bounded_sessions` thresholds |
 | `linear.json` | Default workflow state names and whether a milestone is required |
 
 | Layer | Fields |
 | --- | --- |
-| Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
+| Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls` |
+| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides` |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -124,7 +129,7 @@ Supervisor, launcher and delivery-integrity fields:
 | | `watchdog.stall_minutes` | 120 | Watchdog alert after this long without recorded progress |
 | | `watchdog.interval_minutes` | 10 | How often the launch-started timer runs the watchdog |
 | | `lint.max_chars` / `max_lines` / `max_first_sentence_chars` | 1500 / 30 / 240 | Limits for worker and reviewer drafts |
-| | `outbox.poll_seconds` / `settle_seconds` | 15 / 3 | Outbox poll interval while Codex runs; drafts younger than this are left for the next poll |
+| | `outbox.poll_seconds` / `settle_seconds` | 15 / 3 | Outbox poll interval while the model runs; drafts younger than this are left for the next poll |
 | project `delivery_integrity` | `manifest` | required | Renderer manifest, relative to the issue's `delivery/` directory |
 | | `revision_field` | required | Manifest field that must equal the committed revision |
 | | `required_checks` | `[]` | Check names that must be in the validated evidence |
@@ -172,6 +177,46 @@ supervisor process starts and how a person is told about progress and stops, so 
 left out of the fingerprint and changing them never blocks resuming. Each launch record
 (`<state dir>/launches/<launch id>.json`) stores the launcher settings actually used, and
 `status` shows those of the latest launch.
+
+## Model backends and pools
+
+Each model phase runs one entry of a **pool**: `registry/pools.json` maps a task kind (or `*`
+for every kind), a profile and a phase to an ordered list of `{backend, model, effort}`.
+A task-kind pool replaces the `*` pool of the same profile and phase; `*` must cover every
+profile and phase. The profile comes from `profiles.json` as before (issue label, phase
+override, review floor, low-risk review, escalation).
+
+* The first entry is the default. Another entry runs only when it is named: an issue label
+  `model:<model>` or `model:<model>@<effort>` (for implement and repair; the review stays on
+  its own pool), or the batch's `model_overrides`, e.g.
+  `{"DEV-7": {"implement": "claude-opus-5-5", "review": "gpt-6-astra@high"}}`.
+* A named entry must be in that phase's pool; otherwise preflight fails before the claim.
+  Two `model:` labels, or a label that conflicts with the batch, also fail. A model is never
+  substituted, and Claude's `--fallback-model` is never used.
+* The single escalation uses the escalation profile's (Deep) pool for the same task kind and
+  phase: the named entry if that pool has it, else its first entry.
+* Each `session.json` records `backend`, `selection` (pool, pool index, `model_source`: pool
+  default, issue label or batch) and `backend_details`; the claim comment names the backend.
+* A worker session cannot move between CLIs: when repair or escalation selects another
+  backend, the next phase starts a fresh session seeded with a handoff.
+
+| | Codex (`codex exec`) | Claude Code (`claude -p`) |
+| --- | --- | --- |
+| Auth | Codex login | claude.ai subscription login (never `--bare`); preflight records only `loggedIn`/`authMethod` |
+| Read-only review | OS sandbox (`--sandbox read-only`) | Permission rules: `dontAsk`, tools Read/Grep/Glob/Bash, Bash limited to read-only Git commands |
+| Worker | `--approve-for-me` | `acceptEdits` in the worktree and the issue run directory; Bash allowed except Git history/branch commands and nested agents |
+| Isolation | Linear MCP disabled | no settings files, a per-session `--settings` (hooks and auto-memory off), `--strict-mcp-config` with no servers, a fixed appended system prompt, `CLAUDE*`/`ANTHROPIC*` variables removed |
+| Resume | `resume <id>` | `--resume <id>`; fresh sessions get `--session-id` |
+| Result | `--output-schema`, `-o` file | `--json-schema`, `structured_output` of the result event |
+| Usage | cumulative per session | per call; the runner accumulates it per session. Input includes cache reads and writes; `total_cost_usd` is kept as the CLI's estimate, never billed cost |
+| Observed model / effort | when emitted | model from events; effort is never emitted |
+| `compact_token_limit` | supported | not supported: a limit on a phase whose pools include Claude is a configuration error |
+| Availability check | host catalog (`site.model_catalog`) | probe-verified model list, CLI version (≥ 2.1.280), subscription login |
+
+The Claude reviewer's read-only guarantee is Claude Code's permission rules, not an OS
+sandbox; the runner's frozen-source check after the review still stops the issue if the
+worktree changed. A Claude error result (for example an unavailable model) stops as an
+`environment` stop with the CLI's message, never a silent retry.
 
 ## Running a batch
 
@@ -314,13 +359,15 @@ The two switches default to `false` and `compact_token_limit` to `null`; all are
 configuration (turning one on for a running batch refuses a resume like any other change).
 The thresholds and the rule itself stay in the registry.
 
-**Codex auto-compaction threshold (optional).** A registry phase may set `compact_token_limit`
+**Auto-compaction threshold (optional, Codex only).** A registry phase may set `compact_token_limit`
 (unset for every phase by default), and a batch may set `context_controls.compact_token_limit`
 (an integer of at least 1,000, or `null`) for all phases; the batch value wins. When a value is
 set, every fresh and resumed call gets `-c model_auto_compact_token_limit=<N>`, a config key of
 Codex CLI 0.154.0 (it is type-checked as an integer; the CLI silently ignores unknown keys, so
 re-check it after a CLI upgrade). Each `session.json` records `compact_token_limit` (`null` when
-unset), and `measure` and `report` show it per invocation.
+unset), and `measure` and `report` show it per invocation. Claude Code has no such per-call
+threshold, so a limit that applies to a phase whose pools include a Claude entry is rejected
+when the configuration loads.
 
 **Compact intake and shared contract.** A project may name a `contract_file`: one versioned
 file with the rules every issue follows. Its SHA-256 is part of the pinned configuration,
@@ -340,7 +387,8 @@ The runner also writes `intake-components.json` (bytes per component) for later 
 **Measurement.** `runner.py measure --runs <dir>... [--issues ...] [--rollouts DIR | --no-rollouts]
 [--replay-compact] [--json out.json]` reads saved records only. Codex session logs are read from
 `--rollouts`, else `$CODEX_HOME/sessions`, else `~/.codex/sessions`; when that directory is
-missing, the output says so and omits the per-call growth instead of failing. It reports intake bytes by
+missing, the output says so and omits the per-call growth instead of failing. Claude invocations need no
+session logs: their per-call context comes from the invocation's own `events.jsonl`. It reports intake bytes by
 component, unchecked criteria and link-markup bytes, and per invocation the prompt and
 tool-output bytes and the input it added to its session. With `--rollouts` it reads the Codex
 rollout of each session and splits each invocation's input into the re-sent starting context
@@ -425,10 +473,10 @@ or the following save is lost, the next run finds the comment by that line and a
 an event is never posted twice. A failed write keeps the batch from advancing; the pending
 event is posted when the batch resumes, without rerunning models.
 
-**Outbox.** Codex sessions keep Linear MCP disabled. Each phase attempt has an
+**Outbox.** Model sessions have no Linear MCP. Each phase attempt has an
 `outbox/` directory, and the prompt tells the worker to write drafts there as
 `NNN-<kind>.md` (`progress`, `ready` or `blocked`) following `templates/draft-<kind>.md`.
-The runner polls the outbox while Codex runs and once after it exits. It lints each draft:
+The runner polls the outbox while the model runs and once after it exits. It lints each draft:
 the kind must be allowed for the phase, the first paragraph must be one plain sentence, the
 template's required sections must be present and no other headings used, within the length
 limits, and with no JSON, code blocks, tables, long hashes or HTML comments except one
@@ -504,7 +552,7 @@ Every pause is recorded in `state.stops` with a class. The rule is in
 | --- | --- |
 | `needs-decision` | worker or review blocked, soft budget exceeded, or something changed outside the runner (issue state, scope, gates, Git history, configuration) |
 | `technical-block` | checks still failing after the allowed repairs, delivery failed, or another runner-raised stop |
-| `environment` | Linear or Codex errors (authentication, HTTP, timeouts, missing results), OS errors and signals |
+| `environment` | Linear or model CLI errors (authentication, HTTP, timeouts, error results, missing results), OS errors and signals |
 | `runner-defect` | any other exception type (a bug in the runner) |
 
 On a pause the runner posts a NEW `blocked` comment on the issue that stopped (the terminal

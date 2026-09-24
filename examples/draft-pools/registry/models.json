@@ -1,0 +1,27 @@
+{
+  "notes": [
+    "DRAFT (W-190 phase 1): the models and efforts the draft pools use; copy with pools.json. Not final.",
+    "claude-opus-5-5 medium/high and claude-sonnet-5 medium were probed on Claude Code 2.1.281 (W-190)."
+  ],
+  "models": {
+    "gpt-6-luna": {
+      "backend": "codex",
+      "efforts": [
+        "medium"
+      ]
+    },
+    "claude-opus-5-5": {
+      "backend": "claude",
+      "efforts": [
+        "medium",
+        "high"
+      ]
+    },
+    "claude-sonnet-5": {
+      "backend": "claude",
+      "efforts": [
+        "medium"
+      ]
+    }
+  }
+}

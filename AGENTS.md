@@ -1,6 +1,6 @@
 # Controller development
 
-This repository owns the reusable Linear-to-Codex issue runner, configuration examples, guidance profiles and maintained usage documentation. Keep project-specific behavior in configuration/guidance rather than the shared engine.
+This repository owns the reusable Linear-to-model issue runner, configuration examples, guidance profiles and maintained usage documentation. Keep project-specific behavior in configuration/guidance rather than the shared engine.
 
 Follow your own configured workflow for tracking changes: record substantive changes in a matching issue with the executing session and validation evidence, and keep related guidance in sync.
 
@@ -23,7 +23,7 @@ workers continue their dispatched issue.
 - `linear_runner/cli.py`: argument parsing and command dispatch.
 - `linear_runner/config.py`: layered configuration, schemas, `${runner_root}` (the checkout root, not the package), fingerprint and runner identity.
 - `linear_runner/engine/`: the per-issue state machine (`runner.py`), check outcomes and delivery integrity (`delivery.py`), intake packets (`intake.py`).
-- `linear_runner/backends/`: the model-backend interface and registry (`__init__.py`) and all Codex-specific code (`codex.py`: argv, JSONL events, evidence, model catalog). The engine reaches a model CLI only through this interface; keep CLI flags and event names out of the engine.
+- `linear_runner/backends/`: the model-backend interface and registry (`__init__.py`), all Codex-specific code (`codex.py`: argv, JSONL events, evidence, model catalog) and all Claude Code-specific code (`claude.py`: argv and isolation flags, stream-json events, evidence, known models). The engine reaches a model CLI only through this interface; keep CLI flags and event names out of the engine.
 - `linear_runner/linear/`: the Linear client, comment templates and ledger (`updates.py`), comment builders (`messages.py`), stops and notifier (`attention.py`).
 - `linear_runner/supervision/`: launch and preflight, supervisor, recoveries, watchdog, decision rules.
 - `linear_runner/reporting/`: offline records, trajectory, measurement, terminal report, template samples.
