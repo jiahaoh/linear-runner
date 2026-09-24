@@ -4,6 +4,7 @@ Real Git, checks and state files; fake Codex, Linear and launcher boundaries. No
 no systemd-run and no live batch.
 """
 import copy
+import itertools
 import json
 import os
 from pathlib import Path
@@ -882,6 +883,32 @@ class RepinConfigTests(Harness):
         self.assertEqual([(e["event"], e.get("kind")) for e in entries],
                          [("recorded", "repin-config"), ("recorded", "revalidate"), ("consumed", "revalidate")])
         self.assertEqual(entries[0]["details"]["changes"], details["changes"])
+
+    def test_repinned_evidence_is_the_accepted_validation_when_validations_share_a_second(self):
+        """W-192, made deterministic: every runner id falls in one UTC second and each later id
+        sorts *before* the earlier ones, as a fast run produces about half the time. The newest
+        directory name is then the pre-repin validation; the state must still name the
+        post-repin one that DEV-1 was accepted on."""
+        counter = itertools.count()
+        same_second = lambda: f"20260101T000000Z-{0xFFFFFFFF - next(counter):08x}"
+        with patch.object(runner_module, "run_id", same_second):
+            self.hooks[("DEV-1", "repair")] = self.blocked(times=1)
+            self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+            self.edit_project(self.allow_empty)
+            self.repin()
+            revalidate = self.recover("revalidate")
+            self.assertEqual(self.launch(stop_after=["DEV-1"])["started"]["outcome"], "checkpoint")
+        statuses = lambda directory: [(r["name"], r["status"])
+                                      for r in json.loads((Path(directory) / "checks.json").read_text())]
+        run = Path(self.state()["history"][0]["run_dir"])
+        by_name = sorted(run.glob("validation-*"))
+        self.assertEqual(len(by_name), 2)  # before the repin, and after the revalidation
+        # The name-newest directory is the validation revalidate started from, before the repin.
+        self.assertEqual(revalidate["details"]["previous_validation"], str(by_name[-1]))
+        self.assertEqual(statuses(by_name[-1]), [("output", "passed"), ("pytest-extended", "failed")])
+        accepted = self.state()["history"][0]["validation_dir"]
+        self.assertEqual(accepted, str(by_name[0]))
+        self.assertEqual(statuses(accepted), [("output", "passed"), ("pytest-extended", "empty")])
 
     def test_identity_changes_are_refused(self):
         self.launch(stop_after=["DEV-1"])
