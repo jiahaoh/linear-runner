@@ -19,6 +19,7 @@ from linear_runner.engine.runner import Runner, git, write_json
 from linear_runner.linear import messages
 from linear_runner.linear.attention import classify_stop
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch
+from linear_runner.supervision import backend_start
 from linear_runner.supervision.supervisor import supervise
 from tests.engine.test_claude_engine import claude_registry
 from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home, fake_codex
@@ -255,6 +256,26 @@ class ErrorClassificationTests(unittest.TestCase):
         self.assertIn("Fix the host or service problem", body)
 
 
+class StartCheckIdentityTests(Fixture):
+    def test_identity_follows_the_auth_mode_and_token_file_never_the_token(self):
+        write_token(self.token_file)
+        executable, _ = fake_claude(self.root)
+        site = {"executables": {"codex": str(fake_codex(self.root)[0]), "claude": str(executable),
+                                "python": sys.executable}}
+        check = {"model": "claude-opus-5-5", "effort": "low"}
+        ids = [backend_start.identity(self.load(auth, **site), "claude", check)
+               for auth in (None, {"oauth_token_file": str(self.token_file)}, {"oauth_token_env": VARIABLE})]
+        self.assertEqual([i["auth"]["mode"] for i in ids], ["subscription-login", "oauth-token-file", "oauth-token-env"])
+        self.assertEqual(ids[0]["version"], "2.1.281 (Claude Code)")
+        self.assertEqual(len({json.dumps(i, sort_keys=True) for i in ids}), 3)
+        # A replaced token (same file) changes the identity through the file's modification time.
+        stamp = os.stat(self.token_file).st_mtime_ns + 10**9
+        write_token(self.token_file, "replaced-token\n"); os.utime(self.token_file, ns=(stamp, stamp))
+        replaced = backend_start.identity(self.load({"oauth_token_file": str(self.token_file)}, **site), "claude", check)
+        self.assertNotEqual(replaced["auth"], ids[1]["auth"])
+        self.assertNotIn(TOKEN, json.dumps(ids)); self.assertNotIn("replaced-token", json.dumps(replaced))
+
+
 class TokenReachesOnlyTheChildTests(Fixture):
     """A full launch (foreground supervisor), implementation and Claude review with the fake CLI."""
 
@@ -266,8 +287,8 @@ class TokenReachesOnlyTheChildTests(Fixture):
         git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")
         self.linear = FakeLinear()
 
-    def launch(self, auth, check_script=None):
-        executable, self.plan = fake_claude(self.root, [{"write": {"result.txt": "ready"}}, {}])
+    def launch(self, auth, check_script=None, **plan):
+        executable, self.plan = fake_claude(self.root, [{"write": {"result.txt": "ready"}}, {}], **plan)
         project = None
         if check_script:
             project = {"checks": [{"name": "output", "kind": "code", "tier": "default", "inputs": ["result.txt"],
@@ -311,12 +332,31 @@ class TokenReachesOnlyTheChildTests(Fixture):
                          ("passed", False, config["claude_auth"]["mode"]))
         sessions = [json.loads(p.read_text()) for p in (self.root / "runs").rglob("session.json")]
         self.assertEqual({s["backend_details"]["auth_mode"] for s in sessions}, {config["claude_auth"]["mode"]})
+        # The launch start check ran the worker command once, with the token in its environment only.
+        checks = json.loads(Path(self.plan).read_text())["start_checks"]
+        self.assertEqual([(c["oauth_token"], c["model"], c["effort"]) for c in checks],
+                         [(TOKEN, "claude-opus-5-5", "low")])
+        self.assertEqual(checks[0]["cwd"], str(self.repo))
+        self.assertNotIn(TOKEN, json.dumps(checks[0]["argv"]))
+        start = preflight["steps"]["backend_start.claude"]
+        self.assertEqual((start["status"], start["result"]["result"]), ("passed", {"ok": True}))
+        self.assertEqual(preflight["identities"]["backend:claude"]["auth"]["mode"], config["claude_auth"]["mode"])
 
     def test_token_file_reaches_only_the_claude_child(self):
         write_token(self.token_file)
         config, entry = self.launch({"oauth_token_file": str(self.token_file)})
         self.assertEqual(entry["spec"]["inherit"], ["TEST_LINEAR_TOKEN"])  # the file needs nothing passed
         self.assert_never_recorded(config, entry)
+
+    def test_a_refused_token_stops_the_launch_in_preflight(self):
+        write_token(self.token_file)
+        with self.assertRaisesRegex(LaunchError, r"Preflight step 'backend_start\.claude' failed: Claude \(claude "
+                                    r"backend\) could not start in .*: Claude authentication \(oauth-token-file\) "
+                                    r"failed: error result \(api_error\): OAuth token has been revoked"):
+            self.launch({"oauth_token_file": str(self.token_file)}, start_error="OAuth token has been revoked")
+        self.assertEqual(fake_claude_log(self.plan), [])  # no session
+        self.assertFalse(self.linear.writes); self.assertFalse(self.linear.posts)
+        self.assertEqual(files_containing(self.root / "state", TOKEN), [])
 
     def test_token_variable_reaches_only_the_claude_child_under_the_cli_name(self):
         # The check fails if the runner's variable leaks into check subprocesses.

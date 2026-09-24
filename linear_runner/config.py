@@ -40,7 +40,8 @@ SUPERVISION_DEFAULTS = {"stop_after": [], "on_block": "stop", "report_issues": [
 # site.claude.auth key -> recorded auth mode; without auth the mode is the subscription login.
 CLAUDE_AUTH_MODES = {"oauth_token_file": "oauth-token-file", "oauth_token_env": "oauth-token-env"}
 LAUNCHER_DEFAULTS = {"backend": "systemd-user", "python": None, "cpu_list": None, "environment": {},
-                     "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True}
+                     "unit_prefix": "linear-runner", "startup_timeout_seconds": 30, "stop_on_exit": True,
+                     "backend_start_timeout_seconds": 180}
 
 # How a person is told about progress and stops. Workspace ``attention``: owner_mention,
 # needs_input. Site ``attention``: command_prefix, notifier, watchdog, lint, outbox.

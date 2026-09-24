@@ -1,4 +1,4 @@
-"""Model-free launch: preflight, start the host supervisor, confirm startup, exit.
+"""Launch: preflight, start the host supervisor, confirm startup, exit (no outer model session).
 
 ``runner.py launch`` replaces the outer-LLM launch procedure. Preflight steps:
 
@@ -12,6 +12,9 @@ claude_auth (opt.)        the configured Claude token            never (always r
 baseline_checks (opt.)    source, configuration, environment,    yes
                           fixtures (identity files)
 linear                    live Linear state                      never (always re-read)
+backend_start.<backend>   backend:<backend> (executable, CLI     yes
+                          version, auth mode, worktree, probe
+                          selection, environment overrides)
 ========================  =====================================  ==========================
 
 Every step records whether it was reused or rerun and why. ``claude_auth`` runs only when
@@ -21,6 +24,12 @@ uses it. It records the mode and the path or name, never the token. The ``linear
 every allowlisted issue (proving authentication), checks gates, ownership, dependencies,
 decision-rule blocks and model/effort availability for each pending issue, and performs
 the dry-run selection (or, for a saved active issue, the resume-specific checks).
+
+``backend_start.<backend>`` runs once for each model backend the pending issues can select
+(any phase, escalation or lighter review): the worker command a session would run, in the
+batch worktree, with a tiny fixed request (see ``backend_start``). It is the only preflight
+step that calls a model, so it is reused while the backend's identity is unchanged. A backend
+that cannot start fails the launch here, before any issue is claimed.
 
 Backends are pluggable: ``systemd-user`` (a transient ``systemd-run --user`` unit with
 Restart=no, KillMode=control-group and a STOP marker written by ExecStopPost) and
@@ -47,6 +56,7 @@ import time
 
 from linear_runner import backends
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
+from linear_runner.supervision import backend_start
 from linear_runner.supervision.recovery import expected_state
 from linear_runner.engine.runner import (PHASES, Runner, contract_matches, fingerprint, git, now, project_lock,
                                          resolve_profile, run_id)
@@ -144,14 +154,17 @@ def _baseline_checks(runner, directory):
     return records
 
 
-def _check_linear(runner, supervisor):
-    """Live Linear read-back, gates, ownership, dependencies, rules, models and dry-run."""
+def _check_linear(runner, supervisor, pending=None):
+    """Live Linear read-back, gates, ownership, dependencies, rules, models and dry-run.
+    ``pending`` (a list) receives the live issues not yet done, in allowlist order."""
     config, linear, state = runner.config, runner.linear, runner.state
     runner.check_gates()
     issues = {}
     done = {h["issue_id"] for h in state["history"]}
     for identifier in config["issues"]:
         live = linear.issue(identifier)
+        if pending is not None and identifier not in done and live.get("statusType") != "completed":
+            pending.append(live)
         issues[identifier] = {"status": live.get("status"), "statusType": live.get("statusType"),
                               "blockedBy": [p["id"] for p in live.get("relations", {}).get("blockedBy", [])]}
         if identifier not in done and live.get("statusType") != "completed":
@@ -234,7 +247,15 @@ def preflight(config, runner, *, launch_id, force=False):
     if config["supervision"]["baseline_checks"]:
         step("baseline_checks", ["source", "config", "environment", "fixtures"],
              lambda: _baseline_checks(runner, directory / "baseline"))
-    step("linear", [], lambda: _check_linear(runner, supervisor), live=True)
+    pending = []
+    step("linear", [], lambda: _check_linear(runner, supervisor, pending), live=True)
+    for name, check in backend_start.plan(config, pending).items():
+        # One start check per backend the pending issues can select (see backend_start).
+        key = f"backend:{name}"
+        ids[key] = backend_start.identity(config, name, check)
+        digests[key] = _digest(ids[key])
+        step(f"backend_start.{name}", [key],
+             lambda name=name, check=check: backend_start.run(config, name, check, directory / "backend_start" / name))
     record["passed"] = True
     write_json(directory.with_suffix(".json"), record)
     write_json(latest, record)

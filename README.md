@@ -10,7 +10,8 @@ The engine has no project-specific prompts, owner, workspace or toolchain. Polic
 in the public `registry/`; everything private (hosts, workspaces, projects, batches)
 lives in a private configuration home outside this repository. Your own workflow and
 authorization rules belong in project or batch guidance files. One command,
-`runner.py launch`, runs a model-free preflight, starts a host supervisor and exits; no
+`runner.py launch`, runs a preflight (model-free except one tiny start check per model
+backend, reused while the backend is unchanged), starts a host supervisor and exits; no
 outer model session is needed to start, continue or recover a batch.
 
 Requires Python 3.10+, Git, a POSIX host (tested on Linux), an authenticated Codex CLI (and,
@@ -43,7 +44,8 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/linear/updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
 | `linear_runner/linear/messages.py` | Builds each human-review comment from saved state |
 | `linear_runner/linear/attention.py` | Stop classification, needs-input mechanisms and the out-of-band notifier |
-| `linear_runner/supervision/launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` host backends |
+| `linear_runner/supervision/launcher.py` | Launch preflight with identity-keyed reuse; `systemd-user` and `foreground` host backends |
+| `linear_runner/supervision/backend_start.py` | The `backend_start.<backend>` preflight step: start each selectable model backend once in the batch worktree |
 | `linear_runner/supervision/supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
 | `linear_runner/supervision/recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
 | `linear_runner/supervision/watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`, run by a launch-started timer) |
@@ -112,6 +114,7 @@ Supervisor, launcher and delivery-integrity fields:
 | | `environment` | `{}` | Extra `--setenv` values for the unit, for example `PATH` |
 | | `unit_prefix` | `linear-runner` | Unit name is `<prefix>-<batch id>-<launch id>.service` |
 | | `startup_timeout_seconds` | 30 | How long `launch` waits to confirm the supervisor started |
+| | `backend_start_timeout_seconds` | 180 | Timeout of each preflight backend start check (`backend_start.<backend>`) |
 | | `stop_on_exit` | `true` | Write the STOP marker when the supervisor exits (also via `ExecStopPost`) |
 | batch `supervision` | `stop_after` | `[]` | Planned checkpoints: stop after these issues are accepted |
 | | `on_block` | `stop` | Pause the batch on an issue-level block; `continue_independent` opts in to deferring the issue and continuing with independent issues |
@@ -276,8 +279,9 @@ or `{"oauth_token_env": "NAME"}` for a variable set in the environment that runs
   sessions and gives it only to `claude`, as `CLAUDE_CODE_OAUTH_TOKEN`.
 * **Preflight.** In a token mode the `claude_auth` step (always re-run) checks that the token is
   readable and that `claude auth status` reports `authMethod: oauth_token`; the claude.ai login
-  is not required. That command is local, so an expired or revoked token shows up at the first
-  session.
+  is not required. That command is local; an expired or revoked token shows up at the
+  `backend_start.claude` step (a tiny real call with the token, re-run when the token file or
+  mode changes) or, if the token is revoked after that check, at the first session.
 * **Records.** Preflight and `session.json` record the auth mode (`subscription-login`,
   `oauth-token-file` or `oauth-token-env`), never the token. The configuration fingerprint covers
   the mode and the file path or variable name, not the token, so replacing the token changes
@@ -343,11 +347,30 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 | `baseline_checks` (optional) | Default-tier checks pass on the clean baseline | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
 | `claude_auth` (with `site.claude.auth`) | The Claude token file or variable is usable and the CLI uses it (see "Claude authentication") | never: always re-read |
 | `linear` | Authenticated live read of every allowlisted issue, gates, ownership, decision-rule blocks, model/effort per phase, dependency-aware dry-run selection, or the resume checks for a saved active issue | never: live state is always re-read |
+| `backend_start.<backend>` | Each model backend the pending issues can select starts in the batch worktree (see below) | backend: executable (path, resolved file, SHA-256), CLI version line, auth mode (Codex `login status`; Claude mode + token file path/variable name + token file mtime), worktree, probe model/effort, launcher and check environment, start-check code |
 
 Each step records `reused` and a reason (`reused: source, config unchanged since L-...`,
 `changed: source`, `no previous preflight result`, `previous result did not pass`,
 `live state: always re-read`). `--rerun-preflight` disables reuse. `run --max-issues N`
 still works for a single in-process run without the supervisor.
+
+**Backend start check.** A backend that cannot start in the worktree (for example a CLI
+upgrade that rejects the project layout, or a token the service refuses) would otherwise
+fail only after an issue is claimed. For each backend that any pending issue can select (every
+phase as routed now, repair and review after the escalation, the lighter review when enabled;
+labels and batch `model_overrides` included), `backend_start.<backend>` runs the worker command
+once: the backend's own argv and child environment (Codex `exec --approve-for-me --add-dir
+<artifact root> -C <worktree> ... --json -o ... --output-schema ... -`; Claude `-p` with the
+worker's settings, `acceptEdits` permissions and the configured token), in the worktree, with
+the launcher environment the unit gets. Only the request is small: a fixed prompt asking for
+`{"ok": true}`, a one-field schema, the backend's first selectable model at the lowest effort
+it accepts for it (for example `gpt-6-luna` `low`, `claude-opus-5-5` `low`) and
+`site.launcher.backend_start_timeout_seconds` (180). This is a real model call of a few
+thousand input tokens (no model-free CLI command exercises the start path), so the result is
+reused until the backend identity above changes. A failure stops `launch` before any issue is
+claimed, naming the backend and quoting its own error; the prompt, schema, events and stderr
+are kept in `<state dir>/preflight/<launch id>/backend_start/<backend>/`. The token never
+appears in them.
 
 ## Lifecycle
 

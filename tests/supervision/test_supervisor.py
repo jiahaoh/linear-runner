@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 from linear_runner.config import load_config, pin_resolution, write_resolved
-from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, make_home
+from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, fake_codex, fake_codex_calls, make_home
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
 from linear_runner.supervision import recovery
 from linear_runner.supervision.recovery import RecoveryError, verify_log
@@ -184,10 +185,12 @@ class LaunchAndSupervisorTests(Harness):
         first = json.loads((self.state_dir / "preflight.json").read_text())
         self.assertEqual({n: s["reason"] for n, s in first["steps"].items()},
                          {"config": "no previous preflight result", "worktree": "no previous preflight result",
-                          "model_catalog": "no previous preflight result", "linear": "live state: always re-read"})
+                          "model_catalog": "no previous preflight result", "linear": "live state: always re-read",
+                          "backend_start.codex": "no previous preflight result"})
         self.launch(stop_after=["DEV-2"], clear_stop=True)
         second = json.loads((self.state_dir / "preflight.json").read_text())["steps"]
         self.assertTrue(second["config"]["reused"]); self.assertTrue(second["model_catalog"]["reused"])
+        self.assertTrue(second["backend_start.codex"]["reused"])
         self.assertEqual(second["config"]["reused_from"], first["launch_id"])
         self.assertEqual(second["worktree"]["reason"], "changed: source")
         self.assertFalse(second["linear"]["reused"])
@@ -1307,6 +1310,101 @@ class DeliveryIntegrityTests(Harness):
                 mutate()
                 with self.assertRaisesRegex(DeliveryError, error):
                     verify_delivery(spec, directory, "c" * 40, records)
+
+
+class BackendStartTests(Harness):
+    """The ``backend_start.<backend>`` preflight step with the fake Codex executable."""
+
+    def plan(self, **values):
+        return fake_codex(self.root, **values)[1]
+
+    def test_a_backend_that_cannot_start_stops_the_launch_before_any_claim(self):
+        error = "Failed to read project hooks config file .codex/hooks.json: Not a directory (os error 20)"
+        for values, expected in (({"start_error": error}, "Failed to read project hooks config file"),
+                                 ({"start_error": None, "stderr_error": "Error: unknown option --approve-for-me"},
+                                  "Error: unknown option --approve-for-me")):
+            with self.subTest(values=values):
+                self.plan(**values)
+                with self.assertRaisesRegex(LaunchError, r"Preflight step 'backend_start\.codex' failed: Codex \(codex "
+                                            rf"backend\) could not start in {self.repo}: .*{expected}"):
+                    self.launch()
+                self.assertFalse(self.calls)  # no model phase ...
+                self.assertFalse(self.linear.writes); self.assertFalse(self.linear.posts)  # ... no claim or comment
+                self.assertEqual(self.linear.data["status"], "Todo")
+                self.assertFalse((self.state_dir / "state.json").exists())  # nothing dispatched or saved
+                self.assertFalse((self.state_dir / "supervisor.json").exists())
+                record = json.loads((self.state_dir / "preflight.json").read_text())
+                step = record["steps"]["backend_start.codex"]
+                self.assertFalse(record["passed"])
+                self.assertEqual(step["status"], "failed")
+                self.assertIn(expected, step["error"])
+
+    def test_start_check_runs_the_worker_command_in_the_worktree_and_is_reused_while_unchanged(self):
+        plan = self.plan()
+        runner = self.make_runner()
+        config = runner.config
+        launches = itertools.count()
+
+        def check(config=config, **kwargs):
+            record = preflight(config, runner, launch_id=f"L-{next(launches)}", **kwargs)
+            self.assertTrue(record["passed"])
+            return record["steps"]["backend_start.codex"]
+
+        first = check()
+        self.assertEqual((first["status"], first["reused"], first["reason"]),
+                         ("passed", False, "no previous preflight result"))
+        calls = fake_codex_calls(plan)
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]["argv"]
+        self.assertEqual(calls[0]["cwd"], str(self.repo))
+        self.assertEqual(argv[:4], ["exec", "--approve-for-me", "--add-dir", config["artifact_root"]])  # worker flags
+        self.assertEqual(argv[argv.index("-C") + 1], str(self.repo))
+        # The first selectable Codex model, at the lowest effort its catalog lists.
+        self.assertEqual(argv[argv.index("--model") + 1], "astra")
+        self.assertIn('model_reasoning_effort="medium"', argv)
+        self.assertEqual(first["result"]["result"], {"ok": True})
+        self.assertEqual(first["result"]["selection"]["from"], "DEV-1 implement (Implementation/Standard/implement)")
+        self.assertEqual(first["result"]["usage_events"][0]["usage"], {"input_tokens": 12, "output_tokens": 3})
+
+        second = check()
+        self.assertEqual((second["reused"], second["reused_from"]), (True, "L-0"))
+        self.assertEqual(len(fake_codex_calls(plan)), 1)  # not started again
+
+        other = self.root / "other-codex"
+        shutil.copy(fake_codex(self.root)[0], other)
+        worktree = self.root / "other-worktree"
+        git(self.repo, "worktree", "add", "-q", "-b", "codex/other", str(worktree))
+        for change in ("version", "login", "executable", "worktree", "rerun"):
+            with self.subTest(change=change):
+                kwargs, changed = {}, config
+                if change == "version":
+                    self.plan(version="0.157.0")
+                elif change == "login":
+                    self.plan(login="Logged in using an API key")
+                elif change == "executable":
+                    changed = dict(config, codex=str(other))
+                elif change == "worktree":
+                    changed = dict(config, worktree=str(worktree))
+                else:
+                    kwargs = {"force": True}
+                before = len(fake_codex_calls(plan))
+                step = check(changed, **kwargs)
+                self.assertFalse(step["reused"])
+                self.assertEqual(step["reason"], "rerun requested (--rerun-preflight)" if change == "rerun"
+                                 else "changed: backend:codex")
+                self.assertEqual(len(fake_codex_calls(plan)), before + 1)
+                if change == "worktree":
+                    self.assertEqual(fake_codex_calls(plan)[-1]["cwd"], str(worktree))
+                check(changed)  # the new result is reused in turn
+                self.assertEqual(len(fake_codex_calls(plan)), before + 1)
+
+    def test_no_pending_issue_starts_no_backend(self):
+        for issue in (self.linear.data, *self.linear.others.values()):
+            issue.update(status="Done", statusType="completed")
+        runner = self.make_runner()
+        record = preflight(runner.config, runner, launch_id="L-done")
+        self.assertNotIn("backend_start.codex", record["steps"])
+        self.assertEqual(fake_codex_calls(self.root / "fake-codex-plan.json"), [])
 
 
 class PreflightBaselineTests(Harness):

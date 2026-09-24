@@ -52,7 +52,9 @@ def build_parser():
                                 help="model-free check for a vanished or stalled supervisor (run by the launch timer)")
     watch.add_argument("--launch-id", help="the launch whose timer runs this check (set by launch)")
     watch.add_argument("--timer", help="the timer unit to stop once that launch has an outcome (set by launch)")
-    launch = commands.add_parser("launch", parents=[common], help="model-free preflight, start the supervisor, confirm, exit")
+    launch = commands.add_parser("launch", parents=[common],
+                                 help="preflight (with a tiny start check per model backend), start the supervisor, "
+                                      "confirm, exit")
     launch.add_argument("--backend", choices=["systemd-user", "foreground"], help="default: site launcher.backend")
     launch.add_argument("--clear-stop", action="store_true",
                         help="remove an inspected STOP marker after preflight passes (not needed for the marker a "
