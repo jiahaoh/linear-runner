@@ -1367,8 +1367,32 @@ class Runner:
         write_json(self.root / "terminal-report.json", summary)
         from report import render_report
         delivery = render_report(self.root / "terminal-report.html", summary, records)
+        delivery["trajectory"] = self.terminal_trajectory()
         write_json(self.root / "terminal-delivery.json", delivery)
         self.post_batch(outcome, summary, skip=skip)
+
+    def terminal_trajectory(self):
+        """Model-free trajectory/usage report next to the terminal report (terminal-trajectory.*).
+
+        Rendered after the batch outcome from saved records only; an invocation without a
+        recorded finish is listed as pending, never counted. A failure here is logged and
+        never blocks the terminal report or the batch comment.
+        """
+        try:
+            import trajectory
+            runs = [h["run_dir"] for h in self.state["history"]]
+            runs += [p["active"]["run_dir"] for p in (self.state.get("parked") or {}).values()
+                     if isinstance(p, dict) and (p.get("active") or {}).get("run_dir")]
+            if self.state.get("active"):
+                runs.append(self.state["active"]["run_dir"])
+            at = now()
+            result = trajectory.from_roots([r for r in dict.fromkeys(runs) if Path(r).is_dir()],
+                                           issues=self.config["issues"], until=at, captured_at=at,
+                                           groups={self.config["batch_id"]: self.config["issues"]})
+            return trajectory.write(self.root, result, stem="terminal-trajectory")
+        except Exception as error:  # reporting must not turn an outcome into a failure
+            self.log(f"Terminal trajectory report not written: {error}")
+            return {"error": str(error)}
 
     def post_batch(self, outcome, summary, skip=()):
         active = self.state.get("active")
@@ -1380,6 +1404,8 @@ class Runner:
                    and i != paused and i not in summary.get("external", [])]
         issues = messages.issues_prose(done=done, paused=paused, deferred=deferred, waiting=waiting, pending=pending)
         paths = [self.root / "terminal-report.html", self.root / "terminal-report.json"]
+        if (self.root / "terminal-trajectory.html").is_file():
+            paths.append(self.root / "terminal-trajectory.html")
         if outcome == "blocked":
             where = (active or {}).get("issue_id") or self.config["terminal_issue"]
             body = messages.batch_paused(self.ctx, subject=paused or "the batch", where=where, issues=issues,

@@ -364,5 +364,40 @@ class RiskDefaultOffTests(Harness):
                          "Standard")
 
 
+class TerminalTrajectoryTests(Harness):
+    def codex(self, prompt, directory, **kwargs):
+        value = super().codex(prompt, directory, **kwargs)
+        meta_path = Path(directory) / "session.json"
+        meta = json.loads(meta_path.read_text())
+        stamp = f"2026-01-01T00:{len(self.calls):02d}:00+00:00"
+        write_json(meta_path, dict(meta, started_at=stamp, finished_at=stamp, wall_seconds=60.0))
+        return value
+
+    def test_supervised_terminal_step_writes_the_trajectory_report(self):
+        self.launch(stop_after=["DEV-1"])
+        root = self.root / "state" / "fixture"
+        result = json.loads((root / "terminal-trajectory.json").read_text())
+        summary = {s["issue"]: s for s in result["summaries"]}
+        self.assertEqual((summary["DEV-1"]["attempts"], summary["DEV-1"]["usage"]["input_tokens"]), (2, 200))
+        self.assertEqual(summary["DEV-2"]["attempts"], 0)
+        self.assertEqual(result["pending"], [])
+        self.assertEqual(result["comparison"][0]["batch"], "fixture")
+        self.assertTrue((root / "terminal-trajectory.md").is_file())
+        delivery = json.loads((root / "terminal-delivery.json").read_text())
+        self.assertEqual(delivery["trajectory"]["html"], str(root / "terminal-trajectory.html"))
+        self.assertIn("terminal-trajectory.html", self.linear.last("DEV-3", "batch-finished"))
+
+    def test_renderer_failure_never_blocks_the_terminal_report(self):
+        import trajectory as module
+        original = module.from_roots
+        module.from_roots = lambda *a, **k: (_ for _ in ()).throw(ValueError("broken records"))
+        self.addCleanup(setattr, module, "from_roots", original)
+        self.launch(stop_after=["DEV-1"])
+        root = self.root / "state" / "fixture"
+        self.assertTrue((root / "terminal-report.json").is_file())
+        self.assertEqual(json.loads((root / "terminal-delivery.json").read_text())["trajectory"],
+                         {"error": "broken records"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,7 @@ before unattended use.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`) |
+| `runner.py` | The engine and CLI (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, and the offline `report` and `measure`) |
 | `launcher.py` | Model-free launch preflight with identity-keyed reuse; `systemd-user` and `foreground` backends |
 | `supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
 | `recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
@@ -36,10 +36,15 @@ before unattended use.
 | `watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`, run by a launch-started timer) |
 | `render_samples.py` | Writes `docs/template-samples.md`, one sample comment per template |
 | `report.py` | Standalone terminal HTML/JSON report |
+| `records.py` | Reads saved session, check and intake records from evidence roots and deduplicates copies |
+| `trajectory.py` | Deterministic trajectory/usage/attempts/validation-audit/batch-comparison report (`runner.py report`, and `terminal-trajectory.*` at the terminal step) |
+| `measure.py` | Offline context-cost measurement: intake components, prompt/tool-output bytes, per-call context growth (`runner.py measure`) |
+| `intake.py` | Worker intake packets: compact schema 2 (default) and the full schema 1 |
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
 | `prompts/` | Generic worker guidance |
+| `testdata/` | Fictional runner records for the renderer and measurement tests |
 | `test_*.py` | Offline tests; `test_public_tree.py` fails on private identifiers in any tracked file |
 
 ## Configuration layers
@@ -63,15 +68,15 @@ model does not allow) are errors.
 | --- | --- |
 | `models.json` | Effort IDs the CLI accepts; models policy may select and their allowed efforts |
 | `labels.json` | Task-kind labels and profile labels (exactly one of each per issue) |
-| `profiles.json` | Profile → model/effort, profile order, review floors, phase overrides, escalation target, routing version |
-| `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout |
+| `profiles.json` | Profile → model/effort, profile order, review floors, phase overrides, escalation target, routing version, opt-in `review_routing` |
+| `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout, opt-in `bounded_sessions` |
 | `linear.json` | Default workflow state names and whether a milestone is required |
 
 | Layer | Fields |
 | --- | --- |
 | Site | `executables` (must include `codex`), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` |
+| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks`, optional `delivery_checks`, `delivery_integrity` |
 | Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision` |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -215,7 +220,8 @@ elsewhere stops the batch for reconciliation.
    an unavailable selection stops before the claim, with no substitution. The catalog
    does not prove remote entitlement or quota.
 3. **Implement.** The controller claims the issue (`in_progress` state) and writes an
-   intake packet; an interrupted implementation resumes its own session. The worker
+   intake packet (see "Context cost"); an interrupted implementation resumes its own
+   session unless bounded sessions start a fresh one from a handoff. The worker
    leaves changes uncommitted and makes no Linear or Git mutations.
 4. **Checks.** Checks declare `name`, `kind`, `tier`, `inputs`, `cwd` and `command`.
    Default checks always run or reuse evidence; extended checks run for matching changed
@@ -243,8 +249,9 @@ elsewhere stops the batch for reconciliation.
    and the number of unchecked criteria, and must copy each criterion verbatim. The
    controller independently rejects wrong identities and missing, duplicate, unexpected
    or blank-evidence entries; a summary or schema-shaped output alone is never acceptance.
-   The source must still be frozen at the commit afterwards. Review uses at least the
-   registry review floor for the issue's task kind and profile.
+   The source must still be frozen at the commit afterwards, and the shared contract must
+   still have its pinned hash. Review uses at least the registry review floor for the
+   issue's task kind and profile (the opt-in low-risk rule may lower only the default floor).
 9. **Publish.** The controller ticks the checklist, sets the `done` state and reads the
    issue back. `[x]` and `[X]` are treated as equivalent (Linear serializes `[X]`); every
    other description byte, identity, ownership, milestone and dependency must match.
@@ -255,6 +262,71 @@ bytes and elapsed time. Exceeding a phase's soft budget (or missing usage teleme
 checkpoints the issue for explicit reconciliation (`recover budget`); resume does not
 reset it. Usage is the
 per-session maximum of cumulative counters summed over sessions; it is not billed cost.
+
+## Context cost
+
+Batch-3 measurements showed that almost all input tokens are cached re-reads of the session
+context: cost follows the number of model calls times the context size, not the number of
+invocations. These controls keep the context small. Items marked *proposed* are off or
+unsettled until the owner decides; their values live in the registry with notes.
+
+**Compact intake and shared contract.** A project may name a `contract_file`: one versioned
+file with the rules every issue follows. Its SHA-256 is part of the pinned configuration,
+so editing it refuses a resume, and the runner re-checks it before and after review and at
+publication. The default `intake_mode: "compact"` writes `intake.json` schema
+`linear-runner.intake/2`: the issue's own fields and description, the exact unchecked
+criteria, the contract as `{path, sha256, bytes}`, the other guidance inline, context files as
+`{path, bytes, sha256}` (read on demand, not inlined), checks, selection and operator notes.
+The full pinned Linear issue is written to `issue.json` and remains the identity record for
+review and lifecycle read-back. The reviewer is told the exact contract version.
+`intake_mode: "full"` keeps the previous packet. `templates/issue-contract.md` is the shape
+for writing issue descriptions against the shared contract (purpose, deliverables, 5 to 10
+verifiable criteria, optional decision rules, exclusions); `examples/issue-contract-example.md`
+is a fictional example and `examples/home/contracts/shared-contract.md` an example contract.
+The runner also writes `intake-components.json` (bytes per component) for later measurement.
+
+**Measurement.** `runner.py measure --runs <dir>... [--issues ...] [--rollouts ~/.codex/sessions]
+[--replay-compact] [--json out.json]` reads saved records only. It reports intake bytes by
+component, unchecked criteria and link-markup bytes, and per invocation the prompt and
+tool-output bytes and the input it added to its session. With `--rollouts` it reads the Codex
+rollout of each session and splits each invocation's input into the re-sent starting context
+and the growth charged to what added it (intake/context reads, test runs, file reads, other
+commands, turns without tools, compaction); the parts add up to the recorded input exactly.
+`--replay-compact` rebuilds each saved intake with the compact builder and reports its size.
+
+**Trajectory report.** `runner.py report --runs <dir>... [--issues ...] [--until <ISO time>]
+[--group "LABEL=ID,ID"] [--out DIR] [--check-trajectory recorded.json] [--check-comparison
+recorded.json --check-label LABEL]` renders per-issue usage and time, attempts, sessions, a
+validation audit (log hashes re-verified) and batch comparison rows as Markdown and HTML plus
+JSON, with no model. Copies of run directories are deduplicated by session ID + start + role;
+the latest cumulative counter of each session counts once; cached input and reasoning are
+subsets; a missing counter is unknown, never zero; an unfinished invocation is listed as pending
+and not counted. The `--check-*` options compare against recorded totals field by field. At
+every terminal outcome the supervisor also writes `terminal-trajectory.{json,md,html}` next to
+the terminal report from the batch's run directories; a rendering failure is logged and never
+blocks the terminal report.
+
+**Bounded worker sessions (proposed; off).** `registry/phases.json` `bounded_sessions`:
+`enabled` (false), `input_threshold_tokens` (5,000,000), `handoff_after_implement` (true),
+`max_handoff_bytes` (12,000). When enabled, workers are asked to write
+`<attempt>/handoff.json` (`templates/handoff.md`, `schema/handoff.schema.json`). A worker session
+whose cumulative input reached the threshold, or the first repair after implement, is not
+resumed: the next phase starts a fresh session whose prompt carries the handoff. A missing,
+oversized, invalid or wrong-issue handoff is replaced by one the runner builds from the last
+structured result, the diff and the latest checks. Each switch is recorded in state and in the
+new attempt's `session.json` (`handoff`: source, reason, path, hash); repairs, the single
+escalation, issue identity, frozen-source checks and per-session usage attribution carry over.
+
+**Low-risk review routing (proposed; off).** `registry/profiles.json`
+`review_routing.light_review`: with `enabled`, the review may use `profile` (Economy) when all
+of these hold: the issue's profile label is in `issue_profiles` (Economy, Standard) and its task
+kind in `task_kinds` (Maintenance, Implementation); it has no `opt_out_labels` ("Full review")
+or `gate_labels` ("Human gate") label and is not blocked by a batch human-gate issue; the first
+validation passed with at most `max_repairs` (0) repairs and no escalation; delivery checks
+passed; and the committed diff has at most `max_changed_files` (8) files and
+`max_changed_lines` (300) lines. The Research, Validation and Deep review floors still apply;
+the opt-out label or a Deep profile label keeps a high-effort review. The evaluation is saved
+to `review-risk.json` and the selection source reads "low-risk review rule".
 
 ## Linear updates
 
