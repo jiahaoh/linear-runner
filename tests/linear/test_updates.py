@@ -458,7 +458,7 @@ class OutboxFallbackTests(AttentionHarness):
         self.drafts[("DEV-1", "implement")] = {"001-blocked.md": note}
         self.launch()
         body = self.linear.last("DEV-1", "blocked")
-        self.assertIn("> I cannot finish DEV-1 because the calibration table", body)
+        self.assertIn("> I cannot finish `DEV-1` because the calibration table", body)  # mentions are neutralized
         self.assertIn("> **What is needed**", body)
         self.assertEqual(self.linear.kinds("DEV-1"), ["claim", "blocked"])
 
@@ -553,6 +553,51 @@ class MessageTests(unittest.TestCase):
         self.assertTrue(first_line(batch).startswith("Batch demo-batch is paused by a host or service problem"))
 
 
+class MentionTests(unittest.TestCase):
+    """Runner comments that quote people's or models' words must not make Linear link issues."""
+
+    def test_bare_identifiers_and_linear_urls_become_inline_code(self):
+        cases = {
+            "Filing W-194 auto-added a related link to W-193.": "Filing `W-194` auto-added a related link to `W-193`.",
+            "(see TEAM2-7), then OPS-12: done": "(see `TEAM2-7`), then `OPS-12`: done",
+            "Opened https://linear.app/team/issue/W-12/some-title.": "Opened `https://linear.app/team/issue/W-12/some-title`.",
+            "Already `W-1` quoted, W-2 not": "Already `W-1` quoted, `W-2` not",
+            # Not issue mentions: paths, runner ids, lowercase, glued or partial tokens.
+            "see /runs/W-193/20260924T175749Z-995f99d3/implement": "see /runs/W-193/20260924T175749Z-995f99d3/implement",
+            "recovery R-20260923T121500Z-1d2e3f4a and launch L-20260923T090000Z-7f8e9d0c":
+                "recovery R-20260923T121500Z-1d2e3f4a and launch L-20260923T090000Z-7f8e9d0c",
+            "w-193, xW-1, W-1x, W-, run-3, file.W-2": "w-193, xW-1, W-1x, W-, run-3, file.W-2",
+            # A documented false positive: harmless, still readable.
+            "hashed with SHA-256": "hashed with `SHA-256`",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(updates.neutralize_issue_mentions(text), expected)
+                self.assertEqual(updates.neutralize_issue_mentions(expected), expected)  # idempotent
+                self.assertEqual(updates.issue_mentions(expected), [])
+        self.assertEqual(updates.issue_mentions("W-194 and W-193, again W-194 and `W-9`"), ["W-194", "W-193"])
+
+    def test_recovery_and_blocked_comments_neutralize_quoted_text(self):
+        ctx = render_samples.CTX
+        record = {"id": "R-20260923T121500Z-1d2e3f4a", "kind": "publish", "authorized_by": "Owner", "then": "continue",
+                  "reason": "Filing TEAM-19 auto-added a related link to TEAM-12", "details": {"issue": "TEAM-12"}}
+        body = messages.recovery(ctx, record=record, note="Ignore TEAM-20; it only mentions this issue.")
+        self.assertIn("The reason given was: Filing `TEAM-19` auto-added a related link to `TEAM-12`.", body)
+        self.assertIn("> Ignore `TEAM-20`; it only mentions this issue.", body)
+        self.assertEqual(updates.issue_mentions(body.split("\n", 1)[1]), [])  # the headline names only its own issue
+        self.assertEqual(updates.lint(body, kind="recovery", limits=LIMITS, allow_commands=True), [])
+        blocked = messages.blocked(ctx, issue="TEAM-12", classification="needs-decision", error="Incomplete prerequisite TEAM-11",
+                                   step="implement")
+        self.assertIn("Incomplete prerequisite `TEAM-11`", blocked)
+        self.assertNotIn(" TEAM-11", blocked)
+
+    def test_recover_warns_when_the_reason_names_an_issue(self):
+        self.assertIsNone(messages.mention_warning("An automatically created related link was removed"))
+        warning = messages.mention_warning("Filing W-194 added a related link to W-193")
+        self.assertIn("names W-194, W-193", warning)
+        self.assertIn("`W-194`, `W-193`", warning)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -617,13 +662,13 @@ class DeliverablesTests(AttentionHarness):
         self.launch(stop_after=["DEV-1"])
         path = self.repo / "DEV-1.txt"
         ready = self.linear.last("DEV-1", "ready")
-        self.assertIn(f"**Deliverables to review**\n- {path} — The rendered DEV-1 output", ready)
+        self.assertIn(f"**Deliverables to review**\n- {path} — The rendered `DEV-1` output", ready)
         self.assertIn(f"Listed deliverables that were not found: reports/missing.html and {self.root / 'outside.html'}.", ready)
         review_prompt = self.prompts[1]
         self.assertIn(f"open and assess them as part of the review: {path} (The rendered DEV-1 output)", review_prompt)
         done = self.linear.last("DEV-1", "done")
         self.assertIn("the deliverables below are ready for your review.", first_line(done))
-        self.assertIn(f"**Deliverables to review**\n- {path} — The rendered DEV-1 output\n\n**Delivered**", done)
+        self.assertIn(f"**Deliverables to review**\n- {path} — The rendered `DEV-1` output\n\n**Delivered**", done)
         self.assertNotIn("missing.html", done)
         # Nothing listed: no section, and the headline says no action is needed.
         self.assertNotIn("Deliverables", self.linear.last("DEV-1", "claim"))

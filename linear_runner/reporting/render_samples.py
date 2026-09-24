@@ -213,7 +213,7 @@ def samples():
          "when a launch carries out `recover publish --accept-contract-drift`", "TEAM-12", "recovery",
          messages.recovery(CTX, record={"id": "R-20260923T123000Z-2e3f4a5b", "kind": "publish",
                                         "authorized_by": "Owner", "then": "continue",
-                                        "reason": "A new issue added a related link; the criteria and scope are unchanged",
+                                        "reason": "Filing TEAM-19 added a related link; the criteria and scope are unchanged",
                                         "details": {"issue": "TEAM-12", "step": "publish",
                                                     "accepted_contract_drift": {"changed_fields": ["relations.relatedTo"]}}},
                            step="publish", evidence_paths=[f"{STATE}/recovery-log.jsonl"])),

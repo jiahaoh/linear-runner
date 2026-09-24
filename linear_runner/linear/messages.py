@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 import shlex
 
-from linear_runner.linear.updates import first_sentence, plain, quote, render, variant
+from linear_runner.linear.updates import (first_sentence, issue_mentions, neutralize_issue_mentions, plain, quote,
+                                          render, variant)
 
 AUTH = '--reason "<why>" --authorized-by "<your name>"'
 
@@ -81,6 +82,24 @@ def short_cause(text, limit=140):
     value = " ".join(str(text or "unknown error").split()).rstrip(".")
     value = value.replace(". ", "; ").replace("! ", "; ").replace("? ", "; ")
     return value if len(value) <= limit else value[:limit].rsplit(" ", 1)[0] + " …"
+
+
+def said(text, limit=140):
+    """``short_cause`` of error text (which can quote a worker or an issue) as posted to Linear:
+    issue mentions neutralized so the comment does not link issues."""
+    return neutralize_issue_mentions(short_cause(text, limit))
+
+
+def mention_warning(text, what="reason"):
+    """A warning for ``recover`` when a recovery ``text`` that will be quoted in a Linear
+    comment names an issue; None otherwise."""
+    found = issue_mentions(text)
+    if not found:
+        return None
+    return (f"Warning: the {what} names {', '.join(found)}. A bare issue mention in a Linear comment links the "
+            "issues (Linear adds a related link); the recovery comment shows it as inline code ("
+            + ", ".join(f"`{m}`" for m in found) + "), which Linear is assumed not to link. Name the issue "
+            "another way if no link must appear.")
 
 
 def model_text(stage, *, source=False):
@@ -286,12 +305,12 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
             draft=None, draft_problem=None, draft_path=None, evidence_paths=(), repairs=None, stage=None):
     subject = issue or f"Batch {ctx['batch']}"
     values = {"subject": subject, "phase": phase or step or "model", "step": step or "current",
-              "error": short_cause(error, 300)}
+              "error": said(error, 300)}
     known = event in ("worker_blocked", "review_blocked", "checks_failed", "delivery_failed", "budget_exceeded")
-    cause = variant("blocked", "cause", event, values) if known else short_cause(error)
+    cause = variant("blocked", "cause", event, values) if known else said(error)
     happened = variant("blocked", "happened", event if known else "other", values)
     if event in ("review_blocked", "checks_failed", "delivery_failed"):
-        happened += f" The runner reported: {short_cause(error, 300)}."
+        happened += f" The runner reported: {said(error, 300)}."
     if model_text(stage):
         happened += f" The {stage.get('phase')} phase ran with {model_text(stage)}."
     auth = claude_auth_variant(error) if classification == "environment" and not known else None
@@ -308,10 +327,10 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
 
 def deferred(ctx, *, issue, cause, block, result=None, who="worker", draft=None, evidence_paths=()):
     if cause.get("rule_text"):
-        why = f"The issue's own decision rule \"{cause['rule_text']}\" matched block {block['id']}."
+        why = f"The issue's own decision rule \"{neutralize_issue_mentions(cause['rule_text'])}\" matched block {block['id']}."
     else:
         why = f"The batch policy {cause.get('policy', 'on_block')} applies to block {block['id']}."
-    why += f" It blocked at the {block.get('step', 'current')} step: {short_cause(block.get('error'), 240)}."
+    why += f" It blocked at the {block.get('step', 'current')} step: {said(block.get('error'), 240)}."
     restore = ("It is not accepted and keeps its Linear state.\n\n" + blocks(
         ("Once the batch has stopped, record the restore:", command(ctx, "recover", "resume", "--issue", issue, auth=True)),
         ("Then start the batch again:", command(ctx, "launch"))))

@@ -272,7 +272,7 @@ The worker ended its implement session with status blocked instead of ready. The
 **In their own words**
 The worker wrote:
 
-> I cannot finish TEAM-12 because the calibration table it names is not in the data folder, and I need the owner to say where it lives.
+> I cannot finish `TEAM-12` because the calibration table it names is not in the data folder, and I need the owner to say where it lives.
 >
 > **What is blocking**
 > The second criterion asks the pipeline to read the calibration table from the configured data folder. That folder only has raw tiles, and the older pipeline hard-coded the values.
@@ -569,7 +569,7 @@ Template `recovery.md`, written by the runner, posted when a launch carries out 
 A publish recovery for TEAM-12 recorded by Owner is being carried out now; no action is needed.
 
 **Recovery**
-The runner finishes publishing the already accepted review; no model runs. The issue changed only outside the accepted criteria and scope, so the runner re-pinned it without a new review. The reason given was: A new issue added a related link; the criteria and scope are unchanged.
+The runner finishes publishing the already accepted review; no model runs. The issue changed only outside the accepted criteria and scope, so the runner re-pinned it without a new review. The reason given was: Filing `TEAM-19` added a related link; the criteria and scope are unchanged.
 
 **Then**
 After this issue the batch continues.

@@ -164,8 +164,22 @@ def stop_watchdog_timer(root, run=subprocess.run):
     return {"timer": timer, "state": "stopped"}
 
 
+def mention_warnings(args):
+    """Warnings for recovery text the recovery comment will quote that names an issue."""
+    from linear_runner.linear import messages
+    if args.kind not in messages.RECOVERY_KINDS:
+        return []  # cancel and repin-config post no recovery comment
+    texts = [(args.reason, "reason")]
+    note = getattr(args, "note_file", None)
+    if note and Path(note).expanduser().is_file():
+        texts.append((Path(note).expanduser().read_text(), "note"))
+    return [w for w in (messages.mention_warning(text, what) for text, what in texts) if w]
+
+
 def recover(args, runner):
     from linear_runner.supervision import recovery
+    for warning in mention_warnings(args):
+        print(warning, file=sys.stderr)
     common = {"reason": args.reason, "authorized_by": args.authorized_by}
     if args.kind == "resume":
         return recovery.recover_resume(runner, then=args.then, note_file=args.note_file, repin=args.repin_contract,

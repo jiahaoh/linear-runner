@@ -563,6 +563,18 @@ has `delivery_integrity`, the delivery packet's `file_hashes` files (or the mani
 there are none) are added. The `done` comment lists them under "Deliverables to review",
 one per line, and leaves the section out when there are none.
 
+**Issue mentions.** Linear links a bare issue identifier (`TEAM-123`) or issue URL in a
+comment to that issue and adds a "related" link between the two issues. Where a runner
+comment quotes someone's words (a recovery reason, an owner note, a worker or reviewer
+summary, criteria and evidence, error text), those mentions are shown as inline code
+(`` `TEAM-123` ``) by one helper, `updates.neutralize_issue_mentions`. This assumes Linear does
+not link text inside a code span, which cannot be tested offline; related links are also not
+part of the issue contract (see "Lifecycle"), so a link that does appear no longer stops a
+batch. Worker and reviewer drafts are posted unchanged, and the runner's own issue lists (the
+batch summaries on the terminal issue) name issues as usual. `recover` prints a warning when
+the reason or note names an issue: it may still be written that way, but prefer describing
+the other issue when no link at all should appear.
+
 Every lifecycle event is a NEW comment on the issue it concerns; nothing is edited:
 
 | Event | Author | Posted |

@@ -3,7 +3,9 @@
 Real Git, checks and state files; fake Codex, Linear and launcher boundaries. No network,
 no systemd-run and no live batch.
 """
+import contextlib
 import copy
+import io
 import itertools
 import json
 import os
@@ -1345,6 +1347,26 @@ class CommandLineTests(Harness):
         parser = cli_module.build_parser()
         self.assertFalse(parser.parse_args(args).accept_contract_drift)
         self.assertTrue(parser.parse_args(args + ["--accept-contract-drift"]).accept_contract_drift)
+
+    def test_recover_warns_about_issue_mentions_and_the_comment_neutralizes_them(self):
+        RecoveryScenarioTests.pause_at_publish(self)
+        args = ["--batch", str(self.batch), "--home", str(self.home), "--authorized-by", "Owner"]
+        errors = io.StringIO()
+        with patch.object(cli_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
+                contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            main(["recover", "publish", *args, "--then", "stop",
+                  "--reason", "Filing DEV-9 auto-added a related link to DEV-1"])
+        self.assertIn("Warning: the reason names DEV-9, DEV-1.", errors.getvalue())
+        self.assertEqual(self.state()["pending_recovery"]["kind"], "publish")  # a warning, not a refusal
+        self.assertEqual(self.launch()["started"]["outcome"], "checkpoint")
+        comment = self.linear.last("DEV-1", "recovery")
+        self.assertIn("The reason given was: Filing `DEV-9` auto-added a related link to `DEV-1`.", comment)
+        self.assertNotIn(" DEV-9 ", comment)
+        errors = io.StringIO()
+        with patch.object(cli_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
+                contextlib.redirect_stderr(errors), self.assertRaises(SystemExit):
+            main(["recover", "cancel", *args, "--reason", "DEV-9 is not quoted anywhere"])
+        self.assertNotIn("Warning", errors.getvalue())  # cancel posts no comment
 
     def test_launch_refusal_writes_nothing_to_linear(self):
         args = ["--batch", str(self.batch), "--home", str(self.home)]

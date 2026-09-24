@@ -202,8 +202,37 @@ def with_marker(body, batch_id, key):
     return body.rstrip() + "\n\n" + marker(batch_id, key)
 
 
+# Linear turns a bare issue identifier (``TEAM-123``) or issue URL in a comment or description
+# into a link and adds a "related" relation between the two issues, which it re-creates from
+# description mentions after removal. Linear is assumed not to link text inside a Markdown
+# code span; this cannot be verified offline. Runner comments that quote people's or models'
+# words (recovery reasons, owner notes, summaries, error text) therefore show such mentions as
+# inline code, through neutralize_issue_mentions only.
+_MENTION = re.compile(r"(?P<url>https?://linear\.app/[^\s`]*[^\s`.,;:!?)\]])"
+                      r"|(?<![\w/.-])(?P<id>[A-Z][A-Z0-9]{0,9}-\d+)(?![\w-])")
+_CODE_SPAN = re.compile(r"(`[^`\n]*`)")
+
+
+def issue_mentions(text):
+    """Bare Linear issue identifiers and Linear URLs in ``text`` outside code spans, in order."""
+    found = []
+    for index, part in enumerate(_CODE_SPAN.split(str(text or ""))):
+        if index % 2 == 0:
+            found += [m.group(0) for m in _MENTION.finditer(part)]
+    return list(dict.fromkeys(found))
+
+
+def neutralize_issue_mentions(text):
+    """``text`` with every bare issue identifier and Linear URL outside a code span wrapped in
+    inline code, so posting it does not link issues in Linear. Idempotent."""
+    parts = _CODE_SPAN.split(str(text or ""))
+    return "".join(part if index % 2 else _MENTION.sub(lambda m: f"`{m.group(0)}`", part)
+                   for index, part in enumerate(parts))
+
+
 def plain(text, limit=700):
-    """Model text quoted in a runner comment: no fences, tables, markers; bounded length."""
+    """Model or owner text quoted in a runner comment: no fences, tables, markers; bounded
+    length; issue mentions neutralized (see neutralize_issue_mentions)."""
     lines = []
     for line in str(text or "").splitlines():
         stripped = line.strip()
@@ -214,7 +243,7 @@ def plain(text, limit=700):
     value = re.sub(r"\n{3,}", "\n\n", value)
     if len(value) > limit:
         value = value[:limit].rsplit(" ", 1)[0].rstrip(",;:") + " …"
-    return value
+    return neutralize_issue_mentions(value)
 
 
 def quote(text):
