@@ -13,7 +13,7 @@ import unittest
 import unittest.mock
 
 from linear_runner.linear import attention
-from linear_runner.config import load_config, pin_resolution
+from linear_runner.config import ATTENTION_DEFAULTS, load_config, pin_resolution
 from tests.fixtures import CHECKOUT, FakeLinear, make_home
 from linear_runner.linear import messages
 from linear_runner.reporting import render_samples
@@ -116,6 +116,14 @@ class LintTests(unittest.TestCase):
         self.assertIn("the first paragraph must be exactly one sentence ending with '.', '!' or '?'",
                       TestDraftLint.lint("review", "X is ready. No action is needed." + body))
         self.assertEqual(TestDraftLint.lint("review", "X is ready and the owner does not need to act." + body), [])
+
+    def test_recorded_claude_review_summary_passes_the_draft_lint(self):
+        sample = CHECKOUT / "tests" / "backends" / "claude_samples" / "review-summary.md"
+        self.assertEqual(TestDraftLint.lint("review", sample.read_text()), [])
+        with tempfile.TemporaryDirectory() as tmp:  # as the runner lints it: the saved outbox draft
+            draft = Path(tmp) / "001-review.md"
+            draft.write_text(sample.read_text())
+            self.assertEqual(updates.lint_draft(draft, "review", ATTENTION_DEFAULTS["lint"])[::2], ("review", []))
 
     def test_render_drops_empty_optional_sections(self):
         body = updates.render("ready", {"issue": "TEAM-1", "summary": "> done", "criteria": "", "limitations": "",
