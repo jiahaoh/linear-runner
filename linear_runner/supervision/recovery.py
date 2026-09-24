@@ -25,8 +25,8 @@ No command accepts work, deletes history or resets usage, repair or escalation c
 * ``publish`` - reconcile publication of an already accepted review; no model may run.
   ``--accept-contract-drift`` (at ``publish`` or ``done``) also re-pins the issue contract
   when the live issue changed only outside what the reviewer accepted: the acceptance
-  criteria and every scope field (description, project, assignee, milestone, ``blocks``,
-  ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot, otherwise
+  criteria and every scope field (description, project, assignee, milestone, and the issue
+  IDs of ``blocks``, ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot, otherwise
   it refuses and names the changed fields. It records the old and new contract hashes and
   the changed field names; it never runs a model.
 * ``defer``   - set an issue aside and let the queue continue with independent issues.
@@ -52,8 +52,9 @@ import tempfile
 
 from linear_runner.config import write_json
 from linear_runner.engine import intake as intake_module
-from linear_runner.engine.runner import (CONTRACT_RELATIONS, IssueBlocked, git, fingerprint, issue_contract, now,
-                                         published_issue, run_id, review_criteria, validate_review_result)
+from linear_runner.engine.runner import (CONTRACT_RELATIONS, IssueBlocked, contract_fields, git, fingerprint,
+                                         issue_contract, now, published_issue, run_id, review_criteria,
+                                         validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
 KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel", "repin-config")
@@ -366,8 +367,8 @@ def accepted_scope_changes(accepted, live):
     if description != (accepted.get("description") or "") and ticked != published_issue(accepted)["description"]:
         changed.append("description")
     changed += [f for f in SCOPE_FIELDS[1:] if _canonical(live.get(f)) != _canonical(accepted.get(f))]
-    old, new = accepted.get("relations") or {}, live.get("relations") or {}
-    changed += [f"relations.{k}" for k in CONTRACT_RELATIONS if _canonical(new.get(k)) != _canonical(old.get(k))]
+    old, new = contract_fields(accepted)["relations"], contract_fields(live)["relations"]
+    changed += [f"relations.{k}" for k in CONTRACT_RELATIONS if new[k] != old[k]]  # by issue ID, as in the contract
     return changed
 
 

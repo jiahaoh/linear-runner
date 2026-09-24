@@ -420,14 +420,16 @@ elsewhere stops the batch for reconciliation.
 
 **Issue contract.** Intake pins a SHA-256 of the issue's `id`, `description`, `projectId`,
 `assigneeId`, `projectMilestone` and the `blocks`, `blockedBy` and `duplicateOf` relations
-(`issue_contract`), and keeps the full issue as the intake snapshot (`active.issue`). Every
+(`issue_contract`; relations by issue ID only, sorted, so renaming or reordering a blocker or
+duplicate is not a change), and keeps the full issue as the intake snapshot (`active.issue`). Every
 resume, the launch preflight, publication and the lifecycle read-back compare the live issue
 with it; a difference stops the batch. `relatedTo` is not part of it: Linear adds related
 links by itself whenever a description or comment (the runner's own comments included)
 mentions another issue, and re-creates them from description mentions after removal, so they
 say nothing about scope. Title, labels and status are outside the contract too. State pinned
-by an earlier runner version stored a hash that included the related links; the runner
-checks that stored hash against the intake snapshot (under either field set) and then
+by an earlier runner version stored a hash that included the related links and relation
+titles; the runner checks that stored hash against the intake snapshot (under the current or
+an earlier formula) and then
 compares the snapshot and the live issue with the current field set, so a paused batch
 continues without a new batch.
 
@@ -817,13 +819,14 @@ be resumed; `revalidate` or `defer` are its recoveries.
 previous intake and issue beside it. After acceptance the one re-pin is `recover publish
 --accept-contract-drift`: it reads the live issue and re-pins the contract only if the
 acceptance criteria (the checklist items the reviewer accepted) and every scope field
-(`description`, `projectId`, `assigneeId`, `projectMilestone`, and the `blocks`,
-`blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
+(`description`, `projectId`, `assigneeId`, `projectMilestone`, and the issue IDs of the
+`blocks`, `blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
 description may differ only by publication's ticks (`[x]`/`[X]`). Otherwise it refuses and
 names the changed fields: a changed criterion or scope needs a new independent review
-(`recover review --repin-contract`), which runs only at the review step, and no recovery moves
-an accepted issue back to review, so restore the accepted text or fields in Linear or defer
-the issue. On success it keeps the accepted description pinned, stores the previous snapshot
+(`recover review --repin-contract`), which runs only at the review step. **Known limitation:**
+no recovery moves an accepted issue (step `publish` or `done`) back to the review step, so
+after acceptance a changed criterion or scope field can only be restored in Linear, or the
+issue deferred. On success it keeps the accepted description pinned, stores the previous snapshot
 as `issue-before-<R-id>.json` (and `issue-json-before-<R-id>.json`), and records the old and
 new contract hashes and the changed field names in `active.contract_repins`, the recovery
 record and the recovery log. Like every `publish` recovery it runs no model. `--redeliver` re-runs delivery for the frozen commit

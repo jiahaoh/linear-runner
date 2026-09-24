@@ -556,6 +556,51 @@ class EngineTests(unittest.TestCase):
         live = published_issue(dict(issue, relations=dict(issue["relations"], relatedTo=self.RELATED)))
         self.assertTrue(published_contract_matches(live, issue))
 
+    def test_relations_compare_by_issue_id_only(self):
+        issue = dict(copy.deepcopy(self.linear.data), relations={
+            "blocks": [{"id": "NEXT-2", "title": "Second"}, {"id": "NEXT-1", "title": "First"}],
+            "blockedBy": [{"id": "PRE-1", "title": "Prerequisite"}], "duplicateOf": None})
+        pinned = issue_contract(issue)
+        def variant(**relations):
+            return dict(issue, relations=dict(copy.deepcopy(issue["relations"]), **relations))
+        unchanged = {"renamed blocker": variant(blockedBy=[{"id": "PRE-1", "title": "Prerequisite, renamed"}]),
+                     "renamed blocked issue": variant(blocks=[{"id": "NEXT-2", "title": "Renamed"},
+                                                              {"id": "NEXT-1", "title": "First"}]),
+                     "reordered": variant(blocks=[{"id": "NEXT-1", "title": "First"}, {"id": "NEXT-2", "title": "Second"}])}
+        for name, other in unchanged.items():
+            with self.subTest(name):
+                self.assertEqual(issue_contract(other), pinned)
+        duplicate = variant(duplicateOf={"id": "DUP-1", "title": "Original"})
+        self.assertEqual(issue_contract(variant(duplicateOf={"id": "DUP-1", "title": "Original, renamed"})),
+                         issue_contract(duplicate))
+        changed = {"added blocker": variant(blockedBy=[{"id": "PRE-1", "title": "Prerequisite"},
+                                                       {"id": "PRE-2", "title": "Another"}]),
+                   "removed blocker": variant(blockedBy=[]),
+                   "replaced blocker": variant(blockedBy=[{"id": "PRE-9", "title": "Prerequisite"}]),
+                   "removed blocked issue": variant(blocks=[{"id": "NEXT-1", "title": "First"}]),
+                   "duplicate set": duplicate}
+        for name, other in changed.items():
+            with self.subTest(name):
+                self.assertNotEqual(issue_contract(other), pinned)
+
+    def test_old_pinned_forms_verify_and_a_renamed_blocker_passes(self):
+        from linear_runner.engine.runner import (contract_matches, legacy_issue_contract, pinned_contract,
+                                                 titled_issue_contract)
+        snapshot = dict(copy.deepcopy(self.linear.data), relations={
+            "blocks": [], "blockedBy": [{"id": "PRE-1", "title": "Prerequisite"}], "duplicateOf": None,
+            "relatedTo": list(self.RELATED)})
+        live = dict(copy.deepcopy(snapshot), relations=dict(copy.deepcopy(snapshot["relations"]),
+                                                            blockedBy=[{"id": "PRE-1", "title": "Renamed"}], relatedTo=[]))
+        for form in (issue_contract, titled_issue_contract, legacy_issue_contract):
+            with self.subTest(form=form.__name__):
+                active = {"issue": snapshot, "contract": form(snapshot), "step": "review"}
+                self.assertEqual(pinned_contract(active), issue_contract(snapshot))
+                self.assertTrue(contract_matches(live, active))
+                blocked = dict(live, relations=dict(live["relations"], blockedBy=[{"id": "PRE-2", "title": "New"}]))
+                self.assertFalse(contract_matches(blocked, active))
+        with self.assertRaisesRegex(RuntimeError, "does not match its pinned contract hash"):
+            pinned_contract({"issue": snapshot, "contract": issue_contract(live | {"id": "DEV-2"}), "step": "review"})
+
     def test_state_pinned_with_related_links_verifies_against_the_snapshot(self):
         # State written by an older runner: the stored hash covered the whole relations object.
         from linear_runner.engine.runner import legacy_issue_contract, pinned_contract

@@ -322,11 +322,21 @@ CONTRACT_FIELDS = ("id", "description", "projectId", "assigneeId", "projectMiles
 CONTRACT_RELATIONS = ("blocks", "blockedBy", "duplicateOf")
 
 
+def _relation_ids(value):
+    """A relation by issue ID only: a sorted ID list (a list relation) or an ID or None (duplicateOf)."""
+    def ident(entry):
+        return entry.get("id") if isinstance(entry, dict) else entry
+    if isinstance(value, list):
+        return sorted(str(ident(e)) for e in value)
+    return ident(value) if value else None
+
+
 def contract_fields(issue):
-    """The contract fields of ``issue``; relations are limited to CONTRACT_RELATIONS."""
+    """The contract fields of ``issue``. Relations are limited to CONTRACT_RELATIONS and compared
+    by issue ID only (sorted), so renaming or reordering a blocker or duplicate is not a change."""
     relations = issue.get("relations") or {}
     return dict({k: issue.get(k) for k in CONTRACT_FIELDS},
-                relations={k: relations.get(k) for k in CONTRACT_RELATIONS})
+                relations={k: _relation_ids(relations.get(k)) for k in CONTRACT_RELATIONS})
 
 
 def issue_contract(issue):
@@ -335,9 +345,18 @@ def issue_contract(issue):
 
 def legacy_issue_contract(issue):
     """The contract hash runner versions before W-194 pinned: the whole ``relations`` object,
-    related links included. Used only to check a stored hash against its intake snapshot."""
+    related links and titles included. Used only to check a stored hash against its snapshot."""
     return hashlib.sha256(json.dumps({k: issue.get(k) for k in
         ("id", "description", "projectId", "assigneeId", "projectMilestone", "relations")}, sort_keys=True).encode()).hexdigest()
+
+
+def titled_issue_contract(issue):
+    """The intermediate W-194 form: CONTRACT_RELATIONS as stored (titles and order included).
+    Used only to check a stored hash against its snapshot."""
+    relations = issue.get("relations") or {}
+    return hashlib.sha256(json.dumps(dict({k: issue.get(k) for k in CONTRACT_FIELDS},
+                                          relations={k: relations.get(k) for k in CONTRACT_RELATIONS}),
+                                     sort_keys=True).encode()).hexdigest()
 
 
 def pinned_contract(active):
@@ -345,13 +364,13 @@ def pinned_contract(active):
 
     It is recomputed from the stored intake snapshot (``active["issue"]``) rather than taken
     from the stored hash, so state pinned by an older runner (whose hash included related
-    links) is compared with the same field set as the live issue. The stored hash must still
-    match that snapshot under the current or the legacy formula; otherwise the snapshot is
-    not the one that was pinned and nothing is compared.
+    links and relation titles) is compared with the same field set as the live issue. The
+    stored hash must still match that snapshot under the current, the titled or the legacy
+    formula; otherwise the snapshot is not the one that was pinned and nothing is compared.
     """
     snapshot = active["issue"]
     current = issue_contract(snapshot)
-    if active.get("contract") not in (current, legacy_issue_contract(snapshot)):
+    if active.get("contract") not in (current, titled_issue_contract(snapshot), legacy_issue_contract(snapshot)):
         raise RuntimeError("The saved intake snapshot does not match its pinned contract hash (the scope record "
                            "changed outside the runner); reconcile intake")
     return current
