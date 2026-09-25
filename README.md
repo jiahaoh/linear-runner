@@ -436,6 +436,10 @@ elsewhere stops the batch for reconciliation.
    The source must still be frozen at the commit afterwards, and the shared contract must
    still have its pinned hash. Review uses at least the registry review floor for the
    issue's task kind and profile (the opt-in low-risk rule may lower only the default floor).
+   A blocked review pauses the issue at this step; `recover repair` can send the reviewer's
+   findings back to the worker as a repair, after which steps 4 to 8 run again with the
+   repair committed on top of the earlier controller commit (see "Stop, recovery and
+   continuation").
 9. **Publish.** The controller ticks the checklist, sets the `done` state and reads the
    issue back. `[x]` and `[X]` are treated as equivalent (Linear serializes `[X]`); every
    other description byte, identity, ownership, milestone and dependency must match.
@@ -871,6 +875,7 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | A repair finished `blocked`, or was interrupted, or checks still fail at `validate`, and you fixed the check configuration or environment: re-run the checks on the current source, no model, no repair slot | `recover revalidate --batch $B --reason R --authorized-by A [--then stop]` |
 | A repair finished `blocked` and the worker should try again with your note (uses the next repair slot) | `recover resume --batch $B --note-file F --reason R --authorized-by A` |
 | Re-run only the independent review of the frozen commit | `recover review --batch $B --reason R --authorized-by A [--redeliver] [--repin-contract] [--note-file F]` |
+| The independent review blocked and the reviewer is right: send its findings back to the worker as a repair (uses the next repair slot), then validate, commit on top and review afresh | `recover repair --batch $B --reason R --authorized-by A [--note-file F] [--then stop]` |
 | Soft-budget checkpoint | `recover budget --batch $B --phase P --input-tokens N --output-tokens N --tool-calls N --reason R --authorized-by A` |
 | Publication or its read-back failed after acceptance | `recover publish --batch $B --reason R --authorized-by A` |
 | After acceptance (step `publish` or `done`) the contract check stops, but the issue changed only outside the accepted criteria and scope | `recover publish --batch $B --accept-contract-drift --reason R --authorized-by A` |
@@ -893,6 +898,34 @@ that finished `blocked`, a plain `resume` is refused with a pointer to `revalida
 `resume --note-file F`, which gives the worker one more repair (the next slot, with the
 single escalation) and is refused once every repair is used. An interrupted repair cannot
 be resumed; `revalidate` or `defer` are its recoveries.
+**Review findings back to the worker.** At a `review` stop after a blocked review, choose
+between `recover review` and `recover repair` by whether the committed work has to change.
+If the reviewer is wrong, or a criterion was unclear and you clarify it
+(`--repin-contract`) or explain it in a note, `recover review` re-runs only the review of the
+same frozen commit; no model other than the reviewer runs and no repair slot is used. If
+the reviewer is right (for example it found a real defect or incomplete notes), `recover
+repair` sends its findings back to the worker. It is refused at any other step, when every
+repair is used, while a soft-budget checkpoint is pending and when the latest review saved
+no result, or one for another commit, or one without an unmet criterion or blocked status.
+It records the review result's path and SHA-256 (and the optional `--note-file`); the launch
+that carries it out moves the active issue from `review` to `repair`
+(`active.review_repairs`), moves the Linear issue back to In Progress and runs one repair in
+the worker's issue session under the usual rules (the same session unless the bounded-session
+rules start a fresh one from a handoff, the next slot of `max_repairs`, the single escalation
+after an earlier repair, the repair budget and timeout). The repair prompt gives every unmet
+criterion with the reviewer's evidence, the reviewer's summary and limitations, and the
+owner's note, as problems the independent reviewer found in the committed work, to fix
+within the issue's scope on top of the clean committed source. Then the full checks run
+(failures enter the normal repair loop), the repair is committed as a new controller commit
+on top of the earlier one (`fix(<issue>): address independent review findings`; the earlier
+commit is never amended), delivery runs again (the earlier packet is kept as
+`delivery-superseded-<id>`) and a fresh review session assesses
+`<starting commit>..<new commit>`, i.e. every controller commit of the issue.
+`history[].commits` lists them; `history[].commit` is the accepted one. A repair from a
+review that finishes `blocked` is handled like any blocked repair (`revalidate`, or `resume
+--note-file`, which repeats the review findings with the new note). The run summary and
+`report` label it "Repair N (from review)".
+
 `--repin-contract` adopts an edited live issue before acceptance only, keeping the
 previous intake and issue beside it. After acceptance the one re-pin is `recover publish
 --accept-contract-drift`: it reads the live issue and re-pins the contract only if the
@@ -909,7 +942,7 @@ as `issue-before-<R-id>.json` (and `issue-json-before-<R-id>.json`), and records
 new contract hashes and the changed field names in `active.contract_repins`, the recovery
 record and the recovery log. Like every `publish` recovery it runs no model. `--redeliver` re-runs delivery for the frozen commit
 and keeps the old packet as `delivery-superseded-<id>`. `review` allows only the review
-model phase and `publish` allows none. `budget` moves the checkpoint into
+model phase, `repair` only the repair and review phases, and `publish` none. `budget` moves the checkpoint into
 `budget_reconciliations` and records the new limits as that phase's allowance for this
 issue. `defer --restore-worktree` parks uncommitted work in a Git ref; `--keep-commit`
 continues on top of an unaccepted controller commit. A parked issue can be restored only
