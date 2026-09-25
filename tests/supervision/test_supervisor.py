@@ -991,9 +991,19 @@ class ReviewRepairTests(Harness):
         self.assertIn("The independent reviewer's findings on the committed work go back to the worker as a repair "
                       "of DEV-1", recovery_body)
         self.assertIn("The reviewer marked 2 acceptance criteria as not met", recovery_body)
-        self.assertIn("It needed 1 repair", self.linear.last("DEV-1", "done"))
+        self.assertIn("It needed 1 repair for findings of the independent review before it was accepted.",
+                      self.linear.last("DEV-1", "done"))
         self.assertEqual([e["event"] for e in verify_log(self.state_dir)], ["recorded", "consumed"])
         self.assertEqual(state["recoveries"][0]["consumed"]["launch_id"], entry["launch_id"])
+
+    def test_the_blocked_review_comment_offers_the_repair(self):
+        self.pause_at_blocked_review()
+        body = self.linear.last("DEV-1", "blocked")
+        self.assertIn("If it is, send its findings back to the worker as a repair", body)
+        self.assertIn("(you can add --note-file with a note for the worker):\n\n```bash\npython3 ", body)
+        commands = [line.split(" --batch")[0].split("runner.py ")[1] for line in body.splitlines() if "runner.py" in line]
+        self.assertEqual(commands, ["recover repair", "recover review", "launch",
+                                    "recover defer --issue DEV-1 --restore-worktree"])
 
     def test_the_active_state_moves_to_a_repair_and_refreshes_the_frozen_identity(self):
         paused = self.pause_at_blocked_review()["active"]

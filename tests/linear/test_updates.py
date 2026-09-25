@@ -581,6 +581,17 @@ class MessageTests(unittest.TestCase):
                           "recover defer --issue TEAM-1 --restore-worktree"])
         exhausted = messages.recovery_steps(ctx, issue="TEAM-1", step="repair", event="worker_blocked", repairs=2)
         self.assertNotIn("--note-file", exhausted)
+        blocked_review = messages.recovery_steps(ctx, issue="TEAM-1", step="review", event="review_blocked", repairs=1)
+        self.assertEqual([line.split(" --batch")[0].split("runner.py ")[1] for line in blocked_review.splitlines()
+                          if "runner.py" in line],
+                         ["recover repair", "recover review", "launch",
+                          "recover defer --issue TEAM-1 --restore-worktree"])
+        self.assertIn("send its findings back to the worker as a repair that uses the next repair slot", blocked_review)
+        self.assertIn("(you can add --note-file with a note for the worker):\n\n```bash\n", blocked_review)
+        no_slot = messages.recovery_steps(ctx, issue="TEAM-1", step="review", event="review_blocked", repairs=2)
+        self.assertNotIn("recover repair", no_slot)
+        self.assertIn("Every repair is used, so the findings cannot go back to the worker", no_slot)
+        self.assertNotIn("recover repair", messages.recovery_steps(ctx, issue="TEAM-1", step="review"))
         failing = messages.recovery_steps(ctx, issue="TEAM-1", step="validate", event="checks_failed")
         self.assertIn("recover revalidate", failing)
         batch = messages.blocked(ctx, issue=None, classification="environment", error="Linear HTTP 502", step=None)

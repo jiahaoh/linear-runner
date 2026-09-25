@@ -219,7 +219,16 @@ def review(ctx, *, issue, result, attempt, draft_problem=None, stage=None):
 
 
 def done(ctx, *, issue, commit, criteria_count, repairs, run_dir, deliverables=(), stages=()):
-    note = "" if not repairs else f"It needed {plural(repairs, 'repair')} before the checks passed."
+    from_review = sum(1 for s in stages or () if s.get("phase") == "repair" and s.get("repair_source") == "review")
+    if not repairs:
+        note = ""
+    elif from_review == repairs:
+        note = f"It needed {plural(repairs, 'repair')} for findings of the independent review before it was accepted."
+    elif from_review:
+        note = (f"It needed {plural(repairs, 'repair')}, {from_review} of them for findings of the independent review, "
+                "before it was accepted.")
+    else:
+        note = f"It needed {plural(repairs, 'repair')} before the checks passed."
     return render("done", {"issue": issue, "criteria": criteria_phrase(criteria_count), "commit": commit[:12],
                            "branch": ctx["branch"], "repairs": note, "deliverables": deliverable_lines(deliverables),
                            "models": stages_summary(stages),
@@ -251,7 +260,8 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
     At the repair step the wording depends on how the repair ended: one that finished with
     status blocked offers ``revalidate`` (the owner fixed configuration or the environment),
     ``resume --note-file`` (the worker tries again, while repairs are left) and ``defer``;
-    only a truly interrupted repair is called interrupted.
+    only a truly interrupted repair is called interrupted. A blocked review offers ``repair``
+    (its findings go back to the worker, while repairs are left), ``review`` and ``defer``.
     """
     launch = ("Then start the batch again:", command(ctx, "launch"))
     if issue is None:
@@ -277,7 +287,21 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
         primary = ("Record the new budget allowance for the phase:",
                    command(ctx, "recover", "budget", "--phase", phase or "<phase>", "--input-tokens", "<N>",
                            "--output-tokens", "<N>", "--tool-calls", "<N>", auth=True))
-    elif event == "review_blocked" or step == "review":
+    elif event == "review_blocked":
+        # The reviewer's findings can go back to the worker while a repair slot is left.
+        left = None if repairs is None else ctx["max_repairs"] - repairs
+        hints = "(you can add --note-file with a note for the reviewer, or --repin-contract after clarifying a criterion)"
+        review = command(ctx, "recover", "review", auth=True)
+        if left is None or left > 0:
+            return blocks(("If the reviewer is right, send its findings back to the worker as a repair that uses the "
+                           "next repair slot; the runner then re-runs the checks, commits the fix on top and starts a "
+                           "fresh review (you can add --note-file with a note for the worker):",
+                           command(ctx, "recover", "repair", auth=True)),
+                          (f"Or, if the reviewer is wrong or a criterion needs clarifying, re-run only the review {hints}:",
+                           review), launch, aside)
+        primary = (f"Every repair is used, so the findings cannot go back to the worker; re-run only the review "
+                   f"{hints}:", review)
+    elif step == "review":
         primary = ("Record a review-only recovery (you can add --note-file with a note for the reviewer, or "
                    "--repin-contract after clarifying a criterion):", command(ctx, "recover", "review", auth=True))
     elif step in ("publish", "done"):

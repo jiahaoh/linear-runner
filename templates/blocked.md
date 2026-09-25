@@ -17,7 +17,7 @@ happened.delivery_failed: Delivery stopped before the independent review.
 happened.budget_exceeded: The {phase} phase used more than its soft budget, or reported no usage, so the runner stopped it.
 happened.other: The runner stopped at the {step} step with this message: {error}.
 needed.worker_blocked: Decide whether to clarify the criterion, give the worker a note, or set the issue aside.
-needed.review_blocked: Decide whether the reviewer is right. You can re-run only the review (with a note or a clarified criterion), resume the worker, or set the issue aside.
+needed.review_blocked: Decide whether the reviewer is right. If it is, send its findings back to the worker as a repair; if it is not, re-run only the review (with a note or a clarified criterion); or set the issue aside.
 needed.repair_blocked: Decide whether the failing checks are right: if their configuration or environment was wrong, fix it and re-run the checks; to let the worker try again, give it a note; or set the issue aside.
 needed.checks_failed: Look at the failing check logs; if their configuration or environment was wrong, fix it and re-run the checks, otherwise set the issue aside.
 needed.delivery_failed: Look at the delivery packet, fix the renderer or its inputs, then re-run delivery and review.

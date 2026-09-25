@@ -179,7 +179,7 @@ def samples():
          "when the batch pauses on a rejected review", "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="review_blocked",
                           error="Independent acceptance is incomplete", step="review", phase="review",
-                          who="reviewer", result=dict(BLOCKED_RESULT, summary=(
+                          who="reviewer", repairs=0, result=dict(BLOCKED_RESULT, summary=(
                               "The QC report has no error bars on the per-tile counts, which the first criterion "
                               "requires."), acceptance=[
                               {"criterion": CRITERIA[0], "satisfied": False,
@@ -226,6 +226,15 @@ def samples():
                                         "reason": "The pytest-extended check now allows an empty selection",
                                         "details": {"issue": "TEAM-12", "step": "repair"}},
                            step="validate", evidence_paths=[f"{STATE}/recovery-log.jsonl"])),
+        ("Recovery recorded, review findings back to the worker", "recovery.md", "runner",
+         "when a launch carries out `recover repair` after a blocked review", "TEAM-12", "recovery",
+         messages.recovery(CTX, record={"id": "R-20260923T112000Z-3f4a5b6c", "kind": "repair",
+                                        "authorized_by": "Owner", "then": "continue",
+                                        "reason": "The reviewer is right: the QC report needs error bars",
+                                        "details": {"issue": "TEAM-12", "step": "review",
+                                                    "review": {"unsatisfied": [CRITERIA[0]]}}},
+                           step="repair", note="Use the bootstrap intervals the pipeline already computes.",
+                           evidence_paths=[f"{STATE}/recovery-log.jsonl"], stage=luna["repair"])),
         ("Recovery recorded, publish after changes outside the accepted scope", "recovery.md", "runner",
          "when a launch carries out `recover publish --accept-contract-drift`", "TEAM-12", "recovery",
          messages.recovery(CTX, record={"id": "R-20260923T123000Z-2e3f4a5b", "kind": "publish",
