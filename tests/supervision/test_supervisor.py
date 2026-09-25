@@ -5,6 +5,7 @@ no systemd-run and no live batch.
 """
 import contextlib
 import copy
+import hashlib
 import io
 import itertools
 import json
@@ -908,6 +909,191 @@ class RevalidateTests(Harness):
         args = ["--batch", str(self.batch), "--home", str(self.home)]
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             main(["recover", "revalidate", *args, "--authorized-by", "Owner"])
+
+
+class ReviewRepairTests(Harness):
+    """`recover repair`: a blocked independent review's findings go back to the worker."""
+    CRITERIA = ["Read and write gene IDs losslessly in CSV and Parquet", "Record the worker notes"]
+    SUMMARY = "CSV rejects the valid literal gene ID <NA> while Parquet preserves it; the worker notes are incomplete."
+    EVIDENCE = ["io/csv.py maps the literal <NA> to a missing value, so the CSV round trip drops it",
+                "notes.md stops after the CSV section and says nothing about Parquet"]
+
+    def setUp(self):
+        super().setUp()
+        self.linear.data["description"] = "\n".join(f"- [ ] {c}" for c in self.CRITERIA)
+        self.reviews = 0
+        self.hooks[("DEV-1", "review")] = self.review
+
+    def review(self, result):
+        """The first review blocks with the W-199 findings; later reviews accept."""
+        self.reviews += 1
+        if self.reviews == 1:
+            result.update(status="blocked", summary=self.SUMMARY, limitations=["Parquet was checked by reading code"])
+            for entry, evidence in zip(result["acceptance"], self.EVIDENCE):
+                entry.update(satisfied=False, evidence=evidence)
+
+    def pause_at_blocked_review(self):
+        entry = self.launch()
+        self.assertEqual(entry["started"]["outcome"], "blocked")
+        state = self.state()
+        self.assertEqual((state["phase"], state["active"]["step"], state["stops"][-1]["event"]),
+                         ("paused", "review", "review_blocked"))
+        return state
+
+    def note(self, text="Keep <NA> as a literal gene ID in both formats; do not change the Parquet path."):
+        path = self.root / "note.md"
+        path.write_text(text)
+        return str(path)
+
+    def test_findings_go_back_to_the_worker_and_a_fresh_review_accepts_a_new_commit(self):
+        paused = self.pause_at_blocked_review()["active"]
+        start, first = paused["starting_commit"], paused["commit"]
+        self.assertEqual(git(self.repo, "rev-list", f"{start}..HEAD").split(), [first])
+        record = self.recover("repair", note_file=self.note())
+        review = record["details"]["review"]
+        self.assertEqual((record["kind"], record["details"]["commit"], review["status"], review["unsatisfied"]),
+                         ("repair", first, "blocked", self.CRITERIA))
+        self.assertEqual(review["sha256"], hashlib.sha256(Path(review["result"]).read_bytes()).hexdigest())
+        self.assertEqual(review["stop"]["event"], "review_blocked")
+        self.assertEqual(self.state()["active"]["step"], "review")  # the launch carries it out
+        entry = self.launch()  # no --clear-stop: the recovery was recorded against this marker
+        self.assertEqual(entry["started"]["outcome"], "complete")
+        self.assertEqual(self.calls[:4], [("DEV-1", "implement"), ("DEV-1", "review"), ("DEV-1", "repair"),
+                                          ("DEV-1", "review")])
+        # The repair ran in the worker's issue session; each review is a new session.
+        self.assertEqual(self.resumed[:4], [None, None, "DEV-1-implement-1", None])
+        state = self.state()
+        history = state["history"][0]
+        second = history["commit"]
+        # A new controller commit on top of the first, which is unchanged; nothing was amended.
+        self.assertNotEqual(second, first)
+        self.assertEqual(git(self.repo, "rev-list", f"{start}..{second}").split(), [second, first])
+        self.assertEqual(git(self.repo, "rev-parse", f"{second}^"), first)
+        self.assertEqual(history["commits"], [first, second])
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s", second), "fix(dev-1): address independent review findings")
+        self.assertFalse(git(self.repo, "status", "--porcelain"))
+        # The fresh review saw the whole issue diff at the new commit.
+        self.assertIn(f"{start}..{second}", self.prompts[3])
+        self.assertIn(f"An earlier independent review of commit {first} was blocked", self.prompts[3])
+        run = Path(history["run_dir"])
+        self.assertEqual(json.loads((run / "final-result.json").read_text())["commit"], second)
+        self.assertEqual(len(list(run.glob("delivery-superseded-*"))), 1)  # the first commit's packet is kept
+        self.assertEqual(json.loads((run / "delivery" / "context.json").read_text())["commit"], second)
+        self.assertEqual(len(list(run.glob("validation-*"))), 2)
+        repair = next(run.glob("repair-*"))
+        self.assertEqual(json.loads((repair / "session.json").read_text())["repair_source"], "review")
+        # Linear: back to In Progress for the repair, In Review again for the fresh review, then Done.
+        self.assertEqual(self.linear.writes[:5], ["In Progress", "In Review", "In Progress", "In Review", "Done"])
+        kinds = self.linear.kinds("DEV-1")
+        self.assertEqual(kinds[kinds.index("blocked"):], ["blocked", "recovery", "ready", "validation", "review", "done",
+                                                          "run-summary"])
+        recovery_body = self.linear.last("DEV-1", "recovery")
+        self.assertIn("The independent reviewer's findings on the committed work go back to the worker as a repair "
+                      "of DEV-1", recovery_body)
+        self.assertIn("The reviewer marked 2 acceptance criteria as not met", recovery_body)
+        self.assertIn("It needed 1 repair", self.linear.last("DEV-1", "done"))
+        self.assertEqual([e["event"] for e in verify_log(self.state_dir)], ["recorded", "consumed"])
+        self.assertEqual(state["recoveries"][0]["consumed"]["launch_id"], entry["launch_id"])
+
+    def test_the_active_state_moves_to_a_repair_and_refreshes_the_frozen_identity(self):
+        paused = self.pause_at_blocked_review()["active"]
+        self.recover("repair", then="stop")
+        seen = {}
+        def capture(result):
+            active = self.state()["active"]
+            seen.update(step=active["step"], repairs=active["repairs"], request=active["review_repairs"][-1],
+                        retry=active.get("repair_retry"))
+        self.hooks[("DEV-1", "repair")] = capture
+        def second_review(result):
+            active = self.state()["active"]
+            seen.update(commit=active["commit"], fingerprint=active["validated_fingerprint"],
+                        commits=active["controller_commits"])
+            self.review(result)
+        self.hooks[("DEV-1", "review")] = second_review
+        self.assertEqual(self.launch()["started"]["outcome"], "checkpoint")  # --then stop
+        self.assertEqual((seen["step"], seen["repairs"], seen["retry"]), ("repair", 1, None))
+        self.assertEqual((seen["request"]["repair"], seen["request"]["reviewed_commit"]), (1, paused["commit"]))
+        self.assertNotEqual(seen["commit"], paused["commit"])
+        self.assertNotEqual(seen["fingerprint"], paused["validated_fingerprint"])
+        self.assertEqual(seen["commits"], [paused["commit"], seen["commit"]])
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD"), seen["commit"])
+
+    def test_repair_prompt_has_each_finding_the_summary_and_the_owner_note(self):
+        self.pause_at_blocked_review()
+        self.recover("repair", note_file=self.note())
+        self.launch()
+        prompt = self.prompts[2]
+        self.assertIn("the independent reviewer found these problems in the committed work; fix them within the "
+                      "issue's scope", prompt.lower())
+        for criterion, evidence in zip(self.CRITERIA, self.EVIDENCE):
+            self.assertIn(f"Criterion: {criterion}\n   Reviewer evidence: {evidence}", prompt)
+        self.assertIn("> " + self.SUMMARY, prompt)
+        self.assertIn("- Parquet was checked by reading code", prompt)
+        self.assertIn("Keep <NA> as a literal gene ID in both formats; do not change the Parquet path.", prompt)
+        self.assertIn("leave them uncommitted", prompt)
+
+    def test_a_changed_review_result_stops_before_the_repair(self):
+        self.pause_at_blocked_review()
+        record = self.recover("repair")
+        self.saved_result = Path(record["details"]["review"]["result"]).read_bytes()
+        Path(record["details"]["review"]["result"]).write_text("{}")
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        self.assertEqual(self.calls, [("DEV-1", "implement"), ("DEV-1", "review")])
+        state = self.state()
+        self.assertIn("missing or changed since `recover repair` recorded it", state["stops"][-1]["error"])
+        self.assertEqual(state["active"]["repairs"], 0)  # no repair slot was used
+        # Restoring the recorded result, a plain resume dispatches the repair.
+        Path(record["details"]["review"]["result"]).write_bytes(self.saved_result)
+        self.assertTrue(self.recover("resume")["details"]["repair_retry"]["review_repair"])
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.calls[2:4], [("DEV-1", "repair"), ("DEV-1", "review")])
+
+    def test_refusals(self):
+        # Not at the review step.
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.launch()
+        with self.assertRaisesRegex(RecoveryError, "needs the review step after a blocked review; DEV-1 is at step "
+                                                   "'implement'"):
+            self.recover("repair")
+        self.recover("resume")
+        self.pause_at_blocked_review()
+        path = self.state_dir / "state.json"
+        saved = json.loads(path.read_text())
+        # No repair slot left.
+        state = copy.deepcopy(saved); state["active"]["repairs"] = 2; path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(RecoveryError, "All 2 repairs of DEV-1 are used.*recover review.*recover defer"):
+            self.recover("repair")
+        # A pending soft-budget checkpoint.
+        state = copy.deepcopy(saved); state["active"]["budget_exceeded"] = {"phase": "review"}
+        path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(RecoveryError, "recover budget"):
+            self.recover("repair")
+        # The blocked review's result cannot be found.
+        path.write_text(json.dumps(saved))
+        result = Path(saved["active"]["stages"][-1]["attempt"]) / "phase-result.json"
+        kept = result.read_bytes(); result.unlink()
+        with self.assertRaisesRegex(RecoveryError, "saved no result"):
+            self.recover("repair")
+        # A review that accepted every criterion has no findings to send back.
+        accepted = json.loads(kept); accepted["status"] = "ready"
+        for entry in accepted["acceptance"]:
+            entry["satisfied"] = True
+        result.write_text(json.dumps(accepted))
+        with self.assertRaisesRegex(RecoveryError, "no findings to send back"):
+            self.recover("repair")
+        result.write_bytes(kept)
+        self.assertIsNone(self.state().get("pending_recovery"))
+        self.assertEqual(self.recover("repair")["kind"], "repair")
+
+    def test_command_line_records_the_repair(self):
+        self.pause_at_blocked_review()
+        args = ["--batch", str(self.batch), "--home", str(self.home), "--reason", "fixture", "--authorized-by", "Owner"]
+        with patch.object(cli_module, "LinearClient", return_value=self.linear), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            main(["recover", "repair", *args, "--note-file", self.note(), "--then", "stop"])
+        record = json.loads(out.getvalue())
+        self.assertEqual((record["kind"], record["then"]), ("repair", "stop"))
+        self.assertEqual(self.state()["pending_recovery"]["kind"], "repair")
 
 
 EMPTY_CHECK = {"name": "pytest-extended", "kind": "code", "tier": "default", "inputs": ["README.md"], "cwd": ".",

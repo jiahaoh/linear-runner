@@ -5,6 +5,7 @@ headline.default: A {kind} recovery for {subject} recorded by {authorized_by} is
 kind.resume: The runner resumes {subject} from its saved step ({step}).
 kind.revalidate: The runner re-runs the checks for {subject} on the current source without a model and without using a repair slot; if they pass it commits and continues to the review, otherwise the normal repair loop applies.
 kind.review: The runner re-runs only the independent review of the committed work.
+kind.repair: The independent reviewer's findings on the committed work go back to the worker as a repair of {subject}, in its issue session and using the next repair slot. After the repair the runner re-runs the checks, commits the fix as a new commit on top of the earlier one and starts a fresh independent review of the whole issue.
 kind.budget: The runner resumes {subject} with the new budget allowance for the {phase} phase.
 kind.publish: The runner finishes publishing the already accepted review; no model runs.
 drift.publish: The issue changed only outside the accepted criteria and scope, so the runner re-pinned it without a new review.

@@ -446,6 +446,21 @@ def validate_review_result(result, issue, commit):
         raise RuntimeError("Independent acceptance is incomplete")
 
 
+def review_repair_request(active):
+    """The latest ``recover repair`` request of ``active`` (``active.review_repairs[-1]``), else None.
+
+    Its ``repair`` is None until the repair is dispatched, then the number of the repair slot
+    it used (a note-based retry of that repair updates it)."""
+    requests = (active or {}).get("review_repairs") or []
+    return requests[-1] if requests else None
+
+
+def review_repair_waiting(active):
+    """A recorded ``recover repair`` was carried out but its repair has not been dispatched."""
+    request = review_repair_request(active)
+    return bool(request) and request.get("repair") is None and active.get("step") == "repair"
+
+
 class Runner:
     def __init__(self, config, linear=None):
         self.config = config
@@ -1028,7 +1043,10 @@ class Runner:
 
     # --- Model phases and checks ------------------------------------------------
 
-    def model_phase(self, active, phase, prompt, *, resume=None, writable=True, result_schema=None, session_meta=None):
+    def model_phase(self, active, phase, prompt, *, resume=None, writable=True, result_schema=None, session_meta=None,
+                    repair_source=None):
+        """Run one model phase of ``active``. ``repair_source`` ("review") marks a repair of an
+        independent review's findings (``recover repair``) in the stage and ``session.json``."""
         if self.allowed_phases is not None and phase not in self.allowed_phases:
             raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
         prompt += operator_notes(active)
@@ -1040,7 +1058,7 @@ class Runner:
         # What ran at each stage, for the Linear comments (model, effort, backend and source).
         active.setdefault("stages", []).append(
             {k: selection[k] for k in ("phase", "profile", "backend", "model", "effort", "model_source")}
-            | {"attempt": str(attempt), "at": now()})
+            | {"attempt": str(attempt), "at": now()} | ({"repair_source": repair_source} if repair_source else {}))
         self.save(active=active)
         prompt += self.outbox_instructions(phase, attempt / "outbox")
         if writable:
@@ -1063,6 +1081,8 @@ class Runner:
                 meta["compact_token_limit"] = self.compact_limit(phase)
                 if session_meta:
                     meta["handoff"] = session_meta
+                if repair_source:
+                    meta["repair_source"] = repair_source
                 captured = locals().get("events")
                 if captured is None and (attempt / "events.jsonl").exists():
                     captured = [json.loads(line) for line in (attempt / "events.jsonl").read_text().splitlines() if line.strip()]
@@ -1275,8 +1295,14 @@ class Runner:
         status = result.get("status") if result.get("status") in ("ready", "blocked") else "in_progress"
         criteria = [{"criterion": e.get("criterion", ""), "state": "met" if e.get("satisfied") else "unmet",
                      "evidence": str(e.get("evidence", ""))[:400]} for e in (result.get("acceptance") or [])[:50]]
-        steps = ([f"Repair only the failing checks listed in {active['validation_dir']}/checks.json."]
-                 if phase == "repair" and active.get("validation_dir") else ["Continue with the unmet criteria."])
+        request = review_repair_request(active)
+        if phase == "repair" and request and request.get("repair") == active.get("repairs"):
+            steps = [f"Fix the independent reviewer's findings in {request['review_result']} within the issue's scope; "
+                     "the repair prompt lists them."]
+        elif phase == "repair" and active.get("validation_dir"):
+            steps = [f"Repair only the failing checks listed in {active['validation_dir']}/checks.json."]
+        else:
+            steps = ["Continue with the unmet criteria."]
         return {"schema": "linear-runner.handoff/1", "issue_id": active["issue_id"], "status": status,
                 "summary": str(result.get("summary") or "No structured summary was recorded.")[:1500],
                 "changed_files": changed[:200], "criteria": criteria, "validation": validation,
@@ -1409,10 +1435,59 @@ class Runner:
                 "Return the readiness schema with criterion-level evidence and the current full commit. Copy each original unchecked checklist item verbatim into criterion. "
                 "No mutations of files, Git or Linear. Unmet/uncertain criteria mean blocked. "
                 "Do not approve human or scientific gates. " + self.contract_prompt(active) + self.deliverables_prompt(active) +
+                self.repaired_review_prompt(active) +
                 f"The final JSON must identify issue_id={issue!r} and commit={active['commit']!r}. "
                 "Return one acceptance entry per required criterion, including unsatisfied items when blocked. "
                 "An empty acceptance array or a summary alone is not a review. "
                 f"Exact required criteria: {json.dumps(review_criteria(active['issue']))}")
+
+    def repaired_review_prompt(self, active):
+        """After ``recover repair``: say that an earlier review was blocked and the worker repaired
+        its findings, and that the diff covers every controller commit of the issue."""
+        request = review_repair_request(active)
+        if not request or request.get("repair") is None:
+            return ""
+        return (f"An earlier independent review of commit {request['reviewed_commit']} was blocked "
+                f"({request['review_result']}); the worker then repaired its findings and the controller committed "
+                f"the repair on top, so {active['starting_commit']}..{active['commit']} covers every controller commit "
+                f"of the issue ({len(active.get('controller_commits') or [])}). This is a fresh review: assess every "
+                "criterion again on the current commit, not only the earlier findings. ")
+
+    def review_repair_prompt(self, active, request):
+        """The repair task for ``recover repair``: the blocked review's findings, verbatim.
+
+        The review result is read from the file recorded (with its SHA-256) by the recovery;
+        a changed file stops the repair. The owner's note, when the recovery recorded one, is
+        appended by ``model_phase`` with the other operator notes."""
+        path = Path(request["review_result"])
+        data = path.read_bytes() if path.is_file() else None
+        if data is None or hashlib.sha256(data).hexdigest() != request["sha256"]:
+            raise RuntimeError(f"The blocked review result {path} is missing or changed since `recover repair` "
+                               "recorded it; restore it or record a new recovery")
+        result = json.loads(data)
+        unmet = [e for e in result.get("acceptance") or [] if isinstance(e, dict) and e.get("satisfied") is not True]
+        findings = "\n".join(f"{index}. Criterion: {e.get('criterion')}\n   Reviewer evidence: "
+                             f"{str(e.get('evidence') or '').strip() or 'no evidence given'}"
+                             for index, e in enumerate(unmet, 1)) or \
+            "(The reviewer marked no criterion unmet; its summary and limitations say what is missing.)"
+        limitations = [str(v).strip() for v in result.get("limitations") or [] if str(v).strip()]
+        summary = str(result.get("summary") or "").strip() or "(no summary given)"
+        return (f"Repair {active['issue_id']} after its independent review. The independent reviewer found these "
+                "problems in the committed work; fix them within the issue's scope. "
+                f"The reviewed commit is {request['reviewed_commit']} and the full review result is {path}. "
+                "The source is committed and the worktree is clean at that commit: make your changes on top of it "
+                "and leave them uncommitted. The controller then runs the full checks, commits your changes as a new "
+                "commit on top of the earlier one and starts a fresh independent review of the whole issue diff from "
+                f"{active['starting_commit']}. Change only what the findings need; do not expand scope, change the "
+                "acceptance criteria, commit, push or mutate Linear. Update your notes and deliverables where a "
+                "finding concerns them. Return the readiness schema with evidence for every criterion, or blocked "
+                "when a finding cannot be fixed within the issue's scope."
+                + (" The owner's note for this repair is among the operator recovery notes below."
+                   if request.get("note") else "")
+                + "\n\nReviewer summary:\n" + "\n".join("> " + line for line in summary.splitlines())
+                + "\n\nUnmet criteria with the reviewer's evidence:\n" + findings
+                + ("\n\nLimitations the reviewer noted:\n" + "\n".join(f"- {v}" for v in limitations)
+                   if limitations else ""))
 
     def contract_prompt(self, active):
         contract = active.get("shared_contract")
@@ -1494,22 +1569,41 @@ class Runner:
             active["failure_key"] = failure_key
             self.repair(active, issue, records=records)
         if active["step"] == "commit":
+            # After `recover repair` the repair is committed on top of the earlier controller
+            # commit, which is never amended or rewritten.
+            request = review_repair_request(active)
+            base = active["commit"] if request and active.get("commit") else active["starting_commit"]
             current = git(self.repo, "rev-parse", "HEAD")
-            if current != active["starting_commit"]:
+            if current != base:
                 if not (active.get("commit_intent") and not git(self.repo, "status", "--porcelain")
-                        and git(self.repo, "rev-parse", "HEAD^") == active["starting_commit"]
+                        and git(self.repo, "rev-parse", "HEAD^") == base
                         and git(self.repo, "log", "-1", "--format=%B").strip() == active["commit_intent"]):
                     raise RuntimeError("Worker changed Git history; reconcile before controller commit")
             if fingerprint(self.repo) != active["validated_fingerprint"]:
                 raise RuntimeError("Source changed after validation")
             if git(self.repo, "status", "--porcelain"):
-                active["commit_intent"] = f"feat({issue.lower()}): implement validated issue deliverables"
+                active["commit_intent"] = (f"fix({issue.lower()}): address independent review findings"
+                                           if base != active["starting_commit"] else
+                                           f"feat({issue.lower()}): implement validated issue deliverables")
                 self.save(active=active)
                 git(self.repo, "add", "--all")
                 git(self.repo, "commit", "-m", active["commit_intent"])
             active["commit"] = git(self.repo, "rev-parse", "HEAD")
+            commits = active.setdefault("controller_commits", [])
+            if active["commit"] != active["starting_commit"] and active["commit"] not in commits:
+                commits.append(active["commit"])
+            if request and request.get("repair") is not None:
+                request["commit"] = active["commit"] if active["commit"] != base else None
+                if active["commit"] == base:
+                    self.log(f"{issue}: the repair of the review findings changed no worktree file; "
+                             f"the fresh review assesses {base[:12]} again")
             active["step"] = "delivery"; self.save(active=active, phase="delivery")
         if active["step"] == "delivery":
+            packet = Path(active["run_dir"]) / "delivery"
+            if review_repair_request(active) and (packet / "context.json").is_file() \
+                    and read_json(packet / "context.json").get("commit") != active["commit"]:
+                # The packet of the commit the blocked review saw is kept, never overwritten.
+                packet.rename(packet.with_name("delivery-superseded-" + run_id()))
             self.deliver(active)
             active["step"] = "review"; self.save(active=active)
         if active["step"] == "review":
@@ -1564,28 +1658,48 @@ class Runner:
                 # ``validation_dir`` names the validation the issue was accepted on. Directory names
                 # (``validation-<UTC second>-<random>``) do not order validations within a second.
                 self.state["history"].append({"issue_id": issue, "commit": active["commit"], "run_dir": active["run_dir"],
-                                              "validation_dir": active.get("validation_dir"), "completed_at": now()})
+                                              "validation_dir": active.get("validation_dir"), "completed_at": now(),
+                                              "commits": active.get("controller_commits") or [active["commit"]]})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
 
     def repair(self, active, issue, records=None):
-        """One bounded repair of the failing checks in ``active["validation_dir"]``.
+        """One bounded repair: of the failing checks in ``active["validation_dir"]``, or of an
+        independent review's findings (``recover repair``).
 
         ``records`` is the failing validation that asks for it (its comment is posted here);
-        without it this is the owner-authorized retry of a repair that finished blocked.
-        Either way the repair takes the next slot of the shared ``max_repairs`` budget, and
-        after an unsuccessful repair the single escalation applies.
+        without it this is an owner-authorized repair: the retry of a repair that finished
+        blocked (``recover resume --note-file``), or the repair of a blocked review's findings
+        that ``recover repair`` recorded (``review_repair_request``; its retry repeats those
+        findings). Either way the repair takes the next slot of the shared ``max_repairs``
+        budget, runs in the worker's issue session under the same session rules, and after an
+        unsuccessful repair the single escalation applies.
         """
         if active["repairs"] >= self.policy["phases"]["max_repairs"]:
             raise IssueBlocked("Repair limit exhausted", "checks_failed")
+        request = review_repair_request(active) if records is None else None
+        if request is not None and request.get("repair") not in (None, active["repairs"]):
+            request = None  # a later check repair is being retried, not the review repair
+        if request is not None:
+            # Built first: a missing or changed review result stops before a slot is used.
+            task = self.review_repair_prompt(active, request)
+            self.leave_review(issue)
+        else:
+            task = (f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
+                    "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
+                    "Return readiness with evidence, or blocked. Preserve scientific contracts.")
         escalation_profile = self.policy["profiles"]["escalation_profile"]
         selected = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
         escalated = False
         if active["repairs"] and selected["profile"] != escalation_profile and not active.get("escalation"):
             active["escalation"] = escalation_profile
-            active["escalation_reason"] = "A prior bounded repair did not satisfy checks"
+            active["escalation_reason"] = ("A prior bounded repair was used before this repair of the review findings"
+                                           if request is not None else "A prior bounded repair did not satisfy checks")
             escalated = True
         active["repairs"] += 1; active["step"] = "repair"; active.pop("repair_retry", None)
+        if request is not None:
+            request["repair"] = active["repairs"]
+            request.setdefault("repairs", []).append(active["repairs"])
         self.save(active=active, phase="repairing")
         if records is not None:
             stage = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
@@ -1594,10 +1708,8 @@ class Runner:
                                                                repair_stage=stage, escalated=escalated),
                       dedupe=active["validation_dir"])
         resume, seed, switch = self.worker_session(active, "repair")
-        result = self.model_phase(active, "repair", seed + f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
-                                  "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
-                                  "Return readiness with evidence, or blocked. Preserve scientific contracts.", resume=resume,
-                                  session_meta=switch)
+        result = self.model_phase(active, "repair", seed + task, resume=resume, session_meta=switch,
+                                  repair_source="review" if request is not None else None)
         if result.get("status") != "ready" or result.get("issue_id") != issue:
             # The repair finished (it was not interrupted): recovery offers revalidate or a
             # note-based retry for it, never a silent resume.
@@ -1608,6 +1720,17 @@ class Runner:
         self.record_deliverables(active, result)
         active["step"] = "validate"; self.save(active=active)
         self.post_ready(active, result)
+
+    def leave_review(self, issue):
+        """Move the issue back to the in-progress state before a repair of review findings
+        (``recover repair``); idempotent, confirmed by read-back."""
+        progress = self.config["states"]["in_progress"]
+        if self.linear.issue(issue).get("status") != progress:
+            self.linear.call("save_issue", id=issue, state=progress)
+        confirmed = self.linear.issue(issue)
+        self.verify_issue(confirmed)
+        if confirmed.get("status") != progress or confirmed.get("statusType") != "started":
+            raise RuntimeError(f"Linear read-back does not show {progress}; reconcile before the repair")
 
     def deliver(self, active):
         """Project delivery checks, then the optional generic integrity step (no model)."""
@@ -1662,6 +1785,9 @@ class Runner:
             allowed = {"completed": {states["done"]}}
         else:  # validate, repair, commit, delivery
             allowed = {"started": {states["in_progress"]}}
+            if step == "repair" and review_repair_waiting(self.state.get("active")):
+                # `recover repair` after a blocked review: the issue is in review until the repair starts.
+                allowed = {"started": {states["in_progress"], states["review"]}}
         kind = live.get("statusType")
         if kind not in allowed or (allowed[kind] is not None and live.get("status") not in allowed[kind]):
             raise RuntimeError("Issue state changed outside this execution; reconcile ownership")

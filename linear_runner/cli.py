@@ -106,6 +106,9 @@ def build_parser():
     review = kinds.add_parser("review", parents=[common, authority, then, note], help="re-run only the independent review")
     review.add_argument("--repin-contract", action="store_true", help="adopt the edited live issue before reviewing")
     review.add_argument("--redeliver", action="store_true", help="re-run delivery first; the previous packet is kept")
+    kinds.add_parser("repair", parents=[common, authority, then, note],
+                     help="after a blocked review: send the reviewer's findings back to the worker as a repair (next "
+                          "repair slot), then validate, commit on top and review afresh")
     budget = kinds.add_parser("budget", parents=[common, authority, then, note], help="reconcile a soft-budget checkpoint")
     budget.add_argument("--phase", required=True, choices=list(PHASES))
     budget.add_argument("--input-tokens", type=int, required=True)
@@ -189,6 +192,8 @@ def recover(args, runner):
     if args.kind == "review":
         return recovery.recover_review(runner, then=args.then, note_file=args.note_file, repin=args.repin_contract,
                                        redeliver=args.redeliver, **common)
+    if args.kind == "repair":
+        return recovery.recover_repair(runner, then=args.then, note_file=args.note_file, **common)
     if args.kind == "budget":
         limits = {"input_tokens": args.input_tokens, "output_tokens": args.output_tokens, "tool_calls": args.tool_calls}
         return recovery.recover_budget(runner, phase=args.phase, limits=limits, then=args.then,

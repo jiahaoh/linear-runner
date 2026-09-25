@@ -339,7 +339,7 @@ def deferred(ctx, *, issue, cause, block, result=None, who="worker", draft=None,
                                "evidence": evidence(*evidence_paths)})
 
 
-RECOVERY_KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer")
+RECOVERY_KINDS = ("resume", "revalidate", "review", "repair", "budget", "publish", "defer")
 
 
 def recovery(ctx, *, record, step=None, note=None, evidence_paths=(), stage=None):
@@ -352,6 +352,11 @@ def recovery(ctx, *, record, step=None, note=None, evidence_paths=(), stage=None
         action += " Delivery is re-run first; the previous packet is kept."
     if kind == "publish" and details.get("accepted_contract_drift"):
         action += " " + variant("recovery", "drift", "publish", values)
+    if kind == "repair":
+        unmet = len((details.get("review") or {}).get("unsatisfied") or [])
+        if unmet:
+            action += (f" The reviewer marked {unmet} acceptance {'criterion' if unmet == 1 else 'criteria'} as not "
+                       "met; the worker gets each one with the reviewer's evidence.")
     if kind == "resume" and details.get("repair_retry"):
         action += " The worker gets one more repair of the failing checks, with the owner's note."
     if model_text(stage):

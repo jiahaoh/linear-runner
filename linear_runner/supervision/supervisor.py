@@ -128,8 +128,8 @@ class Supervisor:
         if details.get("note") and Path(details["note"]["path"]).is_file():
             note = Path(details["note"]["path"]).read_text()
         # The model phase the recovery runs next, when there is one (revalidate and publish run none first).
-        phase = "review" if record["kind"] == "review" else (active or {}).get("step") \
-            if record["kind"] in ("resume", "budget") else None
+        phase = {"review": "review", "repair": "repair"}.get(record["kind"]) or ((active or {}).get("step")
+                                                                          if record["kind"] in ("resume", "budget") else None)
         stage = self.r.planned_selection(active, phase) if active and phase in ("implement", "repair", "review") else None
         body = messages.recovery(self.r.ctx, record=record, step=(active or {}).get("step"), note=note,
                                  evidence_paths=[self.root / "recovery-log.jsonl"], stage=stage)
@@ -142,8 +142,10 @@ class Supervisor:
         kind = pending["kind"]
         record = next(r for r in self.state.get("recoveries", []) if r["id"] == pending["id"])
         # revalidate runs the checks without a model; only the repair loop and review may follow.
-        self.r.allowed_phases = {"publish": set(), "review": {"review"}, "revalidate": {"repair", "review"}}.get(kind)
-        if kind in ("resume", "revalidate", "review", "budget", "publish") and pending.get("then") == "stop":
+        # repair runs the repair of the review's findings, then the repair loop and a fresh review.
+        self.r.allowed_phases = {"publish": set(), "review": {"review"}, "revalidate": {"repair", "review"},
+                                 "repair": {"repair", "review"}}.get(kind)
+        if kind in ("resume", "revalidate", "review", "repair", "budget", "publish") and pending.get("then") == "stop":
             self.scope = "active"
         self.redeliver = bool(pending.get("redeliver"))
         active = self.state.get("active")
@@ -154,6 +156,19 @@ class Supervisor:
                 "repairs": active.get("repairs", 0), "previous_validation": active.get("validation_dir")})
             active["step"] = "validate"
         elif kind == "resume" and active and active["step"] == "repair" and record.get("details", {}).get("repair_retry"):
+            active["repair_retry"] = pending["id"]
+        elif kind == "repair" and active:
+            # From review back to a repair in the worker's session: the blocked review's findings
+            # (recorded with their hash) become the repair task; the repair slot is taken when it runs.
+            details = record["details"]
+            if active.get("commit") and active["commit"] != active["starting_commit"]:
+                active.setdefault("controller_commits", [active["commit"]])
+            active.setdefault("review_repairs", []).append({
+                "recovery": pending["id"], "launch_id": self.launch_id, "at": now(),
+                "review_attempt": details["review"]["attempt"], "review_result": details["review"]["result"],
+                "sha256": details["review"]["sha256"], "reviewed_commit": details["commit"],
+                "unsatisfied": details["review"]["unsatisfied"], "note": details.get("note"), "repair": None})
+            active["step"] = "repair"
             active["repair_retry"] = pending["id"]
         for record in self.state.get("recoveries", []):
             if record["id"] == pending["id"]:

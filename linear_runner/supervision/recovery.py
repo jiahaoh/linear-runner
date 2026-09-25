@@ -21,6 +21,12 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   normal repair loop with the remaining repair budget.
 * ``review``  - re-run only the independent review of the frozen commit, optionally after
   re-running delivery (``--redeliver``, the previous packet is kept).
+* ``repair``  - at a ``review`` stop after a blocked review: send the reviewer's findings (each
+  unmet criterion with its evidence, the summary and limitations, plus an optional
+  ``--note-file``) back to the worker as a repair in its issue session. It uses the next slot
+  of the shared repair budget. After it the checks run in full, the repair is committed as a
+  new controller commit on top of the earlier one (never amended), delivery runs again and a
+  fresh independent review assesses the whole issue diff from the starting commit.
 * ``budget``  - reconcile a soft-budget checkpoint with an explicitly recorded new allowance.
 * ``publish`` - reconcile publication of an already accepted review; no model may run.
   ``--accept-contract-drift`` (at ``publish`` or ``done``) also re-pins the issue contract
@@ -53,11 +59,11 @@ import tempfile
 from linear_runner.config import write_json
 from linear_runner.engine import intake as intake_module
 from linear_runner.engine.runner import (CONTRACT_RELATIONS, IssueBlocked, contract_fields, git, fingerprint,
-                                         issue_contract, now, published_issue, run_id, review_criteria,
-                                         validate_review_result)
+                                         issue_contract, now, published_issue, review_criteria,
+                                         review_repair_waiting, run_id, validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
-KINDS = ("resume", "revalidate", "review", "budget", "publish", "defer", "cancel", "repin-config")
+KINDS = ("resume", "revalidate", "review", "repair", "budget", "publish", "defer", "cancel", "repin-config")
 # What repin-config may never change: these define the batch; changing them needs a new batch.
 REPIN_FIXED = (("batch_id", "the batch id"), ("issues", "the issue allowlist and its order"),
                ("project_name", "the Linear project"), ("linear_workspace", "the Linear workspace"),
@@ -241,7 +247,11 @@ def recover_resume(runner, *, reason, authorized_by, then="continue", note_file=
         active = _active(runner)
         if active.get("budget_exceeded"):
             raise RecoveryError("A soft-budget checkpoint needs `recover budget` with an explicit allowance")
-        if active["step"] == "repair":
+        if active["step"] == "repair" and review_repair_waiting(active):
+            # A `recover repair` stopped before its repair was dispatched (no slot used).
+            details["repair_retry"] = {"repairs_used": active["repairs"],
+                                       "max_repairs": runner.policy["phases"]["max_repairs"], "review_repair": True}
+        elif active["step"] == "repair":
             name, left = active["issue_id"], _repairs_left(runner, active)
             limit = runner.policy["phases"]["max_repairs"]
             if repair_outcome(runner.state) == "interrupted":
@@ -313,6 +323,83 @@ def recover_review(runner, *, reason, authorized_by, then="continue", note_file=
         details["note"] = _note(runner, active, identifier, note_file, reason, authorized_by)
     runner.save(active=active)
     return _record(runner, "review", reason=reason, authorized_by=authorized_by, then=then, details=details)
+
+
+def latest_review_attempt(active):
+    """The attempt directory of ``active``'s latest review (its recorded stage, else the newest
+    ``review-*`` directory of the run), or None."""
+    stage = next((s for s in reversed(active.get("stages") or []) if s.get("phase") == "review"), None)
+    if stage and stage.get("attempt"):
+        return Path(stage["attempt"])
+    attempts = sorted(Path(active["run_dir"]).glob("review-*"))
+    return attempts[-1] if attempts else None
+
+
+def blocked_review(runner, active):
+    """The saved result of ``active``'s latest review if it blocked the issue (status blocked or
+    an unmet criterion) for the frozen commit; RecoveryError otherwise."""
+    name = active["issue_id"]
+    attempt = latest_review_attempt(active)
+    if attempt is None:
+        raise RecoveryError(f"No independent review of {name} is recorded, so there are no findings to send back; "
+                            "`recover review` runs the review")
+    path = attempt / "phase-result.json"
+    if not path.is_file():
+        raise RecoveryError(f"The latest review of {name} ({attempt.name}) saved no result (it was interrupted or "
+                            "failed before returning one), so there are no findings to send back; `recover review` "
+                            "re-runs it")
+    data = path.read_bytes()
+    try:
+        result = json.loads(data)
+    except ValueError:
+        result = None
+    if not isinstance(result, dict):
+        raise RecoveryError(f"The saved review result {path} is not a JSON object; `recover review` re-runs the review")
+    if result.get("issue_id") != name or result.get("commit") != active["commit"]:
+        raise RecoveryError(f"The saved review result {path} is for {result.get('issue_id')!r} at commit "
+                            f"{result.get('commit')!r}, not {name} at the frozen commit {active['commit']}; "
+                            "`recover review` reviews the frozen commit")
+    entries = result.get("acceptance") if isinstance(result.get("acceptance"), list) else []
+    unmet = [e for e in entries if isinstance(e, dict) and e.get("satisfied") is not True]
+    if result.get("status") != "blocked" and not unmet:
+        raise RecoveryError(f"The latest review of {name} ({attempt.name}) reported no unmet criterion and was not "
+                            "blocked, so there are no findings to send back; `recover review` re-runs the review")
+    stops = [s for s in runner.state.get("stops", []) if s.get("issue") == name]
+    return {"attempt": str(attempt), "result": str(path), "sha256": _sha(data), "status": result.get("status"),
+            "unsatisfied": [e.get("criterion") for e in unmet],
+            "stop": {k: stops[-1].get(k) for k in ("id", "event", "step")} if stops else None}
+
+
+def recover_repair(runner, *, reason, authorized_by, then="continue", note_file=None):
+    """Send a blocked review's findings back to the worker as a repair (see the module notes).
+
+    Recorded like every recovery; the launch that carries it out moves the active issue from
+    ``review`` to ``repair`` (``Supervisor.consume``) and the runner repairs, validates, commits
+    on top, re-delivers and reviews afresh."""
+    _preflight(runner, reason, authorized_by)
+    active = _active(runner)
+    name, step = active["issue_id"], active["step"]
+    if step != "review":
+        hint = (" It is past independent acceptance; use `recover publish`." if step in ("publish", "done") else
+                " `recover resume` or `recover revalidate` continue a repair or validation stop.")
+        raise RecoveryError(f"`recover repair` sends a blocked independent review's findings back to the worker, so it "
+                            f"needs the review step after a blocked review; {name} is at step {step!r}.{hint}")
+    if active.get("budget_exceeded"):
+        raise RecoveryError("A soft-budget checkpoint needs `recover budget` with an explicit allowance")
+    left, limit = _repairs_left(runner, active), runner.policy["phases"]["max_repairs"]
+    if left <= 0:
+        raise RecoveryError(f"All {limit} repairs of {name} are used, so the review's findings cannot go back to the "
+                            "worker; `recover review` re-runs only the review, or `recover defer` sets the issue aside")
+    runner.verify_frozen(active)
+    review = blocked_review(runner, active)
+    identifier = "R-" + run_id()
+    details = {"id": identifier, "issue": name, "step": step, "commit": active["commit"],
+               "starting_commit": active["starting_commit"], "session_id": active.get("session_id"),
+               "review": review, "repairs_used": active.get("repairs", 0), "max_repairs": limit}
+    if note_file:
+        details["note"] = _note(runner, active, identifier, note_file, reason, authorized_by)
+    runner.save(active=active)
+    return _record(runner, "repair", reason=reason, authorized_by=authorized_by, then=then, details=details)
 
 
 def recover_budget(runner, *, reason, authorized_by, phase, limits, then="continue", note_file=None):
@@ -680,5 +767,6 @@ def block_record(runner, active, error, launch_id):
 
 
 __all__ = ["IssueBlocked", "KINDS", "RecoveryError", "append_log", "verify_log", "expected_state", "park", "unpark",
-           "defer", "block_record", "repair_outcome", "recover_resume", "recover_revalidate", "recover_review", "recover_budget", "recover_publish",
+           "defer", "block_record", "repair_outcome", "recover_resume", "recover_revalidate", "recover_review", "recover_repair", "recover_budget",
+           "recover_publish", "blocked_review",
            "recover_defer", "recover_cancel", "recover_repin_config"]
