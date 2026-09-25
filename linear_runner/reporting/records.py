@@ -129,6 +129,7 @@ def read_invocation(path):
         "prompt_bytes": meta.get("prompt_bytes"),
         "tool_output_bytes": meta.get("tool_output_bytes"),
         "handoff": meta.get("handoff"),
+        "repair_source": meta.get("repair_source"),
         "compact_token_limit": meta.get("compact_token_limit"),
         "counter": counter_of(meta),
         "invocation_scoped": bool((meta.get("execution_evidence") or {}).get("invocation_usage_events")),

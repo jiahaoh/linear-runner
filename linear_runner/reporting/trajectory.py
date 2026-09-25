@@ -152,20 +152,32 @@ def attempt_outcome(attempt):
     return None
 
 
-def run_summary(result, issue):
-    """One issue's run summary from ``build`` output: a row per finished model attempt in start
-    order (stage, model, effort and ``attempt_figures``), the runner's check time and the
-    issue's ``totals`` (the same figures as the report's per-issue row). Repairs are always
-    numbered; another stage is numbered when it ran more than once."""
-    attempts = [a for a in result["attempts"] if a["issue"] == issue]
-    checks = [c for c in result["validation_audit"] if c["issue"] == issue]
+def stage_labels(attempts, outcomes=True):
+    """Labels for one issue's attempts in start order: repairs are always numbered, another
+    stage when it ran more than once; a repair of an independent review's findings
+    (``recover repair``) is "Repair N (from review)"; with ``outcomes`` a blocked or failed
+    attempt says so ("Repair 2 (blocked)", "Repair 1 (from review, blocked)")."""
     names = [stage_name(a) for a in attempts]
-    seen, rows = {}, []
+    seen, labels = {}, []
     for attempt, name in zip(attempts, names):
         seen[name] = seen.get(name, 0) + 1
         label = f"{name} {seen[name]}" if name == "Repair" or names.count(name) > 1 else name
-        outcome = attempt_outcome(attempt)
-        rows.append(dict(attempt_figures(attempt), stage=label + (f" ({outcome})" if outcome else ""),
+        notes = ["from review"] if attempt["phase"] == "repair" and attempt.get("repair_source") == "review" else []
+        if outcomes and attempt_outcome(attempt):
+            notes.append(attempt_outcome(attempt))
+        labels.append(label + (f" ({', '.join(notes)})" if notes else ""))
+    return labels
+
+
+def run_summary(result, issue):
+    """One issue's run summary from ``build`` output: a row per finished model attempt in start
+    order (``stage_labels``, model, effort and ``attempt_figures``), the runner's check time and
+    the issue's ``totals`` (the same figures as the report's per-issue row)."""
+    attempts = [a for a in result["attempts"] if a["issue"] == issue]
+    checks = [c for c in result["validation_audit"] if c["issue"] == issue]
+    rows = []
+    for attempt, label in zip(attempts, stage_labels(attempts)):
+        rows.append(dict(attempt_figures(attempt), stage=label,
                          model=attempt["requested_model"], effort=attempt["requested_effort"],
                          attempt=attempt["attempt"]))
     summary = next((s for s in result["summaries"] if s["issue"] == issue), None)
@@ -238,7 +250,8 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
             "requested_effort": item["requested_effort"], "observed_models": item["observed_models"],
             "prompt_bytes": item["prompt_bytes"], "tool_output_bytes": item["tool_output_bytes"],
             "tool_calls": item.get("tool_calls"), "failed_tool_calls": item.get("failed_tool_calls"),
-            "handoff": item.get("handoff"), "compact_token_limit": item.get("compact_token_limit"),
+            "handoff": item.get("handoff"), "repair_source": item.get("repair_source"),
+            "compact_token_limit": item.get("compact_token_limit"),
             "cumulative_usage": {k: item["counter"][k] for k in USAGE_KEYS if k in item["counter"]}
             if item["counter"] is not None else None,
             "usage_delta": _delta(item["counter"], previous if item["counter"] is not None else None),
@@ -393,9 +406,13 @@ def tables(result):
                    s["issue_elapsed_seconds"], s["validation_seconds"], s["delivery_check_seconds"],
                    *(figure_cell(s["totals"][k]) for k in (*USAGE_KEYS, "tool_calls", "failed_tool_calls"))]
                   for s in result["summaries"]]
-    attempt_header = ["Issue", "Attempt", "Phase", "Profile", "Model/effort", "Status", "Wall s", "Prompt bytes",
+    attempt_header = ["Issue", "Attempt", "Stage", "Profile", "Model/effort", "Status", "Wall s", "Prompt bytes",
                       "Tool output bytes", "Tool calls", "Cumulative input", "Delta input", "Copies"]
-    attempt_rows = [[a["issue"], a["attempt"], a["phase"], a["profile"],
+    stages = {}
+    for issue in dict.fromkeys(a["issue"] for a in result["attempts"]):
+        mine = [a for a in result["attempts"] if a["issue"] == issue]
+        stages.update(zip((id(a) for a in mine), stage_labels(mine, outcomes=False)))
+    attempt_rows = [[a["issue"], a["attempt"], stages[id(a)], a["profile"],
                      f"{a['requested_model']}/{a['requested_effort']}", a["status"] or f"exit {a['exit_code']}",
                      a["wall_seconds"], a["prompt_bytes"], a["tool_output_bytes"], a.get("tool_calls"),
                      (a["cumulative_usage"] or {}).get("input_tokens"), delta_cell(a, "input_tokens"),
@@ -416,7 +433,8 @@ def tables(result):
     sections = [
         ("Usage and time per issue", "Totals per issue from the saved session and check records. ≥ N marks a "
          "lower bound: an attempt reported no figure, so it may have used more than N.", usage_header, usage_rows),
-        ("Attempts", "One row per recorded model invocation, in start order. ≤ marks an upper bound: an "
+        ("Attempts", "One row per recorded model invocation, in start order; stages are named as in the run "
+         "summary (\"Repair N (from review)\" repaired an independent review's findings). ≤ marks an upper bound: an "
          "earlier invocation of the same session reported no usage.", attempt_header, attempt_rows),
         ("Sessions", "Latest cumulative counter per unique session; it counts once.", session_header, session_rows),
         ("Validation audit", "Runner check records with their log hashes re-verified.", audit_header, audit_rows),

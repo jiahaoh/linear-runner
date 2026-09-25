@@ -53,6 +53,17 @@ class FormatTests(unittest.TestCase):
         self.assertEqual([r["stage"] for r in trajectory.run_summary(result, "X-1")["rows"]],
                          ["Implement 1 (failed)", "Implement 2", "Repair 1 (blocked)", "Lighter review"])
 
+    def test_a_repair_of_review_findings_is_labelled_from_review(self):
+        attempts = [{"phase": "implement", "status": "ready"}, {"phase": "repair", "status": "ready"},
+                    {"phase": "review", "status": "blocked"},
+                    {"phase": "repair", "status": "blocked", "repair_source": "review"},
+                    {"phase": "repair", "status": "ready", "repair_source": "review"}, {"phase": "review", "status": "ready"}]
+        rows = [dict(a, issue="X-1") for a in attempts]
+        self.assertEqual(trajectory.stage_labels(rows),
+                         ["Implement", "Repair 1", "Review 1 (blocked)", "Repair 2 (from review, blocked)",
+                          "Repair 3 (from review)", "Review 2"])
+        self.assertEqual(trajectory.stage_labels(rows, outcomes=False)[3], "Repair 2 (from review)")
+
     def test_unknown_is_a_dash_never_zero(self):
         unknown = trajectory.figure(None)
         self.assertEqual(messages.figure_text(unknown), "—")
@@ -298,6 +309,38 @@ class DoneCommentTests(Recorded):
             self.assertEqual(self.launch()["started"]["outcome"], "complete")
         self.assertEqual(self.done(), ["DEV-1"])
         self.assertNotIn("run-summary", self.linear.kinds("DEV-1"))
+
+
+class ReviewRepairSummaryTests(Recorded):
+    BATCH = {"issues": ["DEV-1"], "terminal_issue": "DEV-1"}
+
+    def test_the_run_summary_and_the_report_label_the_repair_from_review(self):
+        reviews = []
+        def review(result):
+            reviews.append(1)
+            if len(reviews) == 1:
+                result.update(status="blocked", summary="The notes are incomplete.")
+                for entry in result["acceptance"]:
+                    entry.update(satisfied=False, evidence="notes.md stops after the CSV section")
+        self.hooks[("DEV-1", "review")] = review
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        self.recover("repair")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        rows = self.table(self.linear.last("DEV-1", "run-summary"))
+        # Implement (100), the blocked review (a new session, 200), the repair resuming the implement
+        # session (counter 300, so 200 more) and the fresh review (a new session, 400).
+        self.assertEqual(rows[2:6], ["| Implement | astra | medium | 100 (40) | 5 | 4 (1 failed) | 30 s |",
+                                     "| Review 1 (blocked) | astra | medium | 200 (80) | 10 | 4 (1 failed) | 30 s |",
+                                     "| Repair 1 (from review) | luna | max | 200 (80) | 10 | 4 (1 failed) | 30 s |",
+                                     "| Review 2 | astra | medium | 400 (160) | 20 | 4 (1 failed) | 30 s |"])
+        self.assertRegex(rows[7], r"^\| \*\*Total\*\* \|  \|  \| \*\*900 \(360\)\*\* \| \*\*45\*\* \| ")
+        run = Path(self.state()["history"][0]["run_dir"])
+        payload, markdown = report_json(run)
+        self.assertIn("| Repair 1 (from review) |", markdown)
+        self.assertEqual([a["repair_source"] for a in payload["attempts"]], [None, None, "review", None])
+        # Accounting is unchanged: the same totals as the comment.
+        self.assertEqual(payload["summaries"][0]["totals"]["input_tokens"], {"value": 900, "bound": "exact"})
+        self.assertEqual(payload["summaries"][0]["repairs"], 1)
 
 
 class StopCommentTests(Recorded):
