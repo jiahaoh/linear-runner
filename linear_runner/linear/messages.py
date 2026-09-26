@@ -295,7 +295,8 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
         if left is None or left > 0:
             return blocks(("If the reviewer is right, send its findings back to the worker as a repair that uses the "
                            "next repair slot; the runner then re-runs the checks, commits the fix on top and starts a "
-                           "fresh review (you can add --note-file with a note for the worker):",
+                           "fresh review (you can add --note-file with a note for the worker, or --repin-contract "
+                           "after clarifying a criterion):",
                            command(ctx, "recover", "repair", auth=True)),
                           (f"Or, if the reviewer is wrong or a criterion needs clarifying, re-run only the review {hints}:",
                            review), launch, aside)
@@ -381,6 +382,11 @@ def recovery(ctx, *, record, step=None, note=None, evidence_paths=(), stage=None
         if unmet:
             action += (f" The reviewer marked {unmet} acceptance {'criterion' if unmet == 1 else 'criteria'} as not "
                        "met; the worker gets each one with the reviewer's evidence.")
+    if kind == "repair" and details.get("contract"):
+        action += " The acceptance criteria are first re-pinned to the edited issue."
+    if kind == "budget" and details.get("kept_ready_result"):
+        action += (f" The {details.get('phase')} phase had finished ready and only the budget stopped it, so its result "
+                   "is kept and validated without running the phase again.")
     if kind == "resume" and details.get("repair_retry"):
         action += " The worker gets one more repair of the failing checks, with the owner's note."
     if model_text(stage):

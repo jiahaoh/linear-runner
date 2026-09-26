@@ -587,7 +587,8 @@ class MessageTests(unittest.TestCase):
                          ["recover repair", "recover review", "launch",
                           "recover defer --issue TEAM-1 --restore-worktree"])
         self.assertIn("send its findings back to the worker as a repair that uses the next repair slot", blocked_review)
-        self.assertIn("(you can add --note-file with a note for the worker):\n\n```bash\n", blocked_review)
+        self.assertIn("(you can add --note-file with a note for the worker, or --repin-contract after clarifying a "
+                      "criterion):\n\n```bash\n", blocked_review)
         no_slot = messages.recovery_steps(ctx, issue="TEAM-1", step="review", event="review_blocked", repairs=2)
         self.assertNotIn("recover repair", no_slot)
         self.assertIn("Every repair is used, so the findings cannot go back to the worker", no_slot)

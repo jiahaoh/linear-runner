@@ -361,7 +361,7 @@ Criteria the reviewer marked as not met:
 Decide whether the reviewer is right. If it is, send its findings back to the worker as a repair; if it is not, re-run only the review (with a note or a clarified criterion); or set the issue aside.
 
 **To continue**
-If the reviewer is right, send its findings back to the worker as a repair that uses the next repair slot; the runner then re-runs the checks, commits the fix on top and starts a fresh review (you can add --note-file with a note for the worker):
+If the reviewer is right, send its findings back to the worker as a repair that uses the next repair slot; the runner then re-runs the checks, commits the fix on top and starts a fresh review (you can add --note-file with a note for the worker, or --repin-contract after clarifying a criterion):
 
 ```bash
 python3 /absolute/path/to/linear-runner/runner.py recover repair --batch demo-batch --reason "<why>" --authorized-by "<your name>"

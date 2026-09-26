@@ -17,7 +17,10 @@ backend_start.<backend>   backend:<backend> (executable, CLI     yes
                           selection, environment overrides)
 ========================  =====================================  ==========================
 
-Every step records whether it was reused or rerun and why. ``claude_auth`` runs only when
+Every step records whether it was reused or rerun and why. ``baseline_checks`` never runs over
+an active issue's own uncommitted work (the worktree step has checked that the active issue
+owns it): it reuses the last passing result, or records ``skipped`` when there is none.
+``claude_auth`` runs only when
 ``site.claude.auth`` names a token file or variable: the token must be readable (a file of
 mode 600 or stricter, non-empty; a set variable) and ``claude auth status`` must show the CLI
 uses it. It records the mode and the path or name, never the token. The ``linear`` step reads
@@ -245,8 +248,22 @@ def preflight(config, runner, *, launch_id, force=False):
     if config.get("claude_auth"):
         step("claude_auth", [], lambda: _check_claude_auth(config), live=True)
     if config["supervision"]["baseline_checks"]:
-        step("baseline_checks", ["source", "config", "environment", "fixtures"],
-             lambda: _baseline_checks(runner, directory / "baseline"))
+        active = runner.state.get("active")
+        if active and git(runner.repo, "status", "--porcelain"):
+            # The uncommitted work is the active issue's own; baseline checks describe the
+            # starting point and must not run over it.
+            prior = (previous or {}).get("steps", {}).get("baseline_checks")
+            why = f"the worktree holds {active['issue_id']}'s own uncommitted work"
+            if prior and prior.get("status") == "passed":
+                reused_from = prior.get("reused_from") or previous["launch_id"]
+                record["steps"]["baseline_checks"] = dict(prior, reused=True, reused_from=reused_from,
+                                                          reason=f"reused: {why}; the last passing result is from {reused_from}")
+            else:
+                record["steps"]["baseline_checks"] = {"status": "skipped", "reused": False, "at": now(),
+                                                      "reason": f"{why}, and no earlier result passed"}
+        else:
+            step("baseline_checks", ["source", "config", "environment", "fixtures"],
+                 lambda: _baseline_checks(runner, directory / "baseline"))
     pending = []
     step("linear", [], lambda: _check_linear(runner, supervisor, pending), live=True)
     for name, check in backend_start.plan(config, pending).items():
@@ -502,6 +519,7 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
                     "state_dir": str(root), "log": spec["log"], "launch_record": str(path),
                     "terminal_report": str(root / "terminal-report.html"),
                     "watchdog_timer": (entry.get("watchdog_timer") or {}).get("timer"),
-                    "preflight": {n: ("reused" if s.get("reused") else "ran") + f" ({s['reason']})"
+                    "preflight": {n: ("reused" if s.get("reused") else "skipped" if s.get("status") == "skipped"
+                                      else "ran") + f" ({s['reason']})"
                                   for n, s in record["steps"].items()}}, indent=2))
     return entry

@@ -27,7 +27,11 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   of the shared repair budget. After it the checks run in full, the repair is committed as a
   new controller commit on top of the earlier one (never amended), delivery runs again and a
   fresh independent review assesses the whole issue diff from the starting commit.
+  ``--repin-contract`` first adopts the edited live issue (a clarified criterion), so the
+  repair and the fresh review use it without a separate review round.
 * ``budget``  - reconcile a soft-budget checkpoint with an explicitly recorded new allowance.
+  When the stopped implement or repair phase had returned ``ready`` (only the budget stopped
+  it), that result is kept: the next launch validates it without running the phase again.
 * ``publish`` - reconcile publication of an already accepted review; no model may run.
   ``--accept-contract-drift`` (at ``publish`` or ``done``) also re-pins the issue contract
   when the live issue changed only outside what the reviewer accepted: the acceptance
@@ -36,7 +40,9 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   it refuses and names the changed fields. It records the old and new contract hashes and
   the changed field names; it never runs a model.
 * ``defer``   - set an issue aside and let the queue continue with independent issues.
-* ``cancel``  - withdraw a pending recovery that has not been launched (recorded too).
+* ``cancel``  - withdraw a pending recovery that has not been launched (recorded too). It
+  checks no configuration: it runs against the pinned one even when the configuration files
+  changed since, so it never deadlocks with ``repin-config``.
 * ``repin-config`` - adopt a changed configuration and/or a newer runner commit for a paused
   or stopped batch. Unlike the others it is applied when recorded and is never pending: it
   re-pins ``resolved-config.json`` (the previous file is kept), records the old and new
@@ -143,14 +149,15 @@ def _record(runner, kind, *, reason, authorized_by, then, details, pending=True)
     return record
 
 
-def _preflight(runner, reason, authorized_by):
+def _preflight(runner, reason, authorized_by, *, check_config=True):
     """Checks that must pass before a recovery changes anything."""
     for name, value in (("--reason", reason), ("--authorized-by", authorized_by)):
         if not isinstance(value, str) or not value.strip():
             raise RecoveryError(f"{name} is required and must not be blank")
     if runner.state.get("pending_recovery"):
         raise RecoveryError(f"Recovery {runner.state['pending_recovery']['id']} is already pending; launch it first")
-    runner.verify_config()
+    if check_config:
+        runner.verify_config()
     pid = runner.state.get("child_pid")
     if pid and Path(f"/proc/{pid}").exists():
         raise RecoveryError(f"Previous worker PID {pid} may still be alive; inspect before recovery")
@@ -251,6 +258,9 @@ def recover_resume(runner, *, reason, authorized_by, then="continue", note_file=
             # A `recover repair` stopped before its repair was dispatched (no slot used).
             details["repair_retry"] = {"repairs_used": active["repairs"],
                                        "max_repairs": runner.policy["phases"]["max_repairs"], "review_repair": True}
+        elif active["step"] == "repair" and (active.get("held_result") or {}).get("phase") == "repair":
+            # A ready repair kept by `recover budget` (then cancelled): it is validated, not rerun.
+            details["held_result"] = active["held_result"]
         elif active["step"] == "repair":
             name, left = active["issue_id"], _repairs_left(runner, active)
             limit = runner.policy["phases"]["max_repairs"]
@@ -370,7 +380,7 @@ def blocked_review(runner, active):
             "stop": {k: stops[-1].get(k) for k in ("id", "event", "step")} if stops else None}
 
 
-def recover_repair(runner, *, reason, authorized_by, then="continue", note_file=None):
+def recover_repair(runner, *, reason, authorized_by, then="continue", note_file=None, repin=False):
     """Send a blocked review's findings back to the worker as a repair (see the module notes).
 
     Recorded like every recovery; the launch that carries it out moves the active issue from
@@ -396,6 +406,8 @@ def recover_repair(runner, *, reason, authorized_by, then="continue", note_file=
     details = {"id": identifier, "issue": name, "step": step, "commit": active["commit"],
                "starting_commit": active["starting_commit"], "session_id": active.get("session_id"),
                "review": review, "repairs_used": active.get("repairs", 0), "max_repairs": limit}
+    if repin:
+        details["contract"] = _repin(runner, active, identifier)
     if note_file:
         details["note"] = _note(runner, active, identifier, note_file, reason, authorized_by)
     runner.save(active=active)
@@ -425,6 +437,12 @@ def recover_budget(runner, *, reason, authorized_by, phase, limits, then="contin
     details = {"id": identifier, "issue": active["issue_id"], "step": active["step"], "phase": phase,
                "observed": exceeded["observed"], "previous_limits": reconciliation["previous_limits"],
                "new_limits": limits}
+    ready = exceeded.get("ready_result")
+    if ready and active["step"] == phase:
+        # The phase finished ready and only the budget stopped it: keep that result, so the
+        # next launch validates it instead of running the phase again (no model call).
+        active["held_result"] = dict(ready, phase=phase, recovery=identifier)
+        details["kept_ready_result"] = ready
     if note_file:
         details["note"] = _note(runner, active, identifier, note_file, reason, authorized_by)
     runner.save(active=active)
@@ -549,7 +567,9 @@ def recover_cancel(runner, *, reason, authorized_by):
         raise RecoveryError("No pending recovery to cancel")
     runner.state["pending_recovery"] = None
     try:
-        _preflight(runner, reason, authorized_by)
+        # No configuration check: withdrawing a record changes no work, and a configuration
+        # edited since pinning must stay adoptable (cancel, then repin-config).
+        _preflight(runner, reason, authorized_by, check_config=False)
     finally:
         runner.state["pending_recovery"] = pending
     cancellation = {"at": now(), "reason": reason.strip(), "authorized_by": authorized_by.strip()}

@@ -344,7 +344,7 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 | `config` | Every layer and the registry validate; resolved fingerprint | configuration |
 | `worktree` | Expected branch, not moved outside the controller, clean unless an active issue owns the changes | source (branch, HEAD, clean flag, content hash) + configuration |
 | `model_catalog` | Host catalog readable; which registry profiles it offers | catalog bytes + configuration |
-| `baseline_checks` (optional) | Default-tier checks pass on the clean baseline | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
+| `baseline_checks` (optional) | Default-tier checks pass on the clean baseline; never run over a resumed active issue's own uncommitted work (the last passing result is reused, or the step is recorded `skipped` when none passed) | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
 | `claude_auth` (with `site.claude.auth`) | The Claude token file or variable is usable and the CLI uses it (see "Claude authentication") | never: always re-read |
 | `linear` | Authenticated live read of every allowlisted issue, gates, ownership, decision-rule blocks, model/effort per phase, dependency-aware dry-run selection, or the resume checks for a saved active issue | never: live state is always re-read |
 | `backend_start.<backend>` | Each model backend the pending issues can select starts in the batch worktree (see below) | backend: executable (path, resolved file, SHA-256), CLI version line, auth mode (Codex `login status`; Claude mode + token file path/variable name + token file mtime), worktree, probe model/effort, launcher and check environment, start-check code |
@@ -463,7 +463,10 @@ continues without a new batch.
 Each phase records requested and observed model/effort, usage, prompt and tool-output
 bytes and elapsed time. Exceeding a phase's soft budget (or missing usage telemetry)
 checkpoints the issue for explicit reconciliation (`recover budget`); resume does not
-reset it. Usage is the
+reset it. The check runs after the phase has returned: when an implement or repair phase had
+returned `ready` and only its budget stopped it, the checkpoint records that result (path and
+SHA-256) and `recover budget` keeps it, so the next launch validates it without running the
+phase again. A blocked result, or a review, runs again under the new allowance. Usage is the
 per-session maximum of cumulative counters summed over sessions; it is not billed cost.
 The attempt's `phase-usage.json` names its `basis`: `delta` (its cumulative session
 counter minus the session's previous counter, exact), `invocation` (per-call counters,
@@ -875,13 +878,13 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | A repair finished `blocked`, or was interrupted, or checks still fail at `validate`, and you fixed the check configuration or environment: re-run the checks on the current source, no model, no repair slot | `recover revalidate --batch $B --reason R --authorized-by A [--then stop]` |
 | A repair finished `blocked` and the worker should try again with your note (uses the next repair slot) | `recover resume --batch $B --note-file F --reason R --authorized-by A` |
 | Re-run only the independent review of the frozen commit | `recover review --batch $B --reason R --authorized-by A [--redeliver] [--repin-contract] [--note-file F]` |
-| The independent review blocked and the reviewer is right: send its findings back to the worker as a repair (uses the next repair slot), then validate, commit on top and review afresh | `recover repair --batch $B --reason R --authorized-by A [--note-file F] [--then stop]` |
+| The independent review blocked and the reviewer is right: send its findings back to the worker as a repair (uses the next repair slot), then validate, commit on top and review afresh | `recover repair --batch $B --reason R --authorized-by A [--repin-contract] [--note-file F] [--then stop]` |
 | Soft-budget checkpoint | `recover budget --batch $B --phase P --input-tokens N --output-tokens N --tool-calls N --reason R --authorized-by A` |
 | Publication or its read-back failed after acceptance | `recover publish --batch $B --reason R --authorized-by A` |
 | After acceptance (step `publish` or `done`) the contract check stops, but the issue changed only outside the accepted criteria and scope | `recover publish --batch $B --accept-contract-drift --reason R --authorized-by A` |
 | Set an issue aside and continue with the others | `recover defer --batch $B --issue ISSUE [--restore-worktree] [--keep-commit] --reason R --authorized-by A` |
 | Restore a deferred, parked issue | `recover resume --batch $B --issue ISSUE --reason R --authorized-by A` |
-| Withdraw a recovery that was not launched | `recover cancel --batch $B --reason R --authorized-by A` |
+| Withdraw a recovery that was not launched (works even after the configuration changed) | `recover cancel --batch $B --reason R --authorized-by A` |
 | Adopt a changed configuration and/or a newer runner commit (paused or stopped batch; applied at once, then record the recovery the state needs) | `recover repin-config --batch $B --reason R --authorized-by A` |
 | A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A` |
 
@@ -924,7 +927,11 @@ commit is never amended), delivery runs again (the earlier packet is kept as
 `history[].commits` lists them; `history[].commit` is the accepted one. A repair from a
 review that finishes `blocked` is handled like any blocked repair (`revalidate`, or `resume
 --note-file`, which repeats the review findings with the new note). The run summary and
-`report` label it "Repair N (from review)".
+`report` label it "Repair N (from review)". When the review showed that a criterion needs
+clarifying *and* the work has to change, edit the criterion in Linear and add
+`--repin-contract`: the recovery adopts the edited issue first, the repair prompt gives the
+current criteria next to the findings, and the fresh review assesses the clarified criteria,
+with no separate `recover review --repin-contract` round.
 
 `--repin-contract` adopts an edited live issue before acceptance only, keeping the
 previous intake and issue beside it. After acceptance the one re-pin is `recover publish
@@ -944,7 +951,12 @@ record and the recovery log. Like every `publish` recovery it runs no model. `--
 and keeps the old packet as `delivery-superseded-<id>`. `review` allows only the review
 model phase, `repair` only the repair and review phases, and `publish` none. `budget` moves the checkpoint into
 `budget_reconciliations` and records the new limits as that phase's allowance for this
-issue. `defer --restore-worktree` parks uncommitted work in a Git ref; `--keep-commit`
+issue; when the stopped implement or repair phase had returned `ready`, it also keeps that
+result (`active.held_result`) and the next launch validates it with no model call. `cancel`
+checks no configuration: it runs against the pinned `resolved-config.json`, so it works after
+the configuration files were edited, and everything the cancelled recovery already recorded (a
+note, a re-pinned contract, an allowance, a kept result) stays.
+`defer --restore-worktree` parks uncommitted work in a Git ref; `--keep-commit`
 continues on top of an unaccepted controller commit. A parked issue can be restored only
 when HEAD has not moved since it was parked, or when it was parked cleanly at `implement`.
 
@@ -953,7 +965,7 @@ adopts an edited private configuration (for example a check that gains `allow_em
 a newer runner commit, which otherwise refuse every resume. It is allowed only while no
 supervisor or worker is alive and the batch is paused or has a STOP marker, and only when no
 recovery is pending (that recovery was recorded against the old configuration: cancel it,
-re-pin, record it again). It reloads every layer, resolves the Linear project and assignee
+re-pin, record it again; `cancel` works whatever the configuration files now say). It reloads every layer, resolves the Linear project and assignee
 names live and requires them to resolve to the pinned IDs, then:
 
 * refuses any change to the batch identity, which needs a new batch `id`: the batch id, the

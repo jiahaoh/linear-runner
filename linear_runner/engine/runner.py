@@ -1112,6 +1112,12 @@ class Runner:
         over = sorted(k for k, v in budget.items() if delta.get(k) is not None and delta[k] > v)
         if unknown or over:
             active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget, "basis": delta["basis"]}
+            if phase in ("implement", "repair") and result.get("status") == "ready" \
+                    and result.get("issue_id") == active["issue_id"]:
+                # Only the budget stopped a finished phase; `recover budget` keeps this result.
+                path = attempt / "phase-result.json"
+                active["budget_exceeded"]["ready_result"] = {
+                    "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
             self.save(active=active)
             if over:
                 bound = " (an upper bound)" if delta["basis"] == "cumulative-upper-bound" else ""
@@ -1484,6 +1490,9 @@ class Runner:
                 "when a finding cannot be fixed within the issue's scope."
                 + (" The owner's note for this repair is among the operator recovery notes below."
                    if request.get("note") else "")
+                + (" The owner clarified the acceptance criteria after this review; where a finding concerns a changed "
+                   "criterion, repair against the current wording: " + json.dumps(review_criteria(active["issue"]))
+                   if request.get("repinned_contract") else "")
                 + "\n\nReviewer summary:\n" + "\n".join("> " + line for line in summary.splitlines())
                 + "\n\nUnmet criteria with the reviewer's evidence:\n" + findings
                 + ("\n\nLimitations the reviewer noted:\n" + "\n".join(f"- {v}" for v in limitations)
@@ -1534,14 +1543,24 @@ class Runner:
                 run_dir=active["run_dir"]), dedupe="claim:" + active["run_dir"])
             self.linear.call("save_issue", id=issue, state=self.config["states"]["in_progress"])
             self.verify_issue(self.linear.issue(issue))
-            resume, seed, switch = self.worker_session(active, "implement")
-            result = self.model_phase(active, "implement", seed + self.worker_packet(active), resume=resume,
-                                      session_meta=switch)
+            result = self.held_result(active, "implement")
+            if result is None:
+                resume, seed, switch = self.worker_session(active, "implement")
+                result = self.model_phase(active, "implement", seed + self.worker_packet(active), resume=resume,
+                                          session_meta=switch)
             if result.get("status") != "ready" or result.get("issue_id") != issue:
                 raise IssueBlocked("Worker reported blocked: " + messages.short_cause(result.get("summary") or
                                                                                    "no summary given", 300),
                                    "worker_blocked")
             self.record_deliverables(active, result)
+            active.pop("held_result", None)
+            active["step"] = "validate"; self.save(active=active)
+            self.post_ready(active, result)
+        if active["step"] == "repair" and (active.get("held_result") or {}).get("phase") == "repair":
+            # A ready repair stopped only by its soft budget, kept by `recover budget`.
+            result = self.held_result(active, "repair")
+            self.record_deliverables(active, result)
+            active.pop("held_result"); active.pop("repair_retry", None)
             active["step"] = "validate"; self.save(active=active)
             self.post_ready(active, result)
         if active["step"] == "repair":
@@ -1662,6 +1681,22 @@ class Runner:
                                               "commits": active.get("controller_commits") or [active["commit"]]})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
+
+    def held_result(self, active, phase):
+        """The ready result of ``phase`` that only its soft budget stopped, kept by ``recover
+        budget`` (``model_phase`` records it with its SHA-256), or None. The caller advances the
+        step and drops ``held_result`` in one save."""
+        held = active.get("held_result")
+        if not held or held.get("phase") != phase:
+            return None
+        path = Path(held["path"])
+        data = path.read_bytes() if path.is_file() else None
+        if data is None or hashlib.sha256(data).hexdigest() != held["sha256"]:
+            raise RuntimeError(f"The kept {phase} result {path} is missing or changed since `recover budget` "
+                               "recorded it; restore it or record a new recovery")
+        self.log(f"{active['issue_id']}: using the ready {phase} result kept by recovery {held['recovery']} "
+                 "(no model call)")
+        return json.loads(data)
 
     def repair(self, active, issue, records=None):
         """One bounded repair: of the failing checks in ``active["validation_dir"]``, or of an

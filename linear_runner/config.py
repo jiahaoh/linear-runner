@@ -752,6 +752,16 @@ def pin_resolution(config, linear):
     return _with_ids(config, ids, "Linear name resolution"), True
 
 
+def pinned_config(config):
+    """The configuration this batch pinned (``resolved-config.json``), whatever the configuration
+    files now say; for ``recover cancel``, which must not depend on them."""
+    path = Path(config["state_dir"]) / RESOLVED_NAME
+    if not path.exists():
+        raise ConfigError("This batch has no pinned state to recover")
+    pinned = read_json(path)
+    return dict(pinned["config"], _layers=pinned.get("layers", {}), _sources=pinned.get("sources", {}))
+
+
 def write_resolved(config):
     """Pin resolved IDs, the effective configuration and the source layer of each value."""
     write_json(Path(config["state_dir"]) / RESOLVED_NAME, {

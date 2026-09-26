@@ -488,11 +488,34 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         active = self.state()["active"]
         self.assertNotIn("budget_exceeded", active)
         self.assertEqual(active["budget_reconciliations"][0]["checkpoint"]["observed"]["input_tokens"], 100)
+        # The implement phase had returned ready; only the budget stopped it (split-20260925, W-198).
+        kept = record["details"]["kept_ready_result"]
+        self.assertEqual(active["held_result"]["path"], kept["path"])
+        self.assertEqual(kept["sha256"], hashlib.sha256(Path(kept["path"]).read_bytes()).hexdigest())
+        def no_model_call(result):
+            raise AssertionError("the kept implement result must not run the phase again")
+        self.hooks[("DEV-1", "implement")] = no_model_call
+        self.assertEqual(self.launch()["started"]["outcome"], "checkpoint")
+        self.assertIn("only the budget stopped it, so its result is kept", self.linear.last("DEV-1", "recovery"))
+        self.assertEqual(self.calls, [("DEV-1", "implement"), ("DEV-1", "review")])
+        run = Path(self.state()["history"][0]["run_dir"])
+        self.assertEqual(len(list(run.glob("implement-*/session.json"))), 1)
+        self.assertEqual(json.loads((run / "final-result.json").read_text())["status"], "ready")
+
+    def test_a_blocked_phase_over_its_budget_runs_again_after_the_allowance(self):
+        registry = copy.deepcopy(TEST_REGISTRY)
+        registry["phases"]["phases"]["implement"]["budget"]["input_tokens"] = 50
+        self.home, self.batch = make_home(self.root, self.repo, registry=registry,
+                                          batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"})
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.launch()
+        self.assertNotIn("ready_result", self.state()["active"]["budget_exceeded"])
+        record = self.recover("budget", phase="implement", then="stop",
+                              limits={"input_tokens": 500, "output_tokens": 50, "tool_calls": 10})
+        self.assertNotIn("kept_ready_result", record["details"])
         self.assertEqual(self.launch()["started"]["outcome"], "checkpoint")
         self.assertEqual(self.calls, [("DEV-1", "implement"), ("DEV-1", "implement"), ("DEV-1", "review")])
         self.assertEqual(self.resumed[1], "DEV-1-implement-1")  # same session, usage not reset
-        run = Path(self.state()["history"][0]["run_dir"])
-        self.assertEqual(len(list(run.glob("implement-*/session.json"))), 2)
 
     def test_publish_only_recovery_runs_no_model(self):
         original = self.linear.call
@@ -1000,7 +1023,8 @@ class ReviewRepairTests(Harness):
         self.pause_at_blocked_review()
         body = self.linear.last("DEV-1", "blocked")
         self.assertIn("If it is, send its findings back to the worker as a repair", body)
-        self.assertIn("(you can add --note-file with a note for the worker):\n\n```bash\npython3 ", body)
+        self.assertIn("(you can add --note-file with a note for the worker, or --repin-contract after clarifying a "
+                      "criterion):\n\n```bash\npython3 ", body)
         commands = [line.split(" --batch")[0].split("runner.py ")[1] for line in body.splitlines() if "runner.py" in line]
         self.assertEqual(commands, ["recover repair", "recover review", "launch",
                                     "recover defer --issue DEV-1 --restore-worktree"])
@@ -1095,14 +1119,73 @@ class ReviewRepairTests(Harness):
         self.assertIsNone(self.state().get("pending_recovery"))
         self.assertEqual(self.recover("repair")["kind"], "repair")
 
+    def test_a_repair_stopped_only_by_its_budget_is_validated_without_a_model_call(self):
+        """split-20260925 (W-199): a ready repair hit its soft budget; after `recover budget` the
+        runner stopped with "Repair interrupted". The kept result now goes straight to validation."""
+        registry = copy.deepcopy(TEST_REGISTRY)
+        registry["phases"]["phases"]["repair"]["budget"]["input_tokens"] = 50
+        self.home, self.batch = make_home(self.root, self.repo, registry=registry,
+                                          batch={"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"})
+        codex = self.codex
+        def heavier_repair(prompt, directory, **kwargs):
+            # A resumed session's counters are cumulative: make the repair's own usage 200 tokens.
+            result = codex(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("repair-"):
+                meta = json.loads((Path(directory) / "session.json").read_text())
+                meta["execution_evidence"]["usage_events"][0]["usage"]["input_tokens"] = 300
+                write_json(Path(directory) / "session.json", meta)
+            return result
+        self.codex = heavier_repair
+        self.pause_at_blocked_review()
+        self.recover("repair")
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        active = self.state()["active"]
+        self.assertEqual((active["step"], active["repairs"], active["budget_exceeded"]["phase"]), ("repair", 1, "repair"))
+        self.assertIn("ready_result", active["budget_exceeded"])
+        record = self.recover("budget", phase="repair", limits={"input_tokens": 500, "output_tokens": 50, "tool_calls": 10})
+        self.assertTrue(record["details"]["kept_ready_result"])
+        def no_model_call(result):
+            raise AssertionError("the kept repair result must not run the phase again")
+        self.hooks[("DEV-1", "repair")] = no_model_call
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.calls[:4], [("DEV-1", "implement"), ("DEV-1", "review"), ("DEV-1", "repair"),
+                                          ("DEV-1", "review")])
+        history = self.state()["history"][0]
+        self.assertEqual(len(history["commits"]), 2)  # the repair was committed on top
+        self.assertEqual(len(list(Path(history["run_dir"]).glob("repair-*"))), 1)
+
+    def test_repair_repins_a_clarified_criterion_without_a_separate_review(self):
+        """split-20260925 (W-199): after a criterion was clarified, `recover repair` needed a
+        `recover review --repin-contract` round first. `--repin-contract` now does it in one."""
+        self.pause_at_blocked_review()
+        clarified = ["Read and write gene IDs losslessly in CSV and Parquet; CSV rejects control characters",
+                     "Record the worker notes"]
+        self.linear.data["description"] = "\n".join(f"- [ ] {c}" for c in clarified)
+        with self.assertRaisesRegex(LaunchError, "changed since intake"):
+            self.recover("repair"); self.launch()
+        self.recover("cancel")
+        record = self.recover("repair", repin=True)
+        self.assertEqual(record["details"]["contract"]["new_criteria"], clarified)
+        self.assertEqual(record["details"]["contract"]["old_criteria"], self.CRITERIA)
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertIn("The acceptance criteria are first re-pinned to the edited issue.",
+                      self.linear.last("DEV-1", "recovery"))
+        self.assertEqual(self.calls[:4], [("DEV-1", "implement"), ("DEV-1", "review"), ("DEV-1", "repair"),
+                                          ("DEV-1", "review")])
+        self.assertIn("The owner clarified the acceptance criteria after this review", self.prompts[2])
+        self.assertIn(json.dumps(clarified), self.prompts[2])
+        self.assertIn(json.dumps(clarified), self.prompts[3])  # the fresh review assesses the clarified criteria
+        self.assertEqual(self.linear.data["description"], "\n".join(f"- [x] {c}" for c in clarified))
+
     def test_command_line_records_the_repair(self):
         self.pause_at_blocked_review()
         args = ["--batch", str(self.batch), "--home", str(self.home), "--reason", "fixture", "--authorized-by", "Owner"]
         with patch.object(cli_module, "LinearClient", return_value=self.linear), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            main(["recover", "repair", *args, "--note-file", self.note(), "--then", "stop"])
+            main(["recover", "repair", *args, "--note-file", self.note(), "--then", "stop", "--repin-contract"])
         record = json.loads(out.getvalue())
         self.assertEqual((record["kind"], record["then"]), ("repair", "stop"))
+        self.assertEqual(record["details"]["contract"]["new_criteria"], self.CRITERIA)
         self.assertEqual(self.state()["pending_recovery"]["kind"], "repair")
 
 
@@ -1189,6 +1272,31 @@ class RepinConfigTests(Harness):
         self.assertEqual([(e["event"], e.get("kind")) for e in entries],
                          [("recorded", "repin-config"), ("recorded", "revalidate"), ("consumed", "revalidate")])
         self.assertEqual(entries[0]["details"]["changes"], details["changes"])
+
+    def test_cancel_withdraws_a_pending_recovery_after_the_configuration_changed(self):
+        """split-20260925: with a recovery pending and the batch edited, `cancel` refused
+        (configuration changed) and `repin-config` refused (a recovery is pending)."""
+        self.hooks[("DEV-1", "repair")] = self.blocked(times=1)
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        pending = self.recover("revalidate")
+        self.edit_project(self.allow_empty)
+        with self.assertRaisesRegex(RecoveryError, "is pending"):
+            self.repin()
+        args = ["--batch", str(self.batch), "--home", str(self.home), "--reason", "recorded before allow_empty",
+                "--authorized-by", "Owner"]
+        with patch.object(cli_module, "LinearClient", return_value=self.linear), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            main(["recover", "cancel", *args])
+        self.assertEqual(json.loads(out.getvalue())["id"], pending["id"])
+        state = self.state()
+        self.assertIsNone(state["pending_recovery"])
+        self.assertEqual(state["recoveries"][0]["cancelled"]["reason"], "recorded before allow_empty")
+        self.repin()
+        self.recover("revalidate")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual([(e["event"], e.get("kind")) for e in verify_log(self.state_dir)],
+                         [("recorded", "revalidate"), ("cancelled", None), ("recorded", "repin-config"),
+                          ("recorded", "revalidate"), ("consumed", "revalidate")])
 
     def test_repinned_evidence_is_the_accepted_validation_when_validations_share_a_second(self):
         """W-192, made deterministic: every runner id falls in one UTC second and each later id
@@ -1626,6 +1734,41 @@ class PreflightBaselineTests(Harness):
         record = json.loads((self.state_dir / "preflight.json").read_text())
         self.assertEqual(record["steps"]["baseline_checks"]["reason"], "changed: source")
         self.assertFalse(record["passed"])
+
+
+class ResumeBaselineTests(Harness):
+    """Baseline checks never run over the active issue's own uncommitted work (split-20260925)."""
+    BATCH = {"supervision": {"baseline_checks": True}}
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / "result.txt").write_text("ready"); git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "ready")
+
+    def test_resuming_an_active_issue_reuses_the_last_passing_baseline(self):
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        self.assertTrue(git(self.repo, "status", "--porcelain"))  # DEV-1's unfinished work
+        first = json.loads((self.state_dir / "preflight.json").read_text())
+        self.assertEqual(first["steps"]["baseline_checks"]["status"], "passed")
+        self.recover("resume")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        second = json.loads(next(self.state_dir.glob(f"preflight/{self.state()['recoveries'][0]['consumed']['launch_id']}.json"))
+                            .read_text())["steps"]["baseline_checks"]
+        self.assertEqual((second["status"], second["reused"], second["reused_from"]),
+                         ("passed", True, first["launch_id"]))
+        self.assertEqual(second["reason"], "reused: the worktree holds DEV-1's own uncommitted work; the last passing "
+                                           f"result is from {first['launch_id']}")
+
+    def test_without_an_earlier_pass_the_baseline_is_skipped_and_recorded(self):
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.launch()
+        (self.state_dir / "preflight.json").unlink()
+        self.recover("resume")
+        runner = self.make_runner()
+        step = preflight(runner.config, runner, launch_id="L-resume")["steps"]["baseline_checks"]
+        self.assertEqual((step["status"], step["reason"]),
+                         ("skipped", "the worktree holds DEV-1's own uncommitted work, and no earlier result passed"))
+        self.assertFalse((self.state_dir / "preflight" / "L-resume" / "baseline").exists())
 
 
 class CommandLineTests(Harness):

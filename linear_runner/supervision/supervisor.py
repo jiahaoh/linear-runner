@@ -167,7 +167,8 @@ class Supervisor:
                 "recovery": pending["id"], "launch_id": self.launch_id, "at": now(),
                 "review_attempt": details["review"]["attempt"], "review_result": details["review"]["result"],
                 "sha256": details["review"]["sha256"], "reviewed_commit": details["commit"],
-                "unsatisfied": details["review"]["unsatisfied"], "note": details.get("note"), "repair": None})
+                "unsatisfied": details["review"]["unsatisfied"], "note": details.get("note"),
+                "repinned_contract": bool(details.get("contract")), "repair": None})
             active["step"] = "repair"
             active["repair_retry"] = pending["id"]
         for record in self.state.get("recoveries", []):

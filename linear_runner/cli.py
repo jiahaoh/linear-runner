@@ -12,8 +12,8 @@ import signal
 import subprocess
 import sys
 
-from linear_runner.config import (PHASES, ConfigError, load_config, pin_resolution, read_json, write_json,
-                                  write_resolved)
+from linear_runner.config import (PHASES, ConfigError, load_config, pin_resolution, pinned_config, read_json,
+                                  write_json, write_resolved)
 from linear_runner.engine.runner import Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
 
@@ -106,9 +106,11 @@ def build_parser():
     review = kinds.add_parser("review", parents=[common, authority, then, note], help="re-run only the independent review")
     review.add_argument("--repin-contract", action="store_true", help="adopt the edited live issue before reviewing")
     review.add_argument("--redeliver", action="store_true", help="re-run delivery first; the previous packet is kept")
-    kinds.add_parser("repair", parents=[common, authority, then, note],
-                     help="after a blocked review: send the reviewer's findings back to the worker as a repair (next "
-                          "repair slot), then validate, commit on top and review afresh")
+    repair = kinds.add_parser("repair", parents=[common, authority, then, note],
+                              help="after a blocked review: send the reviewer's findings back to the worker as a repair "
+                                   "(next repair slot), then validate, commit on top and review afresh")
+    repair.add_argument("--repin-contract", action="store_true",
+                        help="adopt the edited live issue (a clarified criterion) for the repair and the fresh review")
     budget = kinds.add_parser("budget", parents=[common, authority, then, note], help="reconcile a soft-budget checkpoint")
     budget.add_argument("--phase", required=True, choices=list(PHASES))
     budget.add_argument("--input-tokens", type=int, required=True)
@@ -121,7 +123,8 @@ def build_parser():
     publish.add_argument("--accept-contract-drift", action="store_true",
                          help="also re-pin the issue contract when only fields outside the accepted criteria and "
                               "scope changed (refused, naming the fields, otherwise)")
-    kinds.add_parser("cancel", parents=[common, authority], help="withdraw a pending recovery that was not launched")
+    kinds.add_parser("cancel", parents=[common, authority],
+                     help="withdraw a pending recovery that was not launched (works even after the configuration changed)")
     kinds.add_parser("repin-config", parents=[common, authority],
                      help="adopt a changed configuration and/or runner commit for a paused or stopped batch "
                           "(applied at once; record the recovery the state needs afterwards)")
@@ -193,7 +196,8 @@ def recover(args, runner):
         return recovery.recover_review(runner, then=args.then, note_file=args.note_file, repin=args.repin_contract,
                                        redeliver=args.redeliver, **common)
     if args.kind == "repair":
-        return recovery.recover_repair(runner, then=args.then, note_file=args.note_file, **common)
+        return recovery.recover_repair(runner, then=args.then, note_file=args.note_file, repin=args.repin_contract,
+                                       **common)
     if args.kind == "budget":
         limits = {"input_tokens": args.input_tokens, "output_tokens": args.output_tokens, "tool_calls": args.tool_calls}
         return recovery.recover_budget(runner, phase=args.phase, limits=limits, then=args.then,
@@ -334,6 +338,16 @@ def supervised_command(parser, args, config, linear):
             try:
                 record = recovery.recover_repin_config(config, linear, reason=args.reason,
                                                        authorized_by=args.authorized_by)
+            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
+                parser.error(str(error))
+        print(json.dumps(record, indent=2))
+        return
+    if args.command == "recover" and args.kind == "cancel":
+        # Withdrawing a pending record changes no work: it runs against the pinned configuration,
+        # so a configuration edited since pinning never blocks it (then `repin-config` adopts it).
+        with project_lock(root / "controller.lock"):
+            try:
+                record = recover(args, Runner(pinned_config(config), linear))
             except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
                 parser.error(str(error))
         print(json.dumps(record, indent=2))
