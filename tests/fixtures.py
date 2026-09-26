@@ -24,9 +24,12 @@ KIND_POOLS = ("Implementation", "Maintenance")
 
 
 def set_pools(registry, profile, phases):
-    """Set ``*`` pools of ``profile`` ({phase: entries}) and restate them for KIND_POOLS."""
+    """Set ``*`` pools of ``profile`` ({phase: entries}) and restate them for the public task-kind
+    pools they would otherwise not replace: KIND_POOLS (Standard implement/repair) and Research
+    (every profile and phase), so fixture registries stay independent of those public entries."""
     pools = registry["pools"]["pools"]
     pools["*"][profile] = {phase: list(entries) for phase, entries in phases.items()}
+    pools.setdefault("Research", {})[profile] = {phase: list(entries) for phase, entries in phases.items()}
     if profile == "Standard":
         for kind in KIND_POOLS:
             pools.setdefault(kind, {})["Standard"] = {p: list(phases[p]) for p in ("implement", "repair")}

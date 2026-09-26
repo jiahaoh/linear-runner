@@ -140,14 +140,15 @@ class PoolResolutionTests(unittest.TestCase):
         config = self.load()
         for labels in (["Research", "Economy"], ["Validation", "Standard"], ["Implementation", "Deep"]):
             entry, selection = self.pick(config, labels, "review")
-            self.assertEqual((entry, selection["profile"], selection["pool"]), (("astra", "high"), "Deep", "*/Deep/review"))
+            pool = ("Research" if labels[0] == "Research" else "*") + "/Deep/review"  # Research has its own pools
+            self.assertEqual((entry, selection["profile"], selection["pool"]), (("astra", "high"), "Deep", pool))
         entry, selection = self.pick(config, ["Implementation", "Economy"], "review")
         self.assertEqual((entry, selection["pool"]), (("astra", "medium"), "*/Standard/review"))
         # A named reviewer must be in the floored pool.
         entry, _ = self.pick(config, ["Research", "Economy", "review-model:claude-opus-5-5"], "review")
         self.assertEqual(entry, ("claude-opus-5-5", "high"))
         self.fails(config, ["Research", "Economy", "review-model:claude-opus-5-5@medium"], "review",
-                   "not in the \\*/Deep/review model pool")
+                   "not in the Research/Deep/review model pool")
         # The same model may implement and review; nothing forbids it.
         labels = ["Implementation", "Standard", "model:claude-opus-5-5", "review-model:claude-opus-5-5"]
         self.assertEqual(self.pick(config, labels, "implement")[0], self.pick(config, labels, "review")[0])

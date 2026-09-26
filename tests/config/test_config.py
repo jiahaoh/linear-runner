@@ -53,6 +53,12 @@ class LayeredConfigTests(unittest.TestCase):
         self.assertEqual((firsts[("Implementation", "Standard", "implement")]["model"],
                           firsts[("Implementation", "Standard", "implement")]["effort"]), ("gpt-6-luna", "max"))
         self.assertEqual(firsts[("Validation", "Standard", "implement")]["effort"], "medium")
+        # Research: gpt-6-astra high, then claude-opus-5-5 high, in every profile and phase.
+        for profile in ("Deep", "Standard", "Economy"):
+            for phase in config.PHASES:
+                key, entries = config.pool_for(policy, "Research", profile, phase)
+                self.assertEqual((key, [(e["model"], e["effort"]) for e in entries]),
+                                 (f"Research/{profile}/{phase}", [("gpt-6-astra", "high"), ("claude-opus-5-5", "high")]))
         self.assertEqual({e["effort"] for _, _, e in config.pool_entries(policy) if e["model"] == "gpt-6-luna"}, {"max"})
         self.assertFalse({"gpt-6-sol", "claude-fable-5-1"} & {e["model"] for _, _, e in config.pool_entries(policy)})
         self.assertNotIn("gpt-5.6-luna", policy["models"]["models"])

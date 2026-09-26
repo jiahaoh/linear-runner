@@ -33,6 +33,13 @@ its tier. The release procedure is in the README ("Releases").
   bullets and dropped the rules block's language tag, and the Linear MCP endpoint cannot
   write templates (`W-206`, `W-213`). Project impact: none.
 
+### Changed
+
+* Research issues use gpt-6-astra high, then claude-opus-5-5 high, for every profile and
+  phase (a `Research` entry in `registry/pools.json`). Before, Standard and Economy Research
+  issues used the `*` pools (gpt-6-astra medium; gpt-6-luna max). Project impact: none; a
+  paused batch needs `recover repin-config`. Canary tier: canary batch (models).
+
 ### Fixed
 
 * Under Python older than 3.10 every command now stops at once with "linear-runner needs
