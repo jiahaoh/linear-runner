@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Runner-project interface",
+  "description": "The interface version a project profile and a batch file declare. Not a policy layer: private registries cannot override it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["interface_version", "covers"],
+  "properties": {
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "interface_version": {"type": "integer", "minimum": 1},
+    "covers": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  }
+}

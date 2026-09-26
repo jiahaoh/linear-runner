@@ -1,4 +1,5 @@
 {
+  "interface_version": 1,
   "id": "example-batch",
   "project": "example",
   "issues": [

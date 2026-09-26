@@ -1,0 +1,7 @@
+{
+  "notes": [
+    "Machine-readable migrations of the runner-project interface (registry/interface.json), read by validate-config.",
+    "One entry per interface bump: from and to (consecutive versions), the release that introduced it, what changed, and the steps a project owner takes. Interface 1 is the shape of release 2.0.0, the first to declare one."
+  ],
+  "migrations": []
+}

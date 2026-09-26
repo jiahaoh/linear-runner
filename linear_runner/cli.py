@@ -34,7 +34,7 @@ def summarize(config):
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
             "context_controls": config["context_controls"], "claude_auth": offline_auth_check(config),
-            "contract": config["contract"], "layers": config["_layers"]}
+            "contract": config["contract"], "interface": config.get("_interface"), "layers": config["_layers"]}
 
 
 class VersionAction(argparse.Action):

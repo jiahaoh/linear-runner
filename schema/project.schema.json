@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": ["workspace", "linear_project", "repo", "artifact_owner", "retention", "guidance_files", "checks"],
   "properties": {
+    "interface_version": {"type": "integer", "minimum": 1, "description": "The runner-project interface this profile was written for (registry/interface.json); validate-config refuses an older one with the migration steps."},
     "workspace": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"},
     "linear_project": {"$ref": "#/$defs/text"},
     "repo": {"$ref": "#/$defs/text"},

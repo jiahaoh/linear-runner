@@ -26,7 +26,10 @@ RESOLVED_NAME = "resolved-config.json"
 # ${home} and ${runner_root} everywhere; ${batch} and ${worktree} in project/batch values.
 BUILTIN_VARIABLES = ("home", "runner_root", "batch", "worktree")
 # Bookkeeping keys that are not configuration and never enter the fingerprint.
-META_KEYS = ("_sources", "_layers")
+META_KEYS = ("_sources", "_layers", "_interface")
+# The runner-project interface (not a policy layer) and its migration table.
+INTERFACE_PATH = RUNNER_ROOT / "registry" / "interface.json"
+MIGRATIONS_PATH = RUNNER_ROOT / "interface-migrations.json"
 # Host launch settings (how the supervisor process starts) and attention settings (how a
 # person is told about progress and stops) do not change what the batch does, so changing
 # them never blocks resuming. Each launch record stores the launcher values used.
@@ -155,6 +158,59 @@ def read_layer(path, schema, label, *, partial=False):
         raise ConfigError(f"{label}: invalid JSON in {path}: {error}") from None
     check_schema(data, load_schema(schema), label, partial=partial)
     return data
+
+
+# --- Runner-project interface ----------------------------------------------------
+
+def declared_interfaces(batch_path, home):
+    """``{label: version or None}`` for the batch file and the project profile it names, read
+    before schema validation (labels as ``load_config`` uses them)."""
+    def raw(path):
+        try:
+            data = read_json(path)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def version(data):
+        value = data.get("interface_version")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    batch = raw(batch_path)
+    declared = {f"batch {batch.get('id', Path(batch_path).stem)}": version(batch)}
+    if isinstance(batch.get("project"), str):
+        declared[f"project {batch['project']}"] = version(raw(Path(home) / "projects" / f"{batch['project']}.json"))
+    return declared
+
+
+def check_interface(declared):
+    """Check the ``interface_version`` each layer declares (``{label: version or None}``)
+    against ``registry/interface.json``; return the report ``validate-config`` prints.
+
+    An older version fails with the migration steps from ``interface-migrations.json``; a
+    newer one asks for a newer runner. An undeclared version is reported, not refused."""
+    current = read_layer(INTERFACE_PATH, "registry-interface", "registry/interface.json")["interface_version"]
+    migrations = read_layer(MIGRATIONS_PATH, "interface-migrations", "interface-migrations.json")["migrations"]
+    for label, version in declared.items():
+        if version is None or version == current:
+            continue
+        if version > current:
+            raise ConfigError(f"{label}.interface_version {version} is newer than this runner's interface {current}; "
+                              "update the runner (runner.py --version, CHANGELOG.md) or restore the older file")
+        steps = []
+        for number in range(version, current):
+            step = next((m for m in migrations if m["from"] == number and m["to"] == number + 1), None)
+            if step is None:
+                steps.append(f"interface {number} -> {number + 1}: no migration is recorded; see CHANGELOG.md")
+                continue
+            steps.append(f"interface {number} -> {number + 1} (release {step['release']}): "
+                         + " ".join(step["changes"]) + " To migrate: " + " ".join(step["steps"]))
+        raise ConfigError(f"{label}.interface_version is {version}, but this runner implements interface {current}. "
+                          + " ".join(steps) + f" Then set interface_version to {current}.")
+    undeclared = [label for label, version in declared.items() if version is None]
+    return {"current": current, "declared": declared,
+            "undeclared": undeclared,
+            "note": (f"Declare \"interface_version\": {current} in {' and '.join(undeclared)} so a later interface "
+                     "change fails with its migration steps") if undeclared else None}
 
 
 # --- Source tracking ----------------------------------------------------------
@@ -412,6 +468,9 @@ def load_config(batch_path, home=None):
     policy, sources, layers = load_registry(home)
 
     site_path = home / "site.json"
+    # The declared interface is checked before any schema, so a file written for an older
+    # interface fails with its migration steps rather than with the first unknown key.
+    interface = check_interface(declared_interfaces(batch_path, home))
     site = read_layer(site_path, "site", "site")
     batch = read_layer(batch_path, "batch", "batch")
     if batch_path.parent == (home / "batches").resolve() and requested == batch_path.stem and batch["id"] != requested:
@@ -653,6 +712,7 @@ def load_config(batch_path, home=None):
     sources["runner.commit"] = sources["runner.dirty"] = sources["runner.release"] = "runner checkout"
     config["_sources"] = dict(sorted(sources.items()))
     config["_layers"] = layers
+    config["_interface"] = interface
     return config
 
 

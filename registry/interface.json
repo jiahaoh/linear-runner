@@ -1,0 +1,9 @@
+{
+  "notes": [
+    "The runner-project interface: what a private configuration home depends on. It is one number for five things: the project profile schema, the guidance slots (project and batch guidance_files, context_files and contract_file), the site.json keys, the task-kind, profile and model labels, and the batch file schema.",
+    "A project profile and a batch file declare the interface_version they were written for; validate-config refuses an older one with the migration steps from interface-migrations.json, and a newer one with a request to update the runner.",
+    "Bump it in the release that changes any of the five incompatibly, add the migration to interface-migrations.json, and name it in the CHANGELOG entry's project impact. This file is not a policy layer: a private registry cannot override it."
+  ],
+  "interface_version": 1,
+  "covers": ["project profile schema", "guidance slots", "site.json keys", "labels", "batch file schema"]
+}

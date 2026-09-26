@@ -37,6 +37,11 @@
     "worktree": {
       "$ref": "#/$defs/text"
     },
+    "interface_version": {
+      "description": "The runner-project interface this batch file was written for (registry/interface.json); validate-config refuses an older one with the migration steps.",
+      "type": "integer",
+      "minimum": 1
+    },
     "runner_version": {
       "description": "Pin the runner release (for example 2.0.0): launch preflight refuses a runner checkout that is not the clean, tagged release v<runner_version>.",
       "type": "string",

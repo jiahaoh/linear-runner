@@ -1,4 +1,5 @@
 {
+  "interface_version": 1,
   "workspace": "example",
   "linear_project": "Example project",
   "repo": "/absolute/path/to/repository",

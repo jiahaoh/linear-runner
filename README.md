@@ -33,6 +33,7 @@ the checkout root, which is also `${runner_root}`.
 | `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, and the offline `report` and `measure`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
+| `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |
 | `linear_runner/version.py` | The current release (`RELEASE`), `--version` and the batch `runner_version` check |
 | `linear_runner/cli.py` | The command line: argument parsing and dispatch of every command |
 | `linear_runner/config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning, the configuration fingerprint and runner identity |
@@ -98,13 +99,14 @@ model does not allow) are errors.
 | `pools.json` | Ordered `{backend, model, effort}` pools per task kind (or `*`), profile and phase (see "Model backends and pools") |
 | `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout, `bounded_sessions` thresholds |
 | `linear.json` | Default workflow state names and whether a milestone is required |
+| `interface.json` | The runner-project interface version (see "Interface version"); not a policy layer, so a private registry cannot override it |
 
 | Layer | Fields |
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `runner_version` (see "Releases") |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
+| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -154,6 +156,29 @@ run time. Commands are argv arrays; no shell is involved.
 Credentials are never stored: the workspace names an environment variable or a credential
 cache path, and `linear_runner/linear/client.py` re-reads it on each request. Do not put secrets in
 `check_environment`; it is recorded in manifests.
+
+### Interface version
+
+A private home depends on the runner through five things: the project profile schema, the
+guidance slots (`guidance_files`, `context_files`, `contract_file`), the `site.json` keys,
+the task-kind, profile and model labels, and the batch file schema. `registry/interface.json`
+gives them one number, `interface_version` (currently 1, the shape of release 2.0.0). Each
+project profile and batch file declares the version it was written for:
+
+```json
+{"interface_version": 1, "workspace": "...", "linear_project": "...", ...}
+```
+
+`validate-config` (and every command that loads the configuration) reads the declared
+versions before any schema check. An older version fails with each migration step between it
+and the current one, from `interface-migrations.json` (the release, what changed and what to
+do), ending "Then set interface_version to N". A newer version asks for a newer runner. An
+undeclared version is accepted and listed under `interface.undeclared` in the
+`validate-config` report, with a note to declare it. The declared versions are not part of
+the configuration fingerprint, so stamping a file never blocks a paused batch.
+
+A release that changes one of the five incompatibly bumps `interface_version`, adds the
+migration entry and names it in its CHANGELOG project impact.
 
 ### Name resolution and pinning
 

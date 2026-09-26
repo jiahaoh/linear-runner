@@ -1,5 +1,7 @@
 """Layered configuration, registry validation and Linear name resolution (offline, mocked)."""
+import contextlib
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linear_runner import config
+from linear_runner import cli, config
 from linear_runner.config import ConfigError, config_fingerprint, find_home, load_config, pin_resolution, write_resolved
 from tests.fixtures import CHECKOUT, FakeLinear, TEST_REGISTRY, make_home, write
 from linear_runner.linear.client import LinearClient
@@ -281,7 +283,8 @@ class RunnerIdentityTests(unittest.TestCase):
         for relative in ("linear_runner/__init__.py", "linear_runner/config.py", "linear_runner/version.py",
                          "linear_runner/linear/__init__.py",
                          "linear_runner/linear/client.py", "linear_runner/backends/__init__.py",
-                         "linear_runner/backends/codex.py", "linear_runner/backends/claude.py", "prompts/generic.md", *[
+                         "linear_runner/backends/codex.py", "linear_runner/backends/claude.py", "prompts/generic.md",
+                         "interface-migrations.json", *[
                 str(p.relative_to(ROOT)) for folder in ("registry", "schema") for p in (ROOT / folder).glob("*.json")]):
             (target / relative).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, target / relative)
@@ -427,3 +430,78 @@ class ResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterfaceVersionTests(unittest.TestCase):
+    """The runner-project interface a project profile and a batch file declare (W-205)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+
+    def load(self, project=None, batch=None):
+        home, path = make_home(self.root, self.repo, project=project, batch=batch)
+        return load_config(path, home)
+
+    def interface(self, current, migrations):
+        """Stand-in interface files: ``current`` and the given migrations."""
+        interface = write(self.root / "interface.json", {"interface_version": current, "covers": ["batch file schema"]})
+        table = write(self.root / "migrations.json", {"migrations": migrations})
+        for name, path in (("INTERFACE_PATH", interface), ("MIGRATIONS_PATH", table)):
+            patcher = patch.object(config, name, path); patcher.start(); self.addCleanup(patcher.stop)
+
+    def test_the_published_interface_and_migrations_are_consistent(self):
+        current = config.read_json(config.INTERFACE_PATH)
+        self.assertEqual(current["covers"], ["project profile schema", "guidance slots", "site.json keys", "labels",
+                                             "batch file schema"])
+        migrations = config.read_layer(config.MIGRATIONS_PATH, "interface-migrations", "migrations")["migrations"]
+        self.assertEqual([(m["from"], m["to"]) for m in migrations],
+                         [(n, n + 1) for n in range(1, current["interface_version"])])
+        example = load_config(ROOT / "examples/home/batches/example.json", ROOT / "examples/home")
+        self.assertEqual(example["_interface"]["undeclared"], [])
+
+    def test_a_matching_interface_passes_and_is_reported(self):
+        loaded = self.load(project={"interface_version": 1}, batch={"interface_version": 1})
+        self.assertEqual(loaded["_interface"], {"current": 1, "declared": {"batch fixture": 1, "project fixture": 1},
+                                                "undeclared": [], "note": None})
+        self.assertNotIn("_interface", config._effective(loaded))  # never part of the fingerprint
+
+    def test_an_undeclared_interface_is_reported_not_refused(self):
+        loaded = self.load(batch={"interface_version": 1})
+        self.assertEqual(loaded["_interface"]["undeclared"], ["project fixture"])
+        self.assertIn('Declare "interface_version": 1 in project fixture', loaded["_interface"]["note"])
+
+    def test_an_older_interface_fails_with_every_migration_step_before_any_schema_error(self):
+        self.interface(3, [
+            {"from": 1, "to": 2, "release": "2.1.0", "changes": ["checks[].tier was renamed checks[].level."],
+             "steps": ["Rename tier to level in every check."]},
+            {"from": 2, "to": 3, "release": "3.0.0", "changes": ["Batch supervision.on_block became required."],
+             "steps": ["Add \"on_block\": \"stop\" to the batch supervision block."]}])
+        # The file already has a key interface 1 does not know; the migration hint still comes first.
+        with self.assertRaises(ConfigError) as caught:
+            self.load(project={"interface_version": 1, "unknown_new_key": True}, batch={"interface_version": 3})
+        message = str(caught.exception)
+        self.assertTrue(message.startswith("project fixture.interface_version is 1, but this runner implements "
+                                           "interface 3."), message)
+        self.assertIn("interface 1 -> 2 (release 2.1.0): checks[].tier was renamed checks[].level. To migrate: "
+                      "Rename tier to level in every check.", message)
+        self.assertIn("interface 2 -> 3 (release 3.0.0): Batch supervision.on_block became required.", message)
+        self.assertTrue(message.endswith("Then set interface_version to 3."))
+
+    def test_a_missing_migration_and_a_newer_interface_are_named(self):
+        self.interface(2, [])
+        with self.assertRaisesRegex(ConfigError, r"batch fixture\.interface_version is 1.*interface 1 -> 2: no "
+                                                 r"migration is recorded; see CHANGELOG\.md"):
+            self.load(batch={"interface_version": 1})
+        with self.assertRaisesRegex(ConfigError, r"project fixture\.interface_version 5 is newer than this runner's "
+                                                 r"interface 2; update the runner"):
+            self.load(project={"interface_version": 5})
+
+    def test_validate_config_prints_the_interface(self):
+        home, path = make_home(self.root, self.repo, project={"interface_version": 1})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["validate-config", "--batch", str(path), "--home", str(home)])
+        report = json.loads(out.getvalue())["interface"]
+        self.assertEqual((report["current"], report["undeclared"]), (1, ["batch fixture"]))

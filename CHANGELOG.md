@@ -15,6 +15,14 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Added
+
+* The runner-project interface version: `registry/interface.json` and
+  `interface-migrations.json`. A project profile and a batch file may declare
+  `interface_version`; `validate-config` refuses an older one with the migration steps and a
+  newer one with a request to update the runner, and reports undeclared files (`W-205`).
+  Project impact: none (declaring it is optional); declare `"interface_version": 1`.
+
 ## v2.0.0 — 2026-09-26
 
 The first versioned release. It covers the rebuilt runner (milestone 03), the multi-backend
