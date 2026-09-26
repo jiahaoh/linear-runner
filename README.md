@@ -278,7 +278,7 @@ Settled pools (first entry is the default; Claude runs only when named until the
 | Standard (Validation) | gpt-6-astra medium, claude-opus-5-5 medium | gpt-6-astra medium, claude-opus-5-5 medium |
 | Standard (Implementation, Maintenance) | gpt-6-luna max, claude-opus-5-5 medium | gpt-6-astra medium, claude-opus-5-5 medium |
 | Economy | gpt-6-luna max, claude-opus-5-5 medium | gpt-6-luna max, claude-sonnet-5 medium (low-risk review only) |
-| Every profile (Research) | gpt-6-astra high, claude-opus-5-5 high | gpt-6-astra high, claude-opus-5-5 high |
+| Every profile (Research) | gpt-6-astra high, claude-opus-5-5 high, claude-opus-5-5 medium | gpt-6-astra high, claude-opus-5-5 high, claude-opus-5-5 medium |
 
 Review floors still apply (Research, Validation and Deep issues are reviewed from the Deep
 pool). Claude needs `site.executables.claude` when a default entry or a batch override uses it;

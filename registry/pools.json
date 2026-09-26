@@ -5,7 +5,7 @@
     "Naming an entry: issue labels implement-model:<name>, repair-model:<name>, review-model:<name>, or model:<name> for implement and repair (a phase label wins over it); the batch model_overrides (per issue, then batch-wide) wins over labels. <name> is <model> or <model>@<effort>. A name outside that phase's pool fails preflight; nothing is substituted.",
     "An escalation uses the Deep pool of the same task kind and phase: it keeps a named model that pool has (at the pool's effort), otherwise it uses the pool's first entry; the session records which.",
     "Deep: gpt-6-astra high, then claude-opus-5-5 high. Standard: gpt-6-astra medium, then claude-opus-5-5 medium, except Implementation and Maintenance implement/repair, which use gpt-6-luna max, then claude-opus-5-5 medium. Economy: gpt-6-luna max, then claude-opus-5-5 medium; its review (reached only by the low-risk review rule) gpt-6-luna max, then claude-sonnet-5 medium.",
-    "Research (every profile and phase): gpt-6-astra high, then claude-opus-5-5 high. Research issues read and synthesize more than they edit, so they always get the high-effort models (Jiahao, 2026-09-26).",
+    "Research (every profile and phase): gpt-6-astra high, then claude-opus-5-5 high, then claude-opus-5-5 medium. Research issues read and synthesize more than they edit, so the defaults are the high-effort models; opus medium is a named cheaper fallback (Jiahao, 2026-09-26).",
     "Accepted cost trade-off: in the W-186 canary a gpt-6-luna max review used 876k input tokens in 336 s, more than the astra-medium implementation it reviewed (378k in 145 s); astra-medium reviews used 327-544k in 127-175 s. Luna stays at max effort.",
     "Not in any pool for now: gpt-6-sol and claude-fable-5-1."
   ],
@@ -194,6 +194,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "repair": [
@@ -206,6 +211,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "review": [
@@ -218,6 +228,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ]
       },
@@ -232,6 +247,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "repair": [
@@ -244,6 +264,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "review": [
@@ -256,6 +281,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ]
       },
@@ -270,6 +300,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "repair": [
@@ -282,6 +317,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ],
         "review": [
@@ -294,6 +334,11 @@
             "backend": "claude",
             "model": "claude-opus-5-5",
             "effort": "high"
+          },
+          {
+            "backend": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "medium"
           }
         ]
       }

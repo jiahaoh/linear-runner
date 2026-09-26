@@ -35,8 +35,8 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Changed
 
-* Research issues use gpt-6-astra high, then claude-opus-5-5 high, for every profile and
-  phase (a `Research` entry in `registry/pools.json`). Before, Standard and Economy Research
+* Research issues use gpt-6-astra high, then claude-opus-5-5 high, then claude-opus-5-5
+  medium (named only), for every profile and phase (a `Research` entry in `registry/pools.json`). Before, Standard and Economy Research
   issues used the `*` pools (gpt-6-astra medium; gpt-6-luna max). Project impact: none; a
   paused batch needs `recover repin-config`. Canary tier: canary batch (models).
 
