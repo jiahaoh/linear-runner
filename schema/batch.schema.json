@@ -37,6 +37,11 @@
     "worktree": {
       "$ref": "#/$defs/text"
     },
+    "runner_version": {
+      "description": "Pin the runner release (for example 2.0.0): launch preflight refuses a runner checkout that is not the clean, tagged release v<runner_version>.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
     "guidance_files": {
       "type": "array",
       "items": {

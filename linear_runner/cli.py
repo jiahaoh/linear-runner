@@ -22,14 +22,31 @@ def summarize(config):
     """Offline validation report: no state, credentials, Linear or model CLI access (a Claude
     token file's metadata is checked, its content never read)."""
     from linear_runner.backends.claude import offline_auth_check
+    from linear_runner.config import RUNNER_ROOT
+    from linear_runner.version import pin_problem
+    pinned = config.get("runner_version")
     return {"valid": True, "batch": config["batch_id"], "project": config["project_name"],
             "workspace": config["linear_workspace"], "issues": config["issues"], "state_dir": config["state_dir"],
             "resolution_pending": {"project": config["project_name"], "assignee": config["assignee"]},
-            "runner": config["runner"], "supervision": config["supervision"], "attention": config["attention"],
+            "runner": config["runner"],
+            "runner_version": {"pinned": pinned, "problem": pin_problem(config, RUNNER_ROOT)} if pinned else None,
+            "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
             "context_controls": config["context_controls"], "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "layers": config["_layers"]}
+
+
+class VersionAction(argparse.Action):
+    """``--version``: the release, commit and clean/dirty state of this runner checkout."""
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, help="print the runner release, commit and checkout state")
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from linear_runner.config import RUNNER_ROOT, runner_identity
+        from linear_runner.version import describe, tagged
+        print(describe(runner_identity(), at_tag=tagged(RUNNER_ROOT)))
+        parser.exit()
 
 
 def build_parser():
@@ -37,6 +54,7 @@ def build_parser():
     common.add_argument("--batch", required=True, help="batch file (issue allowlist, gates, project name)")
     common.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action=VersionAction)
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
     for name, text in (("validate-config", "offline validation; no state, Linear or model CLI"),
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),

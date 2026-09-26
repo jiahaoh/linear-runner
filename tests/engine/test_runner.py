@@ -944,7 +944,7 @@ class ControllerTests(unittest.TestCase):
             main(["validate-config", *self.args])
         report = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
         self.assertEqual(report["resolution_pending"], {"project": "Fixture project", "assignee": "me"})
-        self.assertEqual(set(report["runner"]), {"commit", "dirty"})
+        self.assertEqual(set(report["runner"]), {"release", "commit", "dirty"})
         self.assertFalse((self.root / "state").exists())
 
     def test_run_resolves_names_pins_config_and_guards_changes(self):

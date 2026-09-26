@@ -448,6 +448,9 @@ def load_config(batch_path, home=None):
     put("required_done", batch.get("required_done", []), batch_label)
     put("human_gates", batch.get("human_gates", []), batch_label)
     put("branch", batch["branch"], batch_label)
+    if "runner_version" in batch:
+        # Only a pinned release enters the configuration, so unpinned fingerprints are unchanged.
+        put("runner_version", batch["runner_version"], batch_label)
     for gate in config["human_gates"]:
         if gate["issue_id"] in config["issues"]:
             raise ConfigError(f"{batch_label}: human gate {gate['issue_id']} cannot also be an implementation issue")
@@ -647,7 +650,7 @@ def load_config(batch_path, home=None):
     config["project_id"] = config["assignee_id"] = None
     sources["project_id"] = sources["assignee_id"] = "unresolved"
     config["runner"] = runner_identity()
-    sources["runner.commit"] = sources["runner.dirty"] = "runner checkout"
+    sources["runner.commit"] = sources["runner.dirty"] = sources["runner.release"] = "runner checkout"
     config["_sources"] = dict(sorted(sources.items()))
     config["_layers"] = layers
     return config
@@ -656,13 +659,14 @@ def load_config(batch_path, home=None):
 # --- Fingerprint and name resolution ---------------------------------------
 
 def runner_identity(root=RUNNER_ROOT):
-    """Identify the runner by Git commit and clean/dirty state, never by checkout path."""
+    """Identify the runner by release, Git commit and clean/dirty state, never by checkout path."""
+    from linear_runner.version import RELEASE
     try:
         def run(*args):
             return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout.strip()
-        return {"commit": run("rev-parse", "HEAD"), "dirty": bool(run("status", "--porcelain"))}
+        return {"release": RELEASE, "commit": run("rev-parse", "HEAD"), "dirty": bool(run("status", "--porcelain"))}
     except (OSError, subprocess.CalledProcessError):
-        return {"commit": None, "dirty": None}
+        return {"release": RELEASE, "commit": None, "dirty": None}
 
 
 def _portable(value, root):

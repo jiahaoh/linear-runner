@@ -14,6 +14,7 @@ from linear_runner import config
 from linear_runner.config import ConfigError, config_fingerprint, find_home, load_config, pin_resolution, write_resolved
 from tests.fixtures import CHECKOUT, FakeLinear, TEST_REGISTRY, make_home, write
 from linear_runner.linear.client import LinearClient
+from linear_runner.version import RELEASE
 
 ROOT = CHECKOUT
 
@@ -35,7 +36,7 @@ class LayeredConfigTests(unittest.TestCase):
         self.assertEqual(loaded["checks"][0]["command"][0], "python3")
         self.assertEqual(loaded["check_environment"]["TMPDIR"], "/absolute/path/to/local/scratch/example-batch")
         self.assertTrue(loaded["guidance_files"][0].endswith("prompts/generic.md"))
-        self.assertEqual(set(loaded["runner"]), {"commit", "dirty"})
+        self.assertEqual(set(loaded["runner"]), {"release", "commit", "dirty"})
         self.assertFalse(Path(loaded["state_dir"]).exists())
 
     def test_settled_registry_values(self):
@@ -277,7 +278,8 @@ class RunnerIdentityTests(unittest.TestCase):
     def checkout(self, name):
         """Copy the runner sources into a fresh Git repository with a deterministic commit."""
         target = self.root / name
-        for relative in ("linear_runner/__init__.py", "linear_runner/config.py", "linear_runner/linear/__init__.py",
+        for relative in ("linear_runner/__init__.py", "linear_runner/config.py", "linear_runner/version.py",
+                         "linear_runner/linear/__init__.py",
                          "linear_runner/linear/client.py", "linear_runner/backends/__init__.py",
                          "linear_runner/backends/codex.py", "linear_runner/backends/claude.py", "prompts/generic.md", *[
                 str(p.relative_to(ROOT)) for folder in ("registry", "schema") for p in (ROOT / folder).glob("*.json")]):
@@ -321,7 +323,7 @@ class RunnerIdentityTests(unittest.TestCase):
         self.assertNotEqual(committed[0], a[0])
 
     def test_runner_identity_outside_git_is_unknown(self):
-        self.assertEqual(config.runner_identity(self.root / "not-a-repo"), {"commit": None, "dirty": None})
+        self.assertEqual(config.runner_identity(self.root / "not-a-repo"), {"release": RELEASE, "commit": None, "dirty": None})
 
     def test_path_normalization_is_exact(self):
         root = "/opt/runner"

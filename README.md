@@ -32,6 +32,8 @@ the checkout root, which is also `${runner_root}`.
 | --- | --- |
 | `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, and the offline `report` and `measure`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
+| `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
+| `linear_runner/version.py` | The current release (`RELEASE`), `--version` and the batch `runner_version` check |
 | `linear_runner/cli.py` | The command line: argument parsing and dispatch of every command |
 | `linear_runner/config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning, the configuration fingerprint and runner identity |
 | `linear_runner/engine/runner.py` | The per-issue state machine: gates, model phases, checks and validation, the controller commit, delivery, review, publication and terminal reporting |
@@ -102,7 +104,7 @@ model does not allow) are errors.
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides` |
+| Batch | `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -168,8 +170,8 @@ recovery and continuation"). Use a new batch `id` for a new queue.
 
 The configuration fingerprint in `state.json` and `resolved-config.json` covers the whole
 resolved configuration: guidance text, commands, environment, policy, IDs and the runner
-identity. The runner is identified by its Git commit and a clean/dirty flag, not by where
-it is checked out: paths under the runner checkout are normalized to `${runner_root}`
+identity. The runner is identified by its release, Git commit and a clean/dirty flag, not
+by where it is checked out: paths under the runner checkout are normalized to `${runner_root}`
 before hashing. Moving or re-cloning the runner at the same commit therefore resumes
 normally, while a different runner commit, uncommitted runner edits or any configuration
 change is refused. The dirty flag is a boolean, so further edits to an already dirty
@@ -180,6 +182,41 @@ supervisor process starts and how a person is told about progress and stops, so 
 left out of the fingerprint and changing them never blocks resuming. Each launch record
 (`<state dir>/launches/<launch id>.json`) stores the launcher settings actually used, and
 `status` shows those of the latest launch.
+
+## Releases
+
+Releases follow semantic versioning and are Git tags `v<version>` on a release commit;
+`CHANGELOG.md` has one entry per release and `linear_runner/version.py` names the newest one.
+
+```bash
+python3 runner.py --version
+# linear-runner 2.0.0 (commit <sha>, clean)
+# linear-runner 2.0.0 with unreleased changes (commit <sha>, dirty; not the tagged release v2.0.0)
+```
+
+`resolved-config.json` records the same release, commit and dirty flag under `runner`, so
+every batch state names the runner it ran with. A batch may pin a release with
+`"runner_version": "2.0.0"`: the launch preflight's `config` step then refuses unless the
+runner checkout is exactly the clean, tagged release (`The batch pins runner_version 2.1.0,
+but this checkout is release 2.0.0 at commit ...`). `validate-config` reports the same
+problem under `runner_version` without failing. Without `runner_version` any checkout runs,
+as before.
+
+Every CHANGELOG entry states its **project impact** (`none`, or the exact configuration change
+and the `validate-config` message that asks for it) and its **canary tier**: `first-issue
+checkpoint` for a change to preflight, reporting or documentation only, `canary batch` for a
+change to the engine, prompts, backends or models. Changes land under `## Unreleased` as they
+are committed. To cut a release:
+
+1. Every commit since the last release passes the full suite (`python3 -m unittest`),
+   including the public-tree leak test (`tests/test_public_tree.py`), and `validate-config`
+   passes for the example batch.
+2. In one release commit, rename `## Unreleased` to `## v<version> — <date>` with both
+   required lines (a test checks them), start a new empty `## Unreleased`, and set `RELEASE`
+   in `linear_runner/version.py` (a test checks it matches the newest entry).
+3. Tag the release commit `v<version>` (annotated) and push the commit and the tag.
+4. Before the next production batch, run the canary its tier names, then pin the batch to the
+   release if you want later runner commits refused.
 
 ## Model backends and pools
 

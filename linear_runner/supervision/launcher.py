@@ -6,6 +6,7 @@
 step                      identity it depends on                 reused when unchanged?
 ========================  =====================================  ==========================
 config                    resolved configuration fingerprint     yes
+                          (and the pinned runner_version, if any)
 worktree                  source (branch, HEAD, clean, content)  yes
 model_catalog             catalog bytes + configuration          yes
 claude_auth (opt.)        the configured Claude token            never (always re-read)
@@ -60,6 +61,7 @@ import time
 from linear_runner import backends
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
 from linear_runner.supervision import backend_start
+from linear_runner.version import pin_problem
 from linear_runner.supervision.recovery import expected_state
 from linear_runner.engine.runner import (PHASES, Runner, contract_matches, fingerprint, git, now, project_lock,
                                          resolve_profile, run_id)
@@ -242,7 +244,13 @@ def preflight(config, runner, *, launch_id, force=False):
             write_json(latest, record)
             raise LaunchError(f"Preflight step {name!r} failed: {error}") from error
 
-    step("config", ["config"], lambda: {"fingerprint": ids["config"]["fingerprint"], "layers": config["_layers"]})
+    def check_config():
+        problem = pin_problem(config, RUNNER_ROOT)
+        if problem:
+            raise LaunchError(problem)
+        return {"fingerprint": ids["config"]["fingerprint"], "layers": config["_layers"], "runner": config["runner"],
+                "runner_version": config.get("runner_version")}
+    step("config", ["config"], check_config)
     step("worktree", ["source", "config"], lambda: _check_worktree(runner))
     step("model_catalog", ["model_catalog", "config"], lambda: _check_catalog(config))
     if config.get("claude_auth"):
