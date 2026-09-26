@@ -33,6 +33,12 @@ its tier. The release procedure is in the README ("Releases").
   bullets and dropped the rules block's language tag, and the Linear MCP endpoint cannot
   write templates (`W-206`, `W-213`). Project impact: none.
 
+### Fixed
+
+* Under Python older than 3.10 every command now stops at once with "linear-runner needs
+  Python 3.10 or newer, but <interpreter> is Python <version>" instead of a traceback from
+  deep in the configuration code. Project impact: none.
+
 ## v2.0.0 — 2026-09-26
 
 The first versioned release. It covers the rebuilt runner (milestone 03), the multi-backend
