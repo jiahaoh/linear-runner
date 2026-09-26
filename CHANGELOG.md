@@ -38,6 +38,9 @@ its tier. The release procedure is in the README ("Releases").
 * Under Python older than 3.10 every command now stops at once with "linear-runner needs
   Python 3.10 or newer, but <interpreter> is Python <version>" instead of a traceback from
   deep in the configuration code. Project impact: none.
+* While an active issue owns uncommitted work, launch preflight reuses an earlier baseline
+  pass only if the configuration, environment and fixtures are unchanged since it; otherwise
+  it records the step as skipped with the reason (`W-210` review). Project impact: none.
 
 ## v2.0.0 — 2026-09-26
 

@@ -1770,6 +1770,21 @@ class ResumeBaselineTests(Harness):
                          ("skipped", "the worktree holds DEV-1's own uncommitted work, and no earlier result passed"))
         self.assertFalse((self.state_dir / "preflight" / "L-resume" / "baseline").exists())
 
+    def test_a_pass_under_another_configuration_is_not_reused(self):
+        self.hooks[("DEV-1", "implement")] = self.blocked(times=1)
+        self.launch()
+        path = self.state_dir / "preflight.json"
+        record = json.loads(path.read_text())
+        record["steps"]["baseline_checks"]["identity"]["config"] = "0" * 64  # passed before a repin-config
+        path.write_text(json.dumps(record))
+        self.recover("resume")
+        runner = self.make_runner()
+        step = preflight(runner.config, runner, launch_id="L-repinned")["steps"]["baseline_checks"]
+        self.assertEqual((step["status"], step["reason"]),
+                         ("skipped", "the worktree holds DEV-1's own uncommitted work, and config changed since the "
+                                     "last pass, so it is not reused; it runs again at the next launch on a clean "
+                                     "worktree"))
+
 
 class CommandLineTests(Harness):
     def test_recover_requires_reason_and_authorizer(self):

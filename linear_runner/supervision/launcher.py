@@ -20,7 +20,8 @@ backend_start.<backend>   backend:<backend> (executable, CLI     yes
 
 Every step records whether it was reused or rerun and why. ``baseline_checks`` never runs over
 an active issue's own uncommitted work (the worktree step has checked that the active issue
-owns it): it reuses the last passing result, or records ``skipped`` when there is none.
+owns it): it reuses the last passing result while configuration, environment and fixtures are
+unchanged, and records ``skipped`` (with the reason) otherwise.
 ``claude_auth`` runs only when
 ``site.claude.auth`` names a token file or variable: the token must be readable (a file of
 mode 600 or stricter, non-empty; a set variable) and ``claude auth status`` must show the CLI
@@ -260,15 +261,21 @@ def preflight(config, runner, *, launch_id, force=False):
         if active and git(runner.repo, "status", "--porcelain"):
             # The uncommitted work is the active issue's own; baseline checks describe the
             # starting point and must not run over it.
+            # A pass is reused only while everything but the source is unchanged.
             prior = (previous or {}).get("steps", {}).get("baseline_checks")
             why = f"the worktree holds {active['issue_id']}'s own uncommitted work"
-            if prior and prior.get("status") == "passed":
+            passed = prior and prior.get("status") == "passed"
+            changed = [d for d in ("config", "environment", "fixtures")
+                       if passed and (prior.get("identity") or {}).get(d) != digests[d]]
+            if passed and not changed:
                 reused_from = prior.get("reused_from") or previous["launch_id"]
                 record["steps"]["baseline_checks"] = dict(prior, reused=True, reused_from=reused_from,
                                                           reason=f"reused: {why}; the last passing result is from {reused_from}")
             else:
+                since = (f"{', '.join(changed)} changed since the last pass, so it is not reused; it runs again at the "
+                         "next launch on a clean worktree") if changed else "no earlier result passed"
                 record["steps"]["baseline_checks"] = {"status": "skipped", "reused": False, "at": now(),
-                                                      "reason": f"{why}, and no earlier result passed"}
+                                                      "reason": f"{why}, and {since}"}
         else:
             step("baseline_checks", ["source", "config", "environment", "fixtures"],
                  lambda: _baseline_checks(runner, directory / "baseline"))

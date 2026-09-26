@@ -428,9 +428,6 @@ class ResolutionTests(unittest.TestCase):
             pin_resolution(load_config(batch, home), NoNetwork())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class InterfaceVersionTests(unittest.TestCase):
     """The runner-project interface a project profile and a batch file declare (W-205)."""
@@ -505,3 +502,7 @@ class InterfaceVersionTests(unittest.TestCase):
             cli.main(["validate-config", "--batch", str(path), "--home", str(home)])
         report = json.loads(out.getvalue())["interface"]
         self.assertEqual((report["current"], report["undeclared"]), (1, ["batch fixture"]))
+
+
+if __name__ == "__main__":
+    unittest.main()
