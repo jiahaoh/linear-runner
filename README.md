@@ -30,7 +30,7 @@ the checkout root, which is also `${runner_root}`.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, and the offline `report` and `measure`); launch units and comment commands run it by path |
+| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
 | `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |
@@ -46,6 +46,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/linear/client.py` | Direct HTTPS JSON-RPC client for the official Linear MCP endpoint; append-only comments with read-back |
 | `linear_runner/linear/updates.py` | Template rendering, draft lint, hidden event markers and the exactly-once event ledger |
 | `linear_runner/linear/messages.py` | Builds each human-review comment from saved state |
+| `linear_runner/linear/template.py` | The Linear issue template "Runner issue contract" (`runner.py sync-linear-template`) |
 | `linear_runner/linear/attention.py` | Stop classification, needs-input mechanisms and the out-of-band notifier |
 | `linear_runner/supervision/launcher.py` | Launch preflight with identity-keyed reuse; `systemd-user` and `foreground` host backends |
 | `linear_runner/supervision/backend_start.py` | The `backend_start.<backend>` preflight step: start each selectable model backend once in the batch worktree |
@@ -390,6 +391,25 @@ the same from the repository's side:
 
 Keep the repository's own authorization rules (push, merge, deployment, publication): the
 runner never pushes, merges or publishes, so they do not conflict.
+
+**The issue template in Linear.** New runner issues start in contract form from the Linear
+issue template "Runner issue contract", generated from `templates/issue-contract.md`:
+
+```bash
+python3 runner.py sync-linear-template --dry-run                 # print it; no Linear, no writes
+python3 runner.py sync-linear-template --workspace <slug> [--team <team>]
+```
+
+The rendering is the repository file without its front matter, after a note that names the
+source and release, the rule that every criterion names its evidence, and the required labels
+(one task kind and one profile, from `registry/labels.json`). Without `--dry-run` the command
+finds the workspace's issue template of that name, compares its description with the
+rendering and records its ID in the workspace file (`"issue_template": {"name", "id"}`,
+outside the batch configuration). It reports `current`, `differs`, `missing` or `ambiguous`
+and exits 1 unless `current`. The official Linear MCP endpoint can read templates but has no
+tool to create or update one, so for `missing` or `differs` paste the dry-run output into the
+template in Linear (Settings, Templates) and run the command again. Running it again changes
+nothing and never creates a second template.
 
 ## Running a batch
 

@@ -26,6 +26,10 @@ its tier. The release procedure is in the README ("Releases").
   instructions take precedence over the repository's agent instructions on commits, Linear
   updates, checks and the handoff; README "Integrating a project" (`W-203`). Canary tier of
   this prompt change: canary batch.
+* `runner.py sync-linear-template`: renders `templates/issue-contract.md` as the Linear issue
+  template "Runner issue contract" (`--dry-run` prints it), checks the workspace's copy and
+  records its ID in the workspace file (`issue_template`). The Linear MCP endpoint cannot
+  write templates, so a missing or outdated one is pasted in Linear by hand (`W-206`).
 
 ## v2.0.0 — 2026-09-26
 

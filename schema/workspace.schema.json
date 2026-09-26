@@ -78,6 +78,25 @@
           }
         }
       }
+    },
+    "issue_template": {
+      "description": "The Linear issue template \"Runner issue contract\" recorded by runner.py sync-linear-template; not part of the batch configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "id"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   },
   "$defs": {

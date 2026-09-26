@@ -108,6 +108,13 @@ def build_parser():
     measure.add_argument("--replay-compact", action="store_true",
                          help="also rebuild each saved intake with the compact builder and report its size")
     measure.add_argument("--json", metavar="PATH", help="also write the full measurement as JSON")
+    template = commands.add_parser("sync-linear-template",
+                                   help="render templates/issue-contract.md as the Linear issue template \"Runner "
+                                        "issue contract\", check the workspace's copy and record its ID")
+    template.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
+    template.add_argument("--workspace", help="workspace slug (workspaces/<slug>.json); required unless --dry-run")
+    template.add_argument("--team", help="Linear team whose templates to search (default: all the user can see)")
+    template.add_argument("--dry-run", action="store_true", help="print the rendered template; no Linear access, no writes")
     recover = commands.add_parser("recover", help="record an authorized recovery for the next launch")
     kinds = recover.add_subparsers(dest="kind", required=True, metavar="kind")
     authority = argparse.ArgumentParser(add_help=False)
@@ -271,6 +278,40 @@ def offline_measure(args):
     print(measure.render_markdown(result))
 
 
+def sync_linear_template(parser, args):
+    from linear_runner.config import RUNNER_ROOT, _path, find_home, load_registry, read_layer
+    from linear_runner.linear import template
+    from linear_runner.version import RELEASE
+    home = find_home(args.home)
+    try:
+        policy, _, _ = load_registry(home)
+    except (ConfigError, OSError) as error:
+        parser.error(str(error))
+    rendered = template.render(policy["labels"], RELEASE)
+    if args.dry_run:
+        print(template.text_of(rendered), end="")
+        return
+    if not args.workspace:
+        parser.error("--workspace is required unless --dry-run")
+    path = home / "workspaces" / f"{args.workspace}.json"
+    try:
+        workspace = read_layer(path, "workspace", f"workspace {args.workspace}")
+    except (ConfigError, OSError) as error:
+        parser.error(str(error))
+    auth = dict(workspace["auth"])
+    if auth.get("credentials_file"):  # resolved as load_config does
+        auth["credentials_file"] = str(_path(auth["credentials_file"], path.parent,
+                                             {"home": str(home), "runner_root": str(RUNNER_ROOT)},
+                                             f"workspace {args.workspace}.auth.credentials_file"))
+    try:
+        report = template.sync(LinearClient(auth), path, rendered, team=args.team)
+    except RuntimeError as error:
+        parser.error(str(error))
+    print(json.dumps(report, indent=2))
+    if report["status"] != "current":
+        raise SystemExit(1)
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -278,6 +319,8 @@ def main(argv=None):
         return offline_report(args)
     if args.command == "measure":
         return offline_measure(args)
+    if args.command == "sync-linear-template":
+        return sync_linear_template(parser, args)
     try:
         config = load_config(args.batch, args.home)
     except (ConfigError, OSError) as error:
