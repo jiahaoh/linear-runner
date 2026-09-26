@@ -392,8 +392,10 @@ the same from the repository's side:
 Keep the repository's own authorization rules (push, merge, deployment, publication): the
 runner never pushes, merges or publishes, so they do not conflict.
 
-**The issue template in Linear.** New runner issues start in contract form from the Linear
-issue template "Runner issue contract", generated from `templates/issue-contract.md`:
+**No issue template in Linear.** `templates/issue-contract.md` is the only maintained copy
+of the issue contract; write runner issues from it. A copy pasted into a Linear issue template
+turns the `- [ ]` criteria into plain bullets (the runner then finds no criteria) and drops the
+`linear-runner-rules` tag, so none is kept. If you want one anyway, render and check it with:
 
 ```bash
 python3 runner.py sync-linear-template --dry-run                 # print it; no Linear, no writes
