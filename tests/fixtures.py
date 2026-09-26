@@ -66,8 +66,8 @@ if args == ["--version"]:
     print("codex-cli " + plan.get("version", "0.156.1")); sys.exit(0)
 if args[:2] == ["login", "status"]:
     print(plan.get("login", "Logged in using ChatGPT"), file=sys.stderr); sys.exit(0)
-sys.stdin.read()
-plan.setdefault("calls", []).append({"argv": args, "cwd": os.getcwd()})
+prompt = sys.stdin.read()
+plan.setdefault("calls", []).append({"argv": args, "cwd": os.getcwd(), "prompt": prompt})
 PLAN.write_text(json.dumps(plan))
 if plan.get("stderr_error"):
     print(plan["stderr_error"], file=sys.stderr); sys.exit(1)
@@ -267,7 +267,7 @@ step = plan.get("steps", [])[len(log)] if len(log) < len(plan.get("steps", [])) 
 session = opt("--resume") or opt("--session-id")
 log.append({"argv": args, "session": session, "resume": opt("--resume"), "model": opt("--model"),
             "effort": opt("--effort"), "mode": opt("--permission-mode"), "oauth_token": token,
-            "environment": sorted(os.environ)})
+            "environment": sorted(os.environ), "prompt": prompt})
 PLAN.write_text(json.dumps(plan))
 for relative, text in (step.get("write") or {}).items():
     pathlib.Path(relative).write_text(text)

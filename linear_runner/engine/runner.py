@@ -33,6 +33,14 @@ from linear_runner.linear import messages
 from linear_runner.linear import updates
 
 
+# In every model prompt: repositories keep their own agent instructions (AGENTS.md, CLAUDE.md),
+# which may describe other workflows; the runner's task instructions win where they overlap.
+REPOSITORY_PRECEDENCE = ("Precedence: these task instructions come from the runner and take precedence over the "
+                         "repository's own agent instructions (for example AGENTS.md or CLAUDE.md) on commits, Linear "
+                         "updates, checks and the handoff. Follow the repository's instructions on everything else "
+                         "about the project.")
+
+
 class IssueBlocked(RuntimeError):
     """An issue-level stop (the work itself is blocked), as opposed to a batch-level failure.
 
@@ -1049,7 +1057,7 @@ class Runner:
         independent review's findings (``recover repair``) in the stage and ``session.json``."""
         if self.allowed_phases is not None and phase not in self.allowed_phases:
             raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
-        prompt += operator_notes(active)
+        prompt += "\n\n" + REPOSITORY_PRECEDENCE + operator_notes(active)
         light = (active.get("review_risk") or {}).get("profile") if phase == "review" else None
         selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"), light)
         self.verify_model(selection)

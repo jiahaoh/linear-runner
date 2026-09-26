@@ -2,6 +2,7 @@
 and single escalation, frozen source, schema-bound review validation, outbox drafts and usage
 attribution. Real Git, checks, argv and stream-json parsing; a fake `claude` executable and a
 fake Linear. No model, network or Linear."""
+import contextlib
 import copy
 import json
 from pathlib import Path
@@ -10,9 +11,10 @@ import tempfile
 import unittest
 
 from linear_runner.config import load_config, pin_resolution
-from linear_runner.engine.runner import Runner, git, resolve_profile, usage_totals
+from linear_runner.engine.runner import REPOSITORY_PRECEDENCE, Runner, git, resolve_profile, usage_totals
 from linear_runner.linear.attention import classify_stop
-from tests.fixtures import TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, make_home, set_pools, fake_codex
+from tests.fixtures import (TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, fake_codex, fake_codex_calls,
+                            make_home, set_pools)
 from tests.linear.test_updates import GOOD_PROGRESS
 
 OPUS_MEDIUM = {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
@@ -58,6 +60,36 @@ class ClaudeEngineTests(unittest.TestCase):
         run = Path(runner.state["history"][0]["run_dir"] if runner.state["history"] else runner.state["active"]["run_dir"])
         return {p.parent.name.split("-")[0] + ":" + p.parent.name: json.loads(p.read_text())
                 for p in sorted(run.glob("*/session.json"))}
+
+    def test_worker_and_reviewer_prompts_state_the_runner_precedence_on_both_backends(self):
+        """W-203: repository agent instructions (Codex reads AGENTS.md itself) must not override
+        the runner on commits, Linear updates, checks and the handoff."""
+        runner = self.runner([{"write": {"result.txt": "ready"}}, {}])
+        runner.execute(limit=1)
+        prompts = [c["prompt"] for c in self.calls()]
+        self.assertTrue(prompts[0].startswith("Implement ONLY DEV-1."))
+        self.assertTrue(prompts[1].startswith("Independently assess DEV-1."))
+        for prompt in prompts:
+            self.assertIn(REPOSITORY_PRECEDENCE, prompt)
+        # The same statement reaches the Codex CLI: a Codex reviewer, then a Codex worker.
+        codex_review = {"backend": "codex", "model": "astra", "effort": "medium"}
+        for pools, opening in (({"implement": [OPUS_MEDIUM], "repair": [OPUS_MEDIUM], "review": [codex_review]},
+                                "Independently assess DEV-1."),
+                               ({"implement": [codex_review], "repair": [OPUS_MEDIUM], "review": [OPUS_MEDIUM]},
+                                "Implement ONLY DEV-1.")):
+            self.tearDown_state()
+            registry = claude_registry(); set_pools(registry, "Standard", pools)
+            runner = self.runner([{"write": {"result.txt": "ready"}}], registry=registry)
+            with contextlib.suppress(Exception):  # the fake Codex returns no issue result
+                runner.execute(limit=1)
+            prompt = fake_codex_calls(self.root / "fake-codex-plan.json")[-1]["prompt"]
+            self.assertTrue(prompt.startswith(opening), prompt[:80])
+            self.assertIn(REPOSITORY_PRECEDENCE, prompt)
+
+    def tearDown_state(self):
+        """A fresh repository, Linear issue and state root for another run in the same test."""
+        self.tmp.cleanup()
+        self.setUp()
 
     def test_lifecycle_records_selection_backend_and_claim(self):
         runner = self.runner([{"write": {"result.txt": "ready"}}, {}])

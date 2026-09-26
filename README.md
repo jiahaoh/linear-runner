@@ -358,6 +358,39 @@ Claude Code decides whether the tools it runs (for example the worker's Bash) se
 `CLAUDE_CODE_OAUTH_TOKEN`; treat the token like the login it replaces, which a worker could also
 read from `~/.claude`.
 
+## Integrating a project
+
+A target repository should not describe the runner. Runner releases change flags, prompts
+and recovery commands; text about them in a repository goes stale, and workers read that
+repository's instructions from the worktree (Codex loads `AGENTS.md` by itself; Claude
+sessions start with `--setting-sources ''` and read it only when asked). The private project
+profile and its guidance are the adapter between the two.
+
+| Who | Provides |
+| --- | --- |
+| The project repository | Project facts in its own agent instructions (`AGENTS.md`, `CLAUDE.md`): architecture, conventions, runtime, data rules and resource limits, and the test commands, written for any contributor |
+| The project profile (private home) | The checks, their environment and identity files, the guidance files and optional shared contract (see "Configuration layers") |
+| Linear | Issues in contract form (`templates/issue-contract.md`): each criterion names its evidence |
+| The runner | Every runner-specific worker rule, in the prompt it builds: the intake packet, the outbox and draft templates, focused validation only, no commits, no Linear writes, the handoff, and the readiness schema |
+
+Put batch procedure (branches, allowlists, budgets, which checks the controller runs) in the
+private guidance, never in the repository. Every model prompt the runner builds, for the
+worker and for the reviewer on either backend, ends its task with:
+
+> Precedence: these task instructions come from the runner and take precedence over the
+> repository's own agent instructions (for example AGENTS.md or CLAUDE.md) on commits, Linear
+> updates, checks and the handoff. Follow the repository's instructions on everything else
+> about the project.
+
+The recommended runner-neutral sentence for a target repository's agent instructions says
+the same from the repository's side:
+
+> When an automated runner dispatches a task, the task's own instructions govern commits,
+> Linear updates, checks and handoff; they take precedence over this file where they differ.
+
+Keep the repository's own authorization rules (push, merge, deployment, publication): the
+runner never pushes, merges or publishes, so they do not conflict.
+
 ## Running a batch
 
 1. Read the live issues, dependencies, workflow and repository instructions. Record scope,

@@ -22,6 +22,10 @@ its tier. The release procedure is in the README ("Releases").
   `interface_version`; `validate-config` refuses an older one with the migration steps and a
   newer one with a request to update the runner, and reports undeclared files (`W-205`).
   Project impact: none (declaring it is optional); declare `"interface_version": 1`.
+* Every model prompt (worker and reviewer, both backends) states that the runner's task
+  instructions take precedence over the repository's agent instructions on commits, Linear
+  updates, checks and the handoff; README "Integrating a project" (`W-203`). Canary tier of
+  this prompt change: canary batch.
 
 ## v2.0.0 — 2026-09-26
 
