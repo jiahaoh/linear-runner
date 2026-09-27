@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.1.0 — 2026-09-26
+
+Milestone 05 (runner–project decoupling), the Research model pools and two fixes. A canary
+batch on three STARfinder issues (`W-214`) passed with this code before release.
+
+**Project impact:** none. Existing configurations need no change. Optionally declare
+`"interface_version": 1` in project profiles and batch files, and pin `"runner_version":
+"2.1.0"` in a batch to refuse other checkouts. A paused batch adopts the release with `recover
+repin-config`.
+
+**Canary tier:** canary batch; prompts and models changed, and the canary in `W-214` passed.
+
 ### Added
 
 * The runner-project interface version: `registry/interface.json` and
@@ -36,9 +48,9 @@ its tier. The release procedure is in the README ("Releases").
 ### Changed
 
 * Research issues use gpt-6-astra high, then claude-opus-5-5 high, then claude-opus-5-5
-  medium (named only), for every profile and phase (a `Research` entry in `registry/pools.json`). Before, Standard and Economy Research
-  issues used the `*` pools (gpt-6-astra medium; gpt-6-luna max). Project impact: none; a
-  paused batch needs `recover repin-config`. Canary tier: canary batch (models).
+  medium (named only), for every profile and phase (a `Research` entry in
+  `registry/pools.json`). Before, Standard and Economy Research issues used the `*` pools
+  (gpt-6-astra medium; gpt-6-luna max).
 
 ### Fixed
 
