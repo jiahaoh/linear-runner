@@ -15,6 +15,12 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* Batch branches are named `runner/<batch id>` (was `codex/`): the controller commits on them
+  whichever backend implements. Documentation, the example batch and test fixtures only; the
+  runner never enforced a prefix. Project impact: none; existing batches keep their branches.
+
 ## v2.1.0 — 2026-09-26
 
 Milestone 05 (runner–project decoupling), the Research model pools and two fixes. A canary

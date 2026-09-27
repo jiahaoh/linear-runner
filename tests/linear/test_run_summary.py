@@ -22,7 +22,7 @@ FIXTURE = CHECKOUT / "testdata" / "run-summary"
 TEAM12 = FIXTURE / "TEAM-12" / "20260923T101500Z-1a2b3c4d"
 TEAM13 = FIXTURE / "TEAM-13" / "20260923T130000Z-2b3c4d5e"
 CTX = {"batch": "demo", "batch_arg": "demo", "home": None, "prefix": "python3 runner.py", "mention": "",
-       "branch": "codex/demo", "max_repairs": 2}
+       "branch": "runner/demo", "max_repairs": 2}
 RUNNER_LIMITS = {"max_chars": 3500, "max_lines": 60, "max_first_sentence_chars": 240}
 
 

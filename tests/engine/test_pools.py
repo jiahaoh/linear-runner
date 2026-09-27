@@ -124,7 +124,7 @@ class PoolResolutionTests(unittest.TestCase):
         self.fails(config, ["Implementation", "Standard", "validate-model:astra"], "implement", "unknown model label")
 
     def test_out_of_pool_name_fails_preflight_before_claim_or_model(self):
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "codex/test")
+        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
         git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
         (self.repo / "README.md").write_text("fixture"); git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "base")
         config, _ = pin_resolution(self.load(), self.linear)

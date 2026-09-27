@@ -47,7 +47,7 @@ class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "codex/test")
+        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
         git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
         (self.repo / "README.md").write_text("fixture")
         git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")
@@ -1328,7 +1328,7 @@ class RepinConfigTests(Harness):
         self.launch(stop_after=["DEV-1"])
         cases = [
             (lambda: self.edit_batch(lambda b: b.update(issues=["DEV-2", "DEV-1", "DEV-3"])), "the issue allowlist and its order"),
-            (lambda: self.edit_batch(lambda b: b.update(branch="codex/other")), "the branch"),
+            (lambda: self.edit_batch(lambda b: b.update(branch="runner/other")), "the branch"),
             (lambda: self.edit_batch(lambda b: b.update(worktree=str(self.root / "other"))), "the worktree"),
             (lambda: self.edit_project(lambda p: p.update(linear_project="Other project")), "the Linear project"),
         ]
@@ -1677,7 +1677,7 @@ class BackendStartTests(Harness):
         other = self.root / "other-codex"
         shutil.copy(fake_codex(self.root)[0], other)
         worktree = self.root / "other-worktree"
-        git(self.repo, "worktree", "add", "-q", "-b", "codex/other", str(worktree))
+        git(self.repo, "worktree", "add", "-q", "-b", "runner/other", str(worktree))
         for change in ("version", "login", "executable", "worktree", "rerun"):
             with self.subTest(change=change):
                 kwargs, changed = {}, config

@@ -281,7 +281,7 @@ class TokenReachesOnlyTheChildTests(Fixture):
 
     def setUp(self):
         super().setUp()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "codex/test")
+        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
         git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
         (self.repo / "README.md").write_text("fixture")
         git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")

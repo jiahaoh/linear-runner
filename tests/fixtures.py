@@ -125,7 +125,7 @@ def make_home(root, repo, *, registry=None, site=None, workspace=None, project=N
                     "command": ["${python}", "-c", "from pathlib import Path; assert Path('result.txt').read_text() == 'ready'"]}],
     }, **(project or {})))
     batch_path = write(home / "batches" / "fixture.json", dict({
-        "id": "fixture", "project": "fixture", "issues": ["DEV-1"], "terminal_issue": "DEV-1", "branch": "codex/test",
+        "id": "fixture", "project": "fixture", "issues": ["DEV-1"], "terminal_issue": "DEV-1", "branch": "runner/test",
     }, **(batch or {})))
     return home, batch_path
 

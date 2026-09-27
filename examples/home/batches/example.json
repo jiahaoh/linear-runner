@@ -6,7 +6,7 @@
     "TEAM-123"
   ],
   "terminal_issue": "TEAM-123",
-  "branch": "codex/example-batch",
+  "branch": "runner/example-batch",
   "worktree": "/absolute/path/to/prepared/worktree",
   "required_done": [],
   "supervision": {

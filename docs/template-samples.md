@@ -230,7 +230,7 @@ TEAM-12 is Done: the independent review accepted all 3 acceptance criteria and L
 - /absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d/delivery/packet/review.html — file from the delivery packet
 
 **Delivered**
-Commit 4c44464d4ce9 on branch codex/demo-batch, local only (not pushed or merged). It needed 1 repair before the checks passed.
+Commit 4c44464d4ce9 on branch runner/demo-batch, local only (not pushed or merged). It needed 1 repair before the checks passed.
 
 **Models**
 It was implemented with gpt-6-luna (max effort, Codex), repaired with gpt-6-luna (max effort, Codex) and reviewed with gpt-6-astra (medium effort, Codex).
@@ -274,7 +274,7 @@ Template `done.md`, written by the runner, posted after Done is published, for a
 TEAM-15 is Done: the independent review accepted all 2 acceptance criteria and Linear shows the issue Done, so no action is needed.
 
 **Delivered**
-Commit 7e6d5c4b3a29 on branch codex/demo-batch, local only (not pushed or merged).
+Commit 7e6d5c4b3a29 on branch runner/demo-batch, local only (not pushed or merged).
 
 **Models**
 It was implemented with claude-opus-5-5 (medium effort, Claude) and reviewed with gpt-6-astra (medium effort, Codex).
@@ -770,7 +770,7 @@ Template `done.md`, written by the runner, posted after Done is published and re
 TEAM-11 is Done: the independent review accepted all 2 acceptance criteria and Linear shows the issue Done, so no action is needed.
 
 **Delivered**
-Commit 9a8b7c6d5e4f on branch codex/demo-batch, local only (not pushed or merged).
+Commit 9a8b7c6d5e4f on branch runner/demo-batch, local only (not pushed or merged).
 
 Evidence: /absolute/path/to/runs/TEAM-11/20260923T081500Z-0f1e2d3c, /absolute/path/to/runs/TEAM-11/20260923T081500Z-0f1e2d3c/final-result.json
 

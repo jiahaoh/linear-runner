@@ -418,8 +418,10 @@ nothing and never creates a second template.
 
 1. Read the live issues, dependencies, workflow and repository instructions. Record scope,
    acceptance, data/environment/resource limits and permitted operations in Linear.
-2. Prepare a clean dedicated worktree and `codex/` branch from the chosen baseline. Use one
-   active controller per project.
+2. Prepare a clean dedicated worktree and `runner/<batch id>` branch from the chosen baseline. Use one
+   active controller per project. The `runner/` prefix names the controller that commits on the
+   branch, whichever model backend implements the issues; branches of earlier batches keep their
+   `codex/` names.
 3. Copy `examples/home/` to your private home, replace every placeholder and use real
    validation commands. Add project or batch guidance files as needed.
 4. Validate offline, run the tests, then launch. Inspect one completed issue before

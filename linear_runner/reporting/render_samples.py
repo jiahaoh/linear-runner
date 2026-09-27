@@ -25,7 +25,7 @@ STATE = "/absolute/path/to/controller/demo-batch"
 RECORDS = ROOT / "testdata" / "run-summary"  # fictional saved records for the usage tables
 CTX = {"batch": "demo-batch", "batch_arg": "demo-batch", "home": None,
        "prefix": "python3 /absolute/path/to/linear-runner/runner.py", "mention": "",
-       "branch": "codex/demo-batch", "max_repairs": 2}
+       "branch": "runner/demo-batch", "max_repairs": 2}
 WORKTREE = "/absolute/path/to/worktrees/demo-batch"
 DELIVERABLES = [{"path": f"{WORKTREE}/reports/qc_report.html",
                  "description": "QC report with per-tile spot counts and error bars"},

@@ -213,7 +213,7 @@ class EventTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "codex/test")
+        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
         self.home, self.batch = make_home(self.root, self.repo)
         self.linear = FakeLinear()
         self.config, _ = pin_resolution(load_config(self.batch, self.home), self.linear)
