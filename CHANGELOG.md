@@ -21,6 +21,17 @@ its tier. The release procedure is in the README ("Releases").
   whichever backend implements. Documentation, the example batch and test fixtures only; the
   runner never enforced a prefix. Project impact: none; existing batches keep their branches.
 
+### Fixed
+
+* Publication read-back, the lifecycle read-back and `recover publish --accept-contract-drift`
+  ignore emphasis markers (`*`) outside code spans, as they already ignored `[x]`/`[X]`.
+  Linear re-serializes the description the runner writes and may move or drop emphasis next
+  to an issue mention; an accepted issue whose description had such a mention then stopped
+  with "Published checklist read-back mismatch", and `recover publish` could not pass
+  (`W-229`, `W-236`). Words, links, code spans, bullets and every other contract field still must
+  match. Project impact: none; a batch paused at that stop adopts the fix with `recover
+  repin-config`, then publishes with `recover publish`. Canary tier: canary batch (engine).
+
 ## v2.1.0 — 2026-09-26
 
 Milestone 05 (runner–project decoupling), the Research model pools and two fixes. A canary

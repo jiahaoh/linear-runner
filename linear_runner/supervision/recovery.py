@@ -36,8 +36,8 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   ``--accept-contract-drift`` (at ``publish`` or ``done``) also re-pins the issue contract
   when the live issue changed only outside what the reviewer accepted: the acceptance
   criteria and every scope field (description, project, assignee, milestone, and the issue
-  IDs of ``blocks``, ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot, otherwise
-  it refuses and names the changed fields. It records the old and new contract hashes and
+  IDs of ``blocks``, ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot up
+  to publication's ticks and Linear's emphasis markers (``publication_form``), otherwise it refuses and names the changed fields. It records the old and new contract hashes and
   the changed field names; it never runs a model.
 * ``defer``   - set an issue aside and let the queue continue with independent issues.
 * ``cancel``  - withdraw a pending recovery that has not been launched (recorded too). It
@@ -65,7 +65,7 @@ import tempfile
 from linear_runner.config import write_json
 from linear_runner.engine import intake as intake_module
 from linear_runner.engine.runner import (CONTRACT_RELATIONS, IssueBlocked, contract_fields, git, fingerprint,
-                                         issue_contract, now, published_issue, review_criteria,
+                                         issue_contract, now, publication_form, published_issue, review_criteria,
                                          review_repair_waiting, run_id, validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
@@ -461,15 +461,16 @@ def _checklist(description):
 def accepted_scope_changes(accepted, live):
     """Names of what the reviewer accepted that differ in ``live``: ``acceptance criteria``,
     the SCOPE_FIELDS and ``relations.<name>`` for CONTRACT_RELATIONS. The description may
-    differ from the accepted one only by publication's ticks (``[x]``/``[X]``)."""
+    differ from the accepted one only by publication and Linear's re-serialization of it
+    (``publication_form``: ``[x]``/``[X]`` ticks and emphasis markers)."""
     changed = []
     if live.get("id") != accepted.get("id"):
         changed.append("id")
     description = live.get("description") or ""
-    if _checklist(description) != _checklist(accepted.get("description")):
+    if _checklist(publication_form(description)) != _checklist(publication_form(accepted.get("description"))):
         changed.append("acceptance criteria")
-    ticked = re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", description, flags=re.M)
-    if description != (accepted.get("description") or "") and ticked != published_issue(accepted)["description"]:
+    if description != (accepted.get("description") or "") and \
+            publication_form(description) != publication_form(published_issue(accepted)["description"]):
         changed.append("description")
     changed += [f for f in SCOPE_FIELDS[1:] if _canonical(live.get(f)) != _canonical(accepted.get(f))]
     old, new = contract_fields(accepted)["relations"], contract_fields(live)["relations"]

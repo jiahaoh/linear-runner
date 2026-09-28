@@ -17,7 +17,7 @@ from linear_runner.engine import runner as runner_module
 from linear_runner.cli import main
 from linear_runner.backends.codex import execution_evidence
 from linear_runner.engine.runner import (RESULT_SCHEMA, Runner, fingerprint, git, issue_contract, project_lock,
-                                         published_contract_matches, published_issue, resolve_profile, review_criteria,
+                                         publication_form, published_contract_matches, published_issue, resolve_profile, review_criteria,
                                          review_schema, usage_totals, write_json)
 
 
@@ -527,6 +527,38 @@ class EngineTests(unittest.TestCase):
         # Do not lowercase arbitrary prose or inline checkbox examples.
         for before, after in [("Prose X", "Prose x"), ("Example `[X]`", "Example `[x]`")]:
             self.assertFalse(published_contract_matches(dict(live, description=after), dict(original, description=before)))
+
+    # The W-229 shape: Linear dropped the emphasis pair between an issue mention and a code span.
+    EMPHASIS = 'State *Accepted (*<issue id="fixture">DEV-2</issue>*, on 2026-01-02, at* `abc1234`*)*.'
+    RESERIALIZED = 'State *Accepted (*<issue id="fixture">DEV-2</issue>, on 2026-01-02, at `abc1234`*)*.'
+
+    def test_linear_emphasis_reserialization_completes(self):
+        self.linear.data["description"] = "* " + self.EMPHASIS + "\n\n- [ ] Produce validated output"
+        original = self.linear.call
+        def serialize(name, **args):
+            result = original(name, **args)
+            if name == "save_issue" and "description" in args:
+                self.linear.data["description"] = (args["description"].replace("[x]", "[X]")
+                                                   .replace(self.EMPHASIS, self.RESERIALIZED))
+            return result
+        self.linear.call = serialize
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+        self.assertEqual(self.linear.data["description"], "* " + self.RESERIALIZED + "\n\n- [X] Produce validated output")
+
+    def test_publication_comparison_ignores_only_emphasis_outside_code(self):
+        original = dict(self.linear.data, description=self.EMPHASIS + "\n* [ ] Produce *validated* output")
+        live = dict(original, description=self.RESERIALIZED + "\n* [X] Produce validated output")
+        self.assertTrue(published_contract_matches(live, original))
+        self.assertEqual(publication_form("* [X] **Bold** `a*b`"), "* [x] Bold `a*b`")
+        for after in [self.RESERIALIZED.replace("2026-01-02", "2026-01-03"),   # a changed word
+                      self.RESERIALIZED.replace("`abc1234`", "`abc1234*`"),    # a changed code span
+                      self.RESERIALIZED.replace("State ", "- State ")]:         # a new bullet
+            with self.subTest(after=after):
+                self.assertFalse(published_contract_matches(
+                    dict(live, description=after + "\n* [X] Produce validated output"), original))
+        self.assertFalse(published_contract_matches(
+            dict(live, description=self.RESERIALIZED + "\n- [X] Produce validated output"), original))
 
     # --- The issue contract: scope fields only, related links excluded -------------
 

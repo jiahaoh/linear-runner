@@ -628,6 +628,15 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         with self.assertRaisesRegex(RecoveryError, "past independent acceptance.*--accept-contract-drift"):
             self.recover("review", repin=True)
 
+    def test_accepted_scope_ignores_linear_emphasis_reserialization(self):
+        # W-229: Linear moved emphasis markers next to a mention inside an accepted criterion.
+        accepted = dict(self.linear.data, description='- [ ] State *Accepted (*<issue id="fixture">DEV-2</issue>'
+                                                      '*, at* `abc1234`*)*')
+        live = dict(accepted, description='- [X] State *Accepted (*<issue id="fixture">DEV-2</issue>, at `abc1234`*)*')
+        self.assertEqual(recovery.accepted_scope_changes(accepted, live), [])
+        changed = dict(live, description=live["description"].replace("`abc1234`", "`abc9999`"))
+        self.assertEqual(recovery.accepted_scope_changes(accepted, changed), ["acceptance criteria", "description"])
+
     def test_accept_contract_drift_at_done_keeps_the_published_checklist(self):
         original = self.linear.post_comment
         def flaky(issue, body, marker, **kwargs):

@@ -561,8 +561,10 @@ elsewhere stops the batch for reconciliation.
    repair committed on top of the earlier controller commit (see "Stop, recovery and
    continuation").
 9. **Publish.** The controller ticks the checklist, sets the `done` state and reads the
-   issue back. `[x]` and `[X]` are treated as equivalent (Linear serializes `[X]`); every
-   other description byte, identity, ownership, milestone and dependency must match.
+   issue back. The description is compared as Linear re-serializes it: `[x]` and `[X]` are
+   equivalent (Linear writes `[X]`), and emphasis markers (`*`) outside code spans are
+   ignored (Linear may move or drop them next to an issue mention); every other description
+   byte, identity, ownership, milestone and dependency must match.
    It never closes a human gate or the project.
 
 **Issue contract.** Intake pins a SHA-256 of the issue's `id`, `description`, `projectId`,
@@ -1059,7 +1061,8 @@ previous intake and issue beside it. After acceptance the one re-pin is `recover
 acceptance criteria (the checklist items the reviewer accepted) and every scope field
 (`description`, `projectId`, `assigneeId`, `projectMilestone`, and the issue IDs of the
 `blocks`, `blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
-description may differ only by publication's ticks (`[x]`/`[X]`). Otherwise it refuses and
+description may differ only as publication does (ticks and Linear's emphasis markers, as in
+step 9 of "Lifecycle"). Otherwise it refuses and
 names the changed fields: a changed criterion or scope needs a new independent review
 (`recover review --repin-contract`), which runs only at the review step. **Known limitation:**
 no recovery moves an accepted issue (step `publish` or `done`) back to the review step, so

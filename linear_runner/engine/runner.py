@@ -397,15 +397,32 @@ def published_issue(issue):
                                          issue.get("description", ""), flags=re.M))
 
 
+def publication_form(description):
+    """``description`` as compared after the runner has written it to Linear.
+
+    Linear re-serializes a written description: it writes checked items as ``[X]``, and it
+    may move or drop emphasis markers (``*``) next to an issue mention (W-229, where
+    ``*Accepted (*<issue>…</issue>*, 2026-09-27, at* `…`*)*`` came back without the middle
+    pair). Neither changes a word, link or code span, so checked items become ``[x]`` and
+    ``*`` outside code spans is dropped, except a line's ``* `` bullet.
+    """
+    lines = []
+    for line in re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", description or "", flags=re.M).split("\n"):
+        bullet = re.match(r"\s*(?:\* )?", line).group()
+        parts = re.split(r"(`+[^`]*`+)", line[len(bullet):])
+        lines.append(bullet + "".join(p if i % 2 else p.replace("*", "") for i, p in enumerate(parts)))
+    return "\n".join(lines)
+
+
 def published_contract_matches(live, original):
-    """Linear serializes checked items as [X]; preserve every other contract byte.
+    """The live issue has the published contract up to Linear's re-serialization
+    (``publication_form``); every other contract field must match exactly.
 
     Keep raw issue_contract hashes unchanged for existing checkpoints. Only the
-    authorized post-review publication comparison allows checked-marker case.
+    authorized post-review publication comparison allows these differences.
     """
     def normalized(issue):
-        return dict(issue, description=re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]",
-                                             issue.get("description", ""), flags=re.M))
+        return dict(issue, description=publication_form(issue.get("description", "")))
     return issue_contract(normalized(live)) == issue_contract(normalized(published_issue(original)))
 
 
