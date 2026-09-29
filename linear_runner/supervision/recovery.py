@@ -37,7 +37,7 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   when the live issue changed only outside what the reviewer accepted: the acceptance
   criteria and every scope field (description, project, assignee, milestone, and the issue
   IDs of ``blocks``, ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot up
-  to publication's ticks and Linear's emphasis markers (``publication_form``), otherwise it refuses and names the changed fields. It records the old and new contract hashes and
+  to publication's ticks and Linear's emphasis markers and issue-mention markup (``publication_form``), otherwise it refuses and names the changed fields. It records the old and new contract hashes and
   the changed field names; it never runs a model.
 * ``defer``   - set an issue aside and let the queue continue with independent issues.
 * ``cancel``  - withdraw a pending recovery that has not been launched (recorded too). It
@@ -462,7 +462,7 @@ def accepted_scope_changes(accepted, live):
     """Names of what the reviewer accepted that differ in ``live``: ``acceptance criteria``,
     the SCOPE_FIELDS and ``relations.<name>`` for CONTRACT_RELATIONS. The description may
     differ from the accepted one only by publication and Linear's re-serialization of it
-    (``publication_form``: ``[x]``/``[X]`` ticks and emphasis markers)."""
+    (``publication_form``: ``[x]``/``[X]`` ticks, emphasis markers and issue-mention markup)."""
     changed = []
     if live.get("id") != accepted.get("id"):
         changed.append("id")

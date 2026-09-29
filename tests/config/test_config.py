@@ -199,6 +199,18 @@ class LayeredConfigTests(unittest.TestCase):
         loaded = self.load(workspace={"auth": {"credentials_file": "~/.codex/.credentials.json"}})
         self.assertEqual(loaded["linear"], {"credentials_file": str(Path("~/.codex/.credentials.json").expanduser())})
 
+    def test_phase_overrides_raise_a_timeout_up_to_the_registry_maximum(self):
+        loaded = self.load(batch={"phase_overrides": {"DEV-1": {"repair": {"timeout_seconds": 9000}}}})
+        self.assertEqual(loaded["phase_overrides"], {"DEV-1": {"repair": {"timeout_seconds": 9000}}})
+        self.assertNotIn("phase_overrides", self.load())  # absent: fingerprints of other batches unchanged
+        cases = [({"DEV-1": {"repair": {"timeout_seconds": 20000}}}, "exceeds the registry maximum 14400"),
+                 ({"DEV-9": {"repair": {"timeout_seconds": 9000}}}, "not in the issue allowlist"),
+                 ({"DEV-1": {"deliver": {"timeout_seconds": 9000}}}, "unknown key"),
+                 ({"DEV-1": {"review": {"budget": 1}}}, "")]
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ConfigError, message):
+                self.load(batch={"phase_overrides": overrides})
+
     def test_checks_gates_and_paths_are_validated(self):
         check = {"name": "x", "kind": "code", "tier": "default", "inputs": ["*.py"], "cwd": ".", "command": ["true"]}
         cases = [({"project": {"checks": [dict(check, cwd="..")]}}, "inside the worktree"),

@@ -98,16 +98,16 @@ model does not allow) are errors.
 | `labels.json` | Task-kind labels and profile labels (exactly one of each per issue) |
 | `profiles.json` | Profile order, review floors, phase overrides, escalation target, routing version, the `review_routing` low-risk rule |
 | `pools.json` | Ordered `{backend, model, effort}` pools per task kind (or `*`), profile and phase (see "Model backends and pools") |
-| `phases.json` | Per-phase soft budgets and timeouts, the shared repair limit (≤ 2), per-check timeout, `bounded_sessions` thresholds |
+| `phases.json` | Per-phase soft budgets and timeouts, the largest per-issue timeout a batch may set (`max_timeout_seconds`), the shared repair limit (≤ 2), per-check timeout, `bounded_sessions` thresholds |
 | `linear.json` | Default workflow state names and whether a milestone is required |
 | `interface.json` | The runner-project interface version (see "Interface version"); not a policy layer, so a private registry cannot override it |
 
 | Layer | Fields |
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
-| Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
+| Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `min_lifetime_minutes` (30) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `runner_version` (see "Releases") |
+| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -136,6 +136,7 @@ Supervisor, launcher and delivery-integrity fields:
 | | `notifier.timeout_seconds` | 30 | Notifier command timeout |
 | | `watchdog.stall_minutes` | 120 | Watchdog alert after this long without recorded progress |
 | | `watchdog.interval_minutes` | 10 | How often the launch-started timer runs the watchdog |
+| | `watchdog.paused_minutes` | 60 | Remind once (comment and notifier) when a stop has waited this long without a recorded recovery; `0` turns it off |
 | | `lint.max_chars` / `max_lines` / `max_first_sentence_chars` | 1500 / 30 / 240 | Limits for worker and reviewer drafts |
 | | `outbox.poll_seconds` / `settle_seconds` | 15 / 3 | Outbox poll interval while the model runs; drafts younger than this are left for the next poll |
 | project `delivery_integrity` | `manifest` | required | Renderer manifest, relative to the issue's `delivery/` directory |
@@ -414,6 +415,19 @@ tool to create or update one, so for `missing` or `differs` paste the dry-run ou
 template in Linear (Settings, Templates) and run the command again. Running it again changes
 nothing and never creates a second template.
 
+**Writing issues and batch guidance (operator practice).** Lessons from the §2.5 batches (`W-251`):
+
+* Write each acceptance criterion on its own `- [ ]` line. A criterion with nested sub-items is
+  kept whole (its sub-items joined into it with `; `, see step 8 of "Lifecycle"), but the
+  reviewer then assesses one long sentence; separate criteria are clearer and get separate
+  evidence.
+* Never write the identifier of an issue that does not exist yet (for example "the amendment
+  will be W-242"). Once it exists, Linear links the plain text in the description the runner
+  writes. The publication read-back tolerates that link, but a wrong identifier ends up linking
+  an unrelated issue. Describe future work in words and add the link once the issue exists.
+* Scope batch guidance rules precisely: name the issues, phases or paths a rule applies to, so
+  a rule written for one issue does not constrain or block another.
+
 ## Running a batch
 
 1. Read the live issues, dependencies, workflow and repository instructions. Record scope,
@@ -466,12 +480,24 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 | `model_catalog` | Host catalog readable; which registry profiles it offers | catalog bytes + configuration |
 | `baseline_checks` (optional) | Default-tier checks pass on the clean baseline; never run over a resumed active issue's own uncommitted work (the last passing result is reused while configuration, environment and fixtures are unchanged; otherwise the step is recorded `skipped` with the reason) | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
 | `claude_auth` (with `site.claude.auth`) | The Claude token file or variable is usable and the CLI uses it (see "Claude authentication") | never: always re-read |
+| `linear_credential` | The Linear OAuth credential's remaining lifetime, when its file records an expiry (below) | never: always re-read |
 | `linear` | Authenticated live read of every allowlisted issue, gates, ownership, decision-rule blocks, model/effort per phase, dependency-aware dry-run selection, or the resume checks for a saved active issue | never: live state is always re-read |
 | `backend_start.<backend>` | Each model backend the pending issues can select starts in the batch worktree (see below) | backend: executable (path, resolved file, SHA-256), CLI version line, auth mode (Codex `login status`; Claude mode + token file path/variable name + token file mtime), worktree, probe model/effort, launcher and check environment, start-check code |
 
 Each step records `reused` and a reason (`reused: source, config unchanged since L-...`,
 `changed: source`, `no previous preflight result`, `previous result did not pass`,
-`live state: always re-read`). `--rerun-preflight` disables reuse. `run --max-issues N`
+`live state: always re-read`). `--rerun-preflight` disables reuse.
+
+**Linear credential lifetime.** A workspace that uses a Codex-owned `credentials_file`
+depends on an OAuth access token that expires; a batch that outlives it stops with "Linear
+OAuth expired at <time>; refresh it with `<command>` ... then resume" (an `environment` stop).
+The `linear_credential` step records the remaining minutes and the expiry, fails the launch
+below `auth.min_lifetime_minutes` (30) and warns below `auth.warn_lifetime_minutes` (720);
+`launch` prints warnings under `warnings`. Both messages name the refresh command:
+`auth.refresh_command`, or by default `codex exec --skip-git-repo-check 'Reply with OK.'`
+(a short Codex session starts the Linear MCP server, which refreshes the stored credential).
+Refresh before a long batch so it starts with a full lifetime. A `token_env` token has no
+readable expiry; the step records that. `run --max-issues N`
 still works for a single in-process run without the supervisor.
 
 **Backend start check.** A backend that cannot start in the worktree (for example a CLI
@@ -538,7 +564,11 @@ elsewhere stops the batch for reconciliation.
    records it (`active.repair_blocked`) so the blocked comment and `recover resume` can tell
    it from an interrupted repair (see "Stop, recovery and continuation").
 6. **Commit.** The controller commits the validated, unchanged source itself. Any worker
-   commit or other history change stops the batch.
+   commit or other history change stops the batch. The message says what the issue delivers:
+   the title is `feat(<issue>): <the Linear issue title>` (first letter lower-cased, cut at a
+   word boundary to 72 characters with `…`), the body is the worker's summary (at most 600
+   characters, wrapped at 72) and the last line is the trailer `Linear-Issue: <issue>`. A
+   state without the issue title keeps `feat(<issue>): implement validated issue deliverables`.
 7. **Delivery.** Optional `delivery_checks` receive `RUNNER_DELIVERY_CONTEXT` (a JSON file
    with the revision, validation records, issue, `issue_run_dir` and `delivery_dir`). With
    `delivery_integrity` configured, the controller then verifies, without a model, that
@@ -550,7 +580,12 @@ elsewhere stops the batch for reconciliation.
    In Review) and confirms it by read-back; if the issue is already in that state, for
    example after an interrupted write or a failed review, no second write is made. A
    read-only session then gets a schema bound to the issue ID, the full commit
-   and the number of unchecked criteria, and must copy each criterion verbatim. The
+   and the number of unchecked criteria, and must copy each criterion verbatim. A criterion
+   is the text of an unchecked `- [ ]` line; lines nested below it (indented deeper, up to the
+   next blank line, checkbox or shallower line) are joined into it, sub-list markers dropped
+   and items separated by `; `, so `Each recipe reports:` with a nested list reaches the
+   reviewer whole. A nested checkbox is its own criterion; a checked item is excluded with
+   its nested lines. The intake packet lists the same criteria. The
    controller independently rejects wrong identities and missing, duplicate, unexpected
    or blank-evidence entries; a summary or schema-shaped output alone is never acceptance.
    The source must still be frozen at the commit afterwards, and the shared contract must
@@ -562,9 +597,14 @@ elsewhere stops the batch for reconciliation.
    continuation").
 9. **Publish.** The controller ticks the checklist, sets the `done` state and reads the
    issue back. The description is compared as Linear re-serializes it: `[x]` and `[X]` are
-   equivalent (Linear writes `[X]`), and emphasis markers (`*`) outside code spans are
-   ignored (Linear may move or drop them next to an issue mention); every other description
-   byte, identity, ownership, milestone and dependency must match.
+   equivalent (Linear writes `[X]`), emphasis markers (`*`) outside code spans are
+   ignored (Linear may move or drop them next to an issue mention), and Linear's mention
+   markup for an issue (`<issue id="…" href="…/issue/W-242/…">W-242</issue>`, or a Markdown
+   link to the issue) equals the plain identifier it shows (Linear links a plain identifier
+   when it saves the description, `W-242`); markup whose link names another issue than its
+   text does not. Every other description byte, identity, ownership, milestone and dependency
+   must match. The raw `issue_contract` hash is unchanged by these rules; only the
+   post-acceptance comparisons apply them.
    It never closes a human gate or the project.
 
 **Issue contract.** Intake pins a SHA-256 of the issue's `id`, `description`, `projectId`,
@@ -597,6 +637,26 @@ session failed before any completed turn and recorded no counter, the resumed at
 figure is its cumulative counter minus the last known one: an upper bound that also holds
 the failed attempt's unreported usage. The budget check uses it as is, so an upper bound
 under budget passes and one over budget checkpoints (the stop says "an upper bound").
+Cached input alone does not stop a finished phase: when a phase returned `ready` for its
+issue and only `input_tokens` exceed the budget, while its uncached input (`input_tokens`
+minus `cached_input_tokens`) and every other figure are within budget, the phase is not
+stopped. A resumed long session rereads its whole context as cached input on every turn
+(`W-249` implement read 22.2M input tokens, 21.8M of them cached, against a 15M budget).
+`phase-usage.json` then records a `budget_note` and the supervisor log says so. A blocked
+phase, uncached input over budget, any other figure over budget or a missing cached figure
+still checkpoints.
+
+**Phase timeouts per issue.** Each model phase has a hard timeout (`phases.json`,
+`timeout_seconds`). A batch can raise it for a named issue and phase when that phase is
+known to include long external steps (for example browser screenshots), up to the registry's
+`max_timeout_seconds` (14400); `validate-config` refuses a larger value or an issue outside
+the allowlist and lists the overrides:
+
+```json
+"phase_overrides": {"W-249": {"repair": {"timeout_seconds": 9000}}}
+```
+
+Each attempt's `session.json` records the `timeout_seconds` it ran with.
 Telemetry counts as unavailable only when the attempt itself reports no counter; an
 unknown figure stays unknown, never zero.
 
@@ -790,10 +850,14 @@ Every lifecycle event is a NEW comment on the issue it concerns; nothing is edit
 | `deferred` | runner | when a rule or `on_block` sets the issue aside |
 | `recovery` | runner | when a launch carries out a recorded recovery |
 | `batch-finished` / `batch-paused` | runner | on the terminal issue and `report_issues` |
-| `watchdog` | model-free watchdog | when the supervisor vanished or stalled |
+| `watchdog` | model-free watchdog | when the supervisor vanished or stalled, or a stop waited `paused_minutes` without a recovery |
 
 Each event has the idempotency key (issue, kind, sequence). It is saved in `state.json` as
-pending before the write and as posted after the comment is read back. The comment ends with
+pending before the write and as posted after the comment is read back. Linear may
+acknowledge a write before a read shows it, so every read-back (comments, the review and
+in-progress states, the needs-input label or state, publication) that does not yet show the
+write reads again after short pauses, about 10 s in all (`client.READ_BACK_DELAYS`), before it
+fails; the write itself is never repeated inside that retry. The comment ends with
 one hidden line, `<!-- linear-runner <batch>/<issue>/<kind>/<n> -->`. If a write's response
 or the following save is lost, the next run finds the comment by that line and adopts it, so
 an event is never posted twice. A failed write keeps the batch from advancing; the pending
@@ -812,7 +876,13 @@ optional last `Evidence:` line. Valid `progress` drafts are posted at once. `rea
 `blocked` drafts wait for the session's result: a ready note is posted when the result is
 ready, and a blocked note is quoted in the runner's blocked comment. An invalid draft is
 kept on disk, recorded in `state.drafts` and `<attempt>/outbox-lint.json`, and never
-posted; the runner posts its own templated fallback where the event needs one. The review
+posted; the runner posts its own templated fallback where the event needs one. A draft whose
+only problem is its length (over `max_chars` or `max_lines`) is not lost: the runner cuts it
+to fit (`updates.shorten`: the first sentence, every heading and the `Evidence:` line are
+kept; content goes from the end of the longest section first, whole lines, then sentences,
+then words) and adds "The runner shortened this note to fit the comment limit; the full
+draft is <path>." The cut form must pass the lint; it is posted and the draft record keeps
+`shortened` with the original problems. No model turn is spent on shortening it. The review
 sandbox is read-only, so the reviewer writes its note as the result's `summary`, which the
 runner saves as `outbox/NNN-review.md` and lints the same way. Every backend's prompt states
 these rules in the same words (`updates.draft_rules`), built from the site `lint` limits and
@@ -915,13 +985,25 @@ for example `["mail", "-s", "{subject}", "you@example.org"]` or
 Comments posted with your own Linear credential do not notify you, so without a notifier the
 Linear comments, the label and the watchdog are what make a stop visible.
 
+**Recommended for unattended batches:** set `notifier.backend` to `command` with a command
+that reaches you away from the host, for example a mail command
+(`["mail", "-s", "{subject}", "you@example.org"]`) or a push service's CLI, and keep
+`watchdog.paused_minutes` on. The stop then notifies once when it happens, and the watchdog
+reminds once more if no recovery is recorded within `paused_minutes` (a §2.5 batch sat paused
+for about 10.5 h unnoticed with the default `none`). Test the command once by hand before
+relying on it.
+
 ## Watchdog
 
 `runner.py watchdog --batch B` is model-free. It alerts once, with a new comment plus the
 notifier, when `supervisor.json` still says `running` but that process is gone (killed, out
 of memory; no terminal outcome was written), or when the supervisor runs but nothing in
 `state.json`, `supervisor.json` or the active run directory has changed for
-`watchdog.stall_minutes` (120). The comment goes to the active issue, or the terminal issue
+`watchdog.stall_minutes` (120). It also reminds once when the supervisor exited on a recorded
+stop and no recovery has been recorded for `watchdog.paused_minutes` (60; `0` turns it off):
+a comment on the stopped issue ("Batch B has been paused at W-1 for N minutes without a
+recorded recovery") plus the notifier; the stop has already applied the needs-input mark, and
+the launch's timer keeps running until the reminder is sent. The comment goes to the active issue, or the terminal issue
 when none is active, and that issue gets the needs-input mark, removed when the next launch
 starts. Alerts are recorded in `<state dir>/watchdog.json`, so the same condition never
 alerts twice; a new stall after progress alerts again. It never takes the project lock or
@@ -986,6 +1068,12 @@ needs depends on whether a recovery is pending:
   `--clear-stop` is given. Clearing STOP alone never resumes a paused batch or an
   unfinished issue; those always need a recorded recovery.
 
+A recovery takes the project lock. Right after a stop the supervisor may still hold it while
+it posts the stop comments, so `recover` waits up to 60 s for the lock; if it is still held,
+`recover` ends with one line ("Another controller holds this project's lock (waited 60 s).
+The supervisor may still be exiting ...", exit 2) and records nothing: check `status`, then
+run the same command again.
+
 Every recovery requires `--reason` and `--authorized-by`, runs offline except
 `--repin-contract`, `--accept-contract-drift` (both read the live issue) and `repin-config`
 (Linear name resolution), and is written to
@@ -1042,7 +1130,7 @@ criterion with the reviewer's evidence, the reviewer's summary and limitations, 
 owner's note, as problems the independent reviewer found in the committed work, to fix
 within the issue's scope on top of the clean committed source. Then the full checks run
 (failures enter the normal repair loop), the repair is committed as a new controller commit
-on top of the earlier one (`fix(<issue>): address independent review findings`; the earlier
+on top of the earlier one (`fix(<issue>): address review findings on <issue title>`; the earlier
 commit is never amended), delivery runs again (the earlier packet is kept as
 `delivery-superseded-<id>`) and a fresh review session assesses
 `<starting commit>..<new commit>`, i.e. every controller commit of the issue.
@@ -1061,7 +1149,7 @@ previous intake and issue beside it. After acceptance the one re-pin is `recover
 acceptance criteria (the checklist items the reviewer accepted) and every scope field
 (`description`, `projectId`, `assigneeId`, `projectMilestone`, and the issue IDs of the
 `blocks`, `blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
-description may differ only as publication does (ticks and Linear's emphasis markers, as in
+description may differ only as publication does (ticks, Linear's emphasis markers and issue-mention markup, as in
 step 9 of "Lifecycle"). Otherwise it refuses and
 names the changed fields: a changed criterion or scope needs a new independent review
 (`recover review --repin-contract`), which runs only at the review step. **Known limitation:**

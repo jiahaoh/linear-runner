@@ -13,6 +13,7 @@ from __future__ import annotations
 import subprocess
 
 from linear_runner.backends import failure_patterns
+from linear_runner.linear.client import read_back
 
 STOP_CLASSES = ("runner-defect", "environment", "technical-block", "needs-decision")
 # Issue-level blocks (IssueBlocked.event) and their class.
@@ -83,7 +84,7 @@ def mark_needs_input(linear, issue, settings):
         labels = label_names(live)
         if name not in labels:
             linear.call("save_issue", id=issue, labels=labels + [name])
-        if name not in label_names(linear.issue(issue)):
+        if name not in label_names(read_back(lambda: linear.issue(issue), lambda i: name in label_names(i))):
             raise RuntimeError(f"Linear read-back does not show the {name!r} label on {issue}")
         return {"mechanism": "label", "issue": issue, "label": name, "applied": True}
     if mechanism == "state":
@@ -91,7 +92,7 @@ def mark_needs_input(linear, issue, settings):
         previous = live.get("status")
         if previous != name:
             linear.call("save_issue", id=issue, state=name)
-        if linear.issue(issue).get("status") != name:
+        if read_back(lambda: linear.issue(issue), lambda i: i.get("status") == name).get("status") != name:
             raise RuntimeError(f"Linear read-back does not show {issue} in state {name!r}")
         return {"mechanism": "state", "issue": issue, "state": name, "previous_status": previous, "applied": True}
     raise ValueError(f"Unknown needs-input mechanism {mechanism!r}")
@@ -107,11 +108,13 @@ def clear_needs_input(linear, mark):
         labels = label_names(live)
         if mark["label"] in labels:
             linear.call("save_issue", id=issue, labels=[n for n in labels if n != mark["label"]])
-        if mark["label"] in label_names(linear.issue(issue)):
+        if mark["label"] in label_names(read_back(lambda: linear.issue(issue),
+                                                  lambda i: mark["label"] not in label_names(i))):
             raise RuntimeError(f"Linear read-back still shows the {mark['label']!r} label on {issue}")
     elif mark["mechanism"] == "state" and live.get("status") == mark["state"] and mark.get("previous_status"):
         linear.call("save_issue", id=issue, state=mark["previous_status"])
-        if linear.issue(issue).get("status") != mark["previous_status"]:
+        if read_back(lambda: linear.issue(issue),
+                     lambda i: i.get("status") == mark["previous_status"]).get("status") != mark["previous_status"]:
             raise RuntimeError(f"Linear read-back does not show {issue} back in {mark['previous_status']!r}")
     return {"issue": issue, "cleared": True}
 

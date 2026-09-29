@@ -228,8 +228,73 @@ def draft_rules(limits, kinds):
             "ready. No action is needed.\" but \"X is ready and the owner does not need to act.\" (2) After a "
             "blank line, use only the template's section headings, each in bold on its own line; required "
             f"sections: {required}. (3) Plain sentences only: no JSON, code blocks, tables, HTML comments or long "
-            f"hashes. (4) At most {limits['max_chars']} characters and {limits['max_lines']} lines in total. (5) An "
+            f"hashes. (4) At most {limits['max_chars']} characters and {limits['max_lines']} lines in total; the "
+            "runner cuts a longer draft to fit and links the full file. (5) An "
             "optional last line 'Evidence: <host paths, comma separated>'")
+
+
+LENGTH_PROBLEMS = ("too long: ", "too many lines: ")
+
+
+def length_only(problems):
+    """True when every lint problem is the length limit (``max_chars`` or ``max_lines``)."""
+    return bool(problems) and all(p.startswith(LENGTH_PROBLEMS) for p in problems)
+
+
+def shorten(text, limits, full_path):
+    """An over-long draft cut to fit ``limits``, ending with a sentence that names the full
+    draft (``full_path``), or None when it cannot be cut to fit (W-241: a ready note of 1639
+    characters against 1500 cost a resumed worker session only to shorten it).
+
+    The first paragraph, every section heading and the ``Evidence:`` line are kept. Content
+    is taken from the end of the longest section first: whole lines, then trailing sentences,
+    then words (marked ``…``), keeping at least one line per section.
+    """
+    lines = (text or "").strip().splitlines()
+    evidence = lines.pop() if lines and lines[-1].strip().startswith("Evidence:") else None
+    head_end = lines.index("") if "" in lines else len(lines)
+    head, sections = lines[:head_end], []
+    for line in lines[head_end:]:
+        if section_name(line) or not sections:
+            sections.append([line, []])
+        elif line.strip() or sections[-1][1]:  # paragraph breaks inside a section are kept
+            sections[-1][1].append(line)
+    note = f"The runner shortened this note to fit the comment limit; the full draft is {full_path}."
+
+    def render():
+        for _, content in sections:
+            while content and not content[-1].strip():
+                content.pop()
+        blocks = ["\n".join(head)] + ["\n".join(([heading] if heading.strip() else []) + content)
+                                      for heading, content in sections] + [note]
+        return "\n\n".join(b for b in blocks if b.strip()) + (f"\n\n{evidence}" if evidence else "")
+
+    def fits(value):
+        return len(value) <= limits["max_chars"] and len(value.splitlines()) <= limits["max_lines"]
+
+    value = render()
+    while not fits(value):
+        longest = max(sections, key=lambda s: sum(len(line) for line in s[1]), default=None)
+        if not longest or not longest[1]:
+            return None
+        content = longest[1]
+        if len(content) > 1:
+            content.pop()
+        else:
+            last = content[0]
+            sentences = re.split(r"(?<=[.!?])\s+", last.strip())
+            if len(sentences) > 1:
+                cut = " ".join(sentences[:-1])
+            else:
+                excess = len(value) - limits["max_chars"]
+                words = last.split()
+                if len(words) < 4 or excess >= len(last) - 20:
+                    return None
+                cut = last[:max(len(last) - excess - 2, 20)].rsplit(" ", 1)[0].rstrip(",;:") + " …"
+            indent = last[:len(last) - len(last.lstrip())]
+            content[0] = indent + cut
+        value = render()
+    return value
 
 
 def lint_draft(path, phase, limits):
@@ -243,8 +308,13 @@ def lint_draft(path, phase, limits):
     allowed = DRAFT_KINDS.get(phase, ())
     if kind not in allowed:
         return kind, text, [f"kind {kind!r} is not allowed in the {phase} phase; use one of {', '.join(allowed)}"]
+    return kind, text, lint_text(text, kind, limits)
+
+
+def lint_text(text, kind, limits):
+    """Lint a draft's text against its kind's template."""
     template = draft_template(kind)
-    return kind, text, lint(text, kind=kind, limits=limits, sections=template["sections"], required=template["required"])
+    return lint(text, kind=kind, limits=limits, sections=template["sections"], required=template["required"])
 
 
 # --- Markers ------------------------------------------------------------------------

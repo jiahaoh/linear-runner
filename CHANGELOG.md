@@ -15,13 +15,75 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Added
+
+* Launch preflight step `linear_credential`: the Codex-owned Linear OAuth credential's
+  remaining lifetime and expiry, when its file records one. It fails below the workspace's
+  `auth.min_lifetime_minutes` (30) and warns below `auth.warn_lifetime_minutes` (720);
+  `launch` prints warnings under `warnings`. The stop for an expired credential now says when
+  it expired and names the refresh command (`auth.refresh_command`, default `codex exec
+  --skip-git-repo-check 'Reply with OK.'`) (`W-251`). Project impact: none; optionally set the
+  three `auth` keys. Canary tier: first-issue checkpoint (preflight).
+* Batch `phase_overrides`: `{"<issue>": {"<phase>": {"timeout_seconds": N}}}` raises a model
+  phase's hard timeout for a named issue, up to the new registry `phases.max_timeout_seconds`
+  (14400). `validate-config` refuses a larger value or an issue outside the allowlist and
+  lists the overrides; each attempt's `session.json` records its `timeout_seconds` (`W-249`,
+  `W-251`). Project impact: none; optional.
+* Watchdog `paused` reminder: when the supervisor exited on a recorded stop and no recovery
+  has been recorded for `attention.watchdog.paused_minutes` (60; `0` turns it off), the
+  watchdog posts one reminder comment on the stopped issue and calls the notifier; the
+  launch's timer keeps running until then. README "Stops" recommends a `command` notifier for
+  unattended batches (`W-251`: one batch sat paused for about 10.5 h unnoticed). Project
+  impact: none; set `site.attention.notifier` to a `command` to be notified off the host.
+* README operator practice: one criterion per `- [ ]` line, no identifiers of issues that do
+  not exist yet, precisely scoped batch guidance rules.
+
 ### Changed
 
 * Batch branches are named `runner/<batch id>` (was `codex/`): the controller commits on them
   whichever backend implements. Documentation, the example batch and test fixtures only; the
   runner never enforced a prefix. Project impact: none; existing batches keep their branches.
+* Controller commit messages say what the issue delivers: `feat(<issue>): <Linear issue title>`
+  (cut to 72 characters), the worker's summary as the body and a `Linear-Issue: <issue>`
+  trailer; a repair of review findings is `fix(<issue>): address review findings on <title>`.
+  They were `feat(<issue>): implement validated issue deliverables` for every issue. Project
+  impact: none. Canary tier: canary batch (engine).
+* Soft budgets: a phase that returned `ready` is not stopped when only its input is over
+  budget while its uncached input (`input_tokens - cached_input_tokens`) and every other
+  figure are within budget; `phase-usage.json` records a `budget_note`. Resumed long sessions
+  reread their context as cached input on every turn: four §2.5 pauses (`W-233` repair 6.25M
+  with 6.21M cached, `W-249` implement 22.2M with 21.8M cached and repair 16.8M with 15.6M
+  cached) needed `recover budget` only for that (`W-251`). The rule is in `registry/phases.json`
+  notes. Project impact: none. Canary tier: canary batch (engine).
+* An outbox draft whose only lint problem is its length is posted cut to fit, with a sentence
+  naming the full draft file, instead of being replaced by the runner's fallback; the draft
+  rules in every prompt say so (`W-241`, `W-251`). Project impact: none. Canary tier: canary
+  batch (prompts).
+* `recover` waits up to 60 s for the project lock a just-paused supervisor may still hold, then
+  ends with one line and exit 2 (no traceback) telling the operator to wait and retry. A busy
+  lock reported as EACCES (`PermissionError`, `flock` emulated on network file systems) is
+  treated as busy, not as a crash (`W-251`). Project impact: none.
 
 ### Fixed
+
+* Acceptance criteria keep their nested sub-items: lines indented below a `- [ ]` line are
+  joined into its text (`; ` between items), for the intake packet, the review schema and the
+  reviewer's verbatim list. Only the `- [ ]` line was kept, so `W-233`'s "Each recipe reports:"
+  reached the reviewer without its list and the review blocked (`W-251`). Checked items stay
+  excluded with their nested lines; one-line criteria are unchanged. Project impact: none; an
+  active issue whose criteria have nested lines gets the joined text at its next review.
+  Canary tier: canary batch (engine).
+* Linear read-backs retry: the comment, review/in-progress state, needs-input label or state
+  and publication read-backs read again after short pauses (about 10 s in all) before they
+  fail, without repeating the write. Three §2.5 pauses came from reads taken before Linear
+  showed a write it had acknowledged (`W-238`, `W-241`, `W-251`). Project impact: none.
+* Publication read-back and `recover publish --accept-contract-drift` treat Linear's mention
+  markup for an issue (`<issue id=… href=…/issue/W-242/…>W-242</issue>`, or a Markdown link
+  to it) as equal to the plain identifier; a different identifier, or markup linking another
+  issue, still mismatches. The raw `issue_contract` hashes are unchanged. `W-242` had to be
+  deferred although it was accepted and Done, because Linear linked the plain "W-242" in the
+  ticked description (`W-251`). Project impact: none; a batch paused at that stop adopts the
+  fix with `recover repin-config`, then `recover publish`. Canary tier: canary batch (engine).
 
 * Publication read-back, the lifecycle read-back and `recover publish --accept-contract-drift`
   ignore emphasis markers (`*`) outside code spans, as they already ignored `[x]`/`[X]`.

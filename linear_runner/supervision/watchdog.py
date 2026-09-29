@@ -8,7 +8,11 @@ active, plus one notifier call) when:
   host problem);
 * ``stalled``: the supervisor process exists but neither ``state.json``,
   ``supervisor.json`` nor the active issue's run directory has changed for
-  ``attention.watchdog.stall_minutes`` (120).
+  ``attention.watchdog.stall_minutes`` (120);
+* ``paused``: the supervisor exited on a recorded stop (outcome ``blocked``) and no recovery
+  has been recorded for ``attention.watchdog.paused_minutes`` (60; 0 turns it off). A stop
+  notifies once when it happens; this reminds the owner of a batch left waiting (W-251: one
+  sat paused for about 10.5 h unnoticed). The timer keeps running until it is sent.
 
 ``launch`` (systemd backend) starts a user timer that runs this every
 ``attention.watchdog.interval_minutes`` (10) with ``--launch-id`` and ``--timer``. The
@@ -104,6 +108,22 @@ def last_update(state, issue):
     return updates.first_sentence(summary) if summary else ""
 
 
+def paused_wait(config, root, status, now):
+    """The recorded stop a paused batch waits on, or None: the supervisor exited ``blocked``,
+    no recovery is recorded yet and ``paused_minutes`` is on. ``due`` once it has waited that long."""
+    limit = config["attention"]["watchdog"].get("paused_minutes") or 0
+    if not limit or status.get("status") != "exited" or status.get("outcome") != "blocked":
+        return None
+    path = Path(root) / "state.json"
+    state = read_json(path) if path.exists() else {}
+    stop = next((s for s in state.get("stops", []) if s.get("id") == status.get("stop")), None)
+    since = _epoch((stop or {}).get("at"))
+    if state.get("pending_recovery") or state.get("phase") != "paused" or since is None:
+        return None
+    return {"stop": stop, "since": since, "minutes": int((now - since) // 60),
+            "due": now - since >= limit * 60}
+
+
 def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, notify_run=subprocess.run, log=print,
           launch_id=None, timer=None, systemctl=subprocess.run):
     """One watchdog pass. ``launch_id``/``timer`` are given by the launch-started timer."""
@@ -134,20 +154,34 @@ def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, no
     if launch_id and status.get("launch_id") != launch_id:
         stopped = stop_own_timer(f"launch {status.get('launch_id')} replaced launch {launch_id}")
         return {"status": "superseded", "timer_stopped": stopped}
-    if status.get("status") != "running":
+    now = clock()
+    launch = status.get("launch_id")
+    waiting = paused_wait(config, root, status, now)
+    if waiting and not waiting["due"]:
+        return {"status": "waiting", "reason": f"paused on stop {waiting['stop']['id']} for {waiting['minutes']} "
+                                               "minutes without a recorded recovery", "timer_stopped": False}
+    if waiting and f"paused:{waiting['stop']['id']}" in record["alerts"]:
+        waiting = None
+    if status.get("status") != "running" and not waiting:
         reason = f"supervisor {status.get('launch_id')} is {status.get('status')}"
         stopped = False if ledger.pending() else stop_own_timer(reason + " and every alert is posted")
         return {"status": "ok", "reason": reason, "timer_stopped": stopped}
-    if status.get("host") and status["host"] != (hostname or os.uname().nodename):
+    if not waiting and status.get("host") and status["host"] != (hostname or os.uname().nodename):
         return {"status": "skipped", "reason": f"the supervisor runs on {status['host']}; run the watchdog there"}
     state = read_json(root / "state.json") if (root / "state.json").exists() else {}
     active = state.get("active")
     issue = active["issue_id"] if active else None
+    if waiting:
+        issue = waiting["stop"].get("issue")
     subject = issue or f"batch {config['batch_id']}"
     progress = last_progress(root, state, status)
-    now = clock()
-    launch = status.get("launch_id")
-    if not alive(status.get("pid")):
+    if waiting:
+        stop = waiting["stop"]
+        condition, key, minutes = "paused", f"paused:{stop['id']}", waiting["minutes"]
+        observed = (f"The supervisor (launch {launch}) paused the batch at {_iso(waiting['since'])} on stop "
+                    f"{stop['id']} ({stop.get('class')}), and no recovery has been recorded since. The stop comment"
+                    f"{' on ' + issue if issue else ''} says what it needs.")
+    elif not alive(status.get("pid")):
         condition, key, minutes = "gone", f"gone:{launch}", None
         observed = (f"supervisor.json still says running (launch {launch}, PID {status.get('pid')} on "
                     f"{status.get('host')}), but that process no longer exists and no terminal outcome was written.")
@@ -177,13 +211,15 @@ def check(config, linear, *, clock=time.time, alive=pid_alive, hostname=None, no
         alert["comment"] = ledger.emit(target, "watchdog", body, dedupe=key, now=_iso(now))["key"]
     except Exception as error:
         alert["post_error"] = str(error)
-    try:  # removed again when the next launch starts successfully
-        mark = attention.mark_needs_input(linear, target, config["attention"]["needs_input"])
-        record.setdefault("needs_input", {})[target] = mark
-    except Exception as error:
-        alert["needs_input_error"] = str(error)
+    if condition != "paused":  # a stop has already applied the needs-input mark
+        try:  # removed again when the next launch starts successfully
+            mark = attention.mark_needs_input(linear, target, config["attention"]["needs_input"])
+            record.setdefault("needs_input", {})[target] = mark
+        except Exception as error:
+            alert["needs_input_error"] = str(error)
     save()
-    stopped = condition == "gone" and bool(alert["comment"]) and stop_own_timer(
-        "the supervisor is gone and the alert is posted; the next launch starts a new timer")
+    stopped = condition in ("gone", "paused") and bool(alert["comment"]) and stop_own_timer(
+        f"the supervisor is {'gone' if condition == 'gone' else 'paused'} and the alert is posted; "
+        "the next launch starts a new timer")
     return {"status": "alerted", "key": key, "condition": condition, "issue": target,
             "posted": bool(alert["comment"]), "notified": alert["notified"].get("sent"), "timer_stopped": stopped}

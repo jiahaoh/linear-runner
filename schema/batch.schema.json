@@ -190,6 +190,58 @@
           }
         }
       }
+    },
+    "phase_overrides": {
+      "description": "Per-issue phase limits for this batch: {\"<issue>\": {\"<phase>\": {\"timeout_seconds\": N}}}. N may exceed the registry phase timeout up to registry phases.max_timeout_seconds.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/issue"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "implement": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "timeout_seconds"
+            ],
+            "properties": {
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "repair": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "timeout_seconds"
+            ],
+            "properties": {
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "timeout_seconds"
+            ],
+            "properties": {
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

@@ -273,6 +273,14 @@ class EventTests(unittest.TestCase):
             runner.emit("DEV-1", "blocked", "DEV-1 is paused.", dedupe="S-1")
         self.assertEqual(runner.state["events"]["DEV-1/blocked/1"]["status"], "pending")
 
+    def test_lagging_comment_read_back_is_read_again_and_posted_once(self):
+        # W-241: the new comment was missing from the first listings, then appeared.
+        runner = self.runner()
+        self.linear.comment_lag = 3
+        record = runner.emit("DEV-1", "blocked", "DEV-1 is paused.", dedupe="S-1")
+        self.assertEqual(record["status"], "posted")
+        self.assertEqual(len(self.linear.posts), 1)
+
     def test_progress_draft_is_posted_while_the_session_is_still_running(self):
         draft = self.root / "draft.md"; draft.write_text(GOOD_PROGRESS)
         fake = self.root / "fake-codex"
@@ -476,6 +484,40 @@ class OutboxFallbackTests(AttentionHarness):
         self.assertFalse(any("```" in b for b in self.linear.bodies("DEV-1")))
         # DEV-2: the worker's own valid ready draft is posted unchanged.
         self.assertTrue(self.linear.last("DEV-2", "ready").startswith(good_ready.strip()))
+
+    def test_an_over_long_ready_draft_is_posted_shortened_with_a_pointer_to_the_full_draft(self):
+        # W-241: a 1639-character ready note against the 1500 limit.
+        long_ready = ("DEV-1 is ready for validation and the owner does not need to act.\n\n**What was done**\n"
+                      + " ".join(f"Step {i} of the calibrated preset work is described in some detail here." for i in range(22))
+                      + "\n\n**How it was checked**\nThe focused preset tests passed.\n\n"
+                      "Evidence: /absolute/path/to/runs/DEV-1/preset.json\n")
+        self.assertEqual([p.split(":")[0] for p in updates.lint_text(long_ready, "ready", LIMITS)], ["too long"])
+        self.drafts[("DEV-1", "implement")] = {"001-ready.md": long_ready}
+        self.launch(stop_after=["DEV-1"])
+        ready = self.linear.last("DEV-1", "ready")
+        path = next(Path(p) for p in self.state()["drafts"] if p.endswith("001-ready.md"))
+        self.assertTrue(ready.startswith("DEV-1 is ready for validation and the owner does not need to act."))
+        self.assertIn(f"The runner shortened this note to fit the comment limit; the full draft is {path}.", ready)
+        self.assertIn("**How it was checked**\nThe focused preset tests passed.", ready)
+        self.assertIn("Evidence: /absolute/path/to/runs/DEV-1/preset.json", ready)
+        self.assertNotIn("Step 21", ready)
+        self.assertEqual(path.read_text(), long_ready)  # the full draft stays on disk
+        record = self.state()["drafts"][str(path)]
+        self.assertEqual((record["status"], record["problems"]), ("posted", []))
+        self.assertTrue(record["shortened"]["problems"][0].startswith("too long"))
+        self.assertEqual(self.calls, [("DEV-1", "implement"), ("DEV-1", "review")])  # no extra worker turn
+
+    def test_shorten_keeps_headings_and_gives_up_when_it_cannot_fit(self):
+        limits = dict(LIMITS, max_chars=400)
+        text = ("A plain opening sentence for the owner.\n\n**What changed**\n- first item\n- second item\n"
+                + "\n".join(f"- item {i} with some words" for i in range(20)) + "\n\n**Risks**\nNone known.")
+        short = updates.shorten(text, limits, "/runs/x/outbox/001-progress.md")
+        self.assertEqual(updates.lint_text(short, "progress", limits), [])
+        self.assertIn("**Risks**\nNone known.", short)
+        self.assertIn("- first item", short)
+        self.assertIsNone(updates.shorten("One sentence.\n\n" + "x" * 900, limits, "/p"))
+        many = "One sentence.\n\n**What changed**\n" + "\n".join(f"line {i}." for i in range(40))
+        self.assertLessEqual(len(updates.shorten(many, LIMITS, "/p").splitlines()), LIMITS["max_lines"])
 
     def test_invalid_blocked_draft_falls_back_to_the_worker_result(self):
         self.worker_blocks("DEV-1")
@@ -750,6 +792,30 @@ class LabelTests(unittest.TestCase):
         linear.call = original
 
 
+class ReadBackTests(unittest.TestCase):
+    def test_read_back_pauses_about_ten_seconds_then_returns_the_last_read(self):
+        from linear_runner.linear import client
+        self.assertAlmostEqual(sum(client.READ_BACK_DELAYS), 10, delta=1)
+        reads, pauses = iter(range(100)), []
+        value = client.read_back(lambda: next(reads), lambda v: v == 3, sleep=pauses.append)
+        self.assertEqual((value, pauses), (3, list(client.READ_BACK_DELAYS[:3])))
+        pauses.clear()
+        value = client.read_back(lambda: next(reads), lambda v: False, sleep=pauses.append)
+        self.assertEqual(pauses, list(client.READ_BACK_DELAYS))
+        self.assertEqual(value, 4 + len(client.READ_BACK_DELAYS))
+
+    def test_lagging_label_and_state_read_backs_are_read_again_without_rewriting(self):
+        linear = FakeLinear()
+        linear.lag = 2
+        mark = attention.mark_needs_input(linear, "DEV-1", {"mechanism": "label", "label": "Needs input"})
+        self.assertEqual(len(linear.label_writes), 1)
+        attention.clear_needs_input(linear, mark)
+        self.assertEqual(len(linear.label_writes), 2)
+        mark = attention.mark_needs_input(linear, "DEV-1", {"mechanism": "state", "state": "Blocked"})
+        attention.clear_needs_input(linear, mark)
+        self.assertEqual(linear.writes, ["Blocked", "Todo"])
+
+
 class WatchdogLabelAndTimerTests(AttentionHarness):
     ATTENTION = {"needs_input": {"mechanism": "label", "label": "Needs input"}}
 
@@ -800,6 +866,50 @@ class WatchdogLabelAndTimerTests(AttentionHarness):
         other = watchdog.check(config, self.linear, log=lambda m: None, launch_id="L-older", timer="old.timer",
                                systemctl=systemctl)
         self.assertEqual((other["status"], calls[-1]), ("superseded", ["systemctl", "--user", "stop", "old.timer"]))
+
+    def test_a_stop_waiting_too_long_for_a_recovery_notifies_once_then_stops_the_timer(self):
+        self.worker_blocks("DEV-1")
+        entry = self.launch()
+        config = self.make_runner().config
+        self.assertEqual(config["attention"]["watchdog"]["paused_minutes"], 60)
+        stop = self.state()["stops"][-1]
+        self.assertEqual(len(self.notifier.calls), 1)  # the stop itself
+        calls = []
+        def check(minutes):
+            at = watchdog._epoch(stop["at"]) + minutes * 60
+            return watchdog.check(config, self.linear, clock=lambda: at, alive=lambda pid: False,
+                                  notify_run=self.notifier, log=lambda m: None, launch_id=entry["launch_id"],
+                                  timer="t.timer",
+                                  systemctl=lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0))
+        waiting = check(30)
+        self.assertEqual((waiting["status"], waiting["timer_stopped"]), ("waiting", False))
+        self.assertEqual((len(self.notifier.calls), calls), (1, []))  # not yet: the timer keeps running
+        result = check(61)
+        self.assertEqual((result["condition"], result["issue"], result["notified"], result["timer_stopped"]),
+                         ("paused", "DEV-1", True, True))
+        body = self.linear.last("DEV-1", "watchdog")
+        self.assertEqual(first_line(body), "Batch fixture has been paused at DEV-1 for 61 minutes without a recorded "
+                                           "recovery, and it needs your decision to continue.")
+        self.assertIn(f"on stop {stop['id']} (needs-decision), and no recovery has been recorded since", body)
+        self.assertEqual(self.notifier.calls[-1][0][1], first_line(body))
+        self.assertEqual(calls, [["systemctl", "--user", "stop", "t.timer"]])
+        self.assertEqual(check(600)["status"], "ok")  # once per stop
+        self.assertEqual(len(self.notifier.calls), 2)
+
+    def test_no_paused_reminder_once_a_recovery_is_recorded_or_when_turned_off(self):
+        self.worker_blocks("DEV-1")
+        self.launch()
+        config = self.make_runner().config
+        stop = self.state()["stops"][-1]
+        later = watchdog._epoch(stop["at"]) + 5 * 3600
+        check = lambda cfg: watchdog.check(cfg, self.linear, clock=lambda: later, alive=lambda pid: False,
+                                           notify_run=self.notifier, log=lambda m: None)
+        off = copy.deepcopy(config)
+        off["attention"]["watchdog"]["paused_minutes"] = 0
+        self.assertEqual(check(off)["status"], "ok")
+        self.recover("resume", then="stop")
+        self.assertEqual(check(config)["status"], "ok")
+        self.assertEqual(len(self.notifier.calls), 1)
 
     def test_gone_alert_stops_the_timer_after_posting(self):
         entry = self.launch(stop_after=["DEV-1"])

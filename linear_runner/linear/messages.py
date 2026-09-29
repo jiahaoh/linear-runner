@@ -553,9 +553,14 @@ def batch_paused(ctx, *, subject, where, issues, evidence_paths=()):
 
 
 def watchdog(ctx, *, condition, subject, minutes=None, observed="", last_update="", evidence_paths=()):
-    steps = blocks(("Check the saved state and the supervisor:", command(ctx, "status")),
-                   ("If nothing is running, record a recovery:", command(ctx, "recover", "resume", auth=True)),
-                   ("Then start the batch again:", command(ctx, "launch")))
+    if condition == "paused":  # the stop comment names the recovery that fits
+        steps = blocks(("Check the stop and the saved state:", command(ctx, "status")),
+                       ("Record the recovery the stop comment names, then start the batch again:",
+                        command(ctx, "launch")))
+    else:
+        steps = blocks(("Check the saved state and the supervisor:", command(ctx, "status")),
+                       ("If nothing is running, record a recovery:", command(ctx, "recover", "resume", auth=True)),
+                       ("Then start the batch again:", command(ctx, "launch")))
     return render("watchdog", {"batch": ctx["batch"], "mention": ctx["mention"], "subject": subject, "minutes": minutes,
                                "observed": observed, "last_update": quote(last_update) if last_update else "",
                                "continue_steps": steps, "evidence": evidence(*evidence_paths)}, headline=condition)

@@ -44,6 +44,10 @@
     "check_timeout_seconds": {
       "$ref": "#/$defs/positive"
     },
+    "max_timeout_seconds": {
+      "description": "The largest phase timeout a batch may set for a named issue (batch phase_overrides).",
+      "$ref": "#/$defs/positive"
+    },
     "bounded_sessions": {
       "description": "Thresholds for bounded worker sessions; a batch opts in with context_controls.bounded_sessions.",
       "type": "object",

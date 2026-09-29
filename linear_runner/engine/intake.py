@@ -29,9 +29,41 @@ SCHEMA = "linear-runner.intake/2"
 ISSUE_FIELDS = ("id", "title", "url", "labels", "projectMilestone", "relations", "status", "description")
 
 
+_CHECKBOX = re.compile(r"^(\s*)[-*] \[([ xX])\] (.+)$")
+_SUB_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
 def unchecked_criteria(description):
-    # Same rule as runner.review_criteria (kept here to avoid an import cycle).
-    return list(dict.fromkeys(re.findall(r"^\s*[-*] \[ \] (.+)$", description or "", re.M)))
+    """The unchecked acceptance criteria of ``description``, exact and deduplicated (the
+    reviewer's list too: ``runner.review_criteria``).
+
+    A criterion is the text of a ``- [ ]`` line. Nested lines below it (indented deeper, up
+    to the next blank line, checkbox or shallower line) belong to it and are joined into its
+    text, sub-list markers dropped and items separated by ``; ``, so ``Each recipe reports:``
+    followed by nested bullets reaches the reviewer whole (W-233). A nested checkbox is its
+    own criterion. Checked items are excluded with their nested lines.
+    """
+    found, current, indent = [], None, 0
+    for line in (description or "").split("\n"):
+        box = _CHECKBOX.match(line)
+        nested = current is not None and line.strip() and len(line) - len(line.lstrip()) > indent
+        if box or not nested:
+            if current is not None:
+                found.append(current)
+            current = None
+            if box:
+                indent = len(box.group(1))
+                current = box.group(3).rstrip() if box.group(2) == " " else None
+            continue
+        text = line.strip()
+        if _SUB_ITEM.match(text):
+            item = _SUB_ITEM.sub("", text, count=1)
+            current = current + " " + item if current.endswith(":") else current.rstrip(";,") + "; " + item
+        else:  # a wrapped continuation line
+            current += " " + text
+    if current is not None:
+        found.append(current)
+    return list(dict.fromkeys(found))
 
 
 def file_reference(path, text=None):

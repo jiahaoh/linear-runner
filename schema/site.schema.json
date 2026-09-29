@@ -142,6 +142,11 @@
             "interval_minutes": {
               "type": "integer",
               "minimum": 1
+            },
+            "paused_minutes": {
+              "description": "Remind the owner once (comment and notifier) when a stop has waited this long without a recorded recovery; 0 turns it off.",
+              "type": "integer",
+              "minimum": 0
             }
           }
         },

@@ -20,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import tarfile
+import textwrap
 import time
 import uuid
 
@@ -28,7 +29,8 @@ from linear_runner.linear import attention
 from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
                                   match_entry, pool_for, read_json, write_json)
 from linear_runner.engine.delivery import EMPTY_NOTE, check_outcome, check_passed
-from linear_runner.linear.client import LinearClient
+from linear_runner.engine import intake
+from linear_runner.linear.client import LinearClient, read_back
 from linear_runner.linear import messages
 from linear_runner.linear import updates
 
@@ -87,13 +89,26 @@ def fingerprint(repo):
     return digest.hexdigest()
 
 
+class LockBusy(RuntimeError):
+    """Another process holds the project lock."""
+
+
 @contextlib.contextmanager
-def project_lock(path):
+def project_lock(path, *, wait_seconds=0, sleep=time.sleep, clock=time.monotonic):
+    """Hold the project's controller lock; with ``wait_seconds``, retry that long before
+    ``LockBusy``. A busy lock shows as EWOULDBLOCK, or as EACCES (``PermissionError``) where
+    ``flock`` is emulated with POSIX locks (network file systems)."""
     with open(path, "a+") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError("Another controller holds this project's lock") from error
+        deadline = clock() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, PermissionError) as error:
+                if clock() >= deadline:
+                    waited = f" (waited {wait_seconds} s)" if wait_seconds else ""
+                    raise LockBusy(f"Another controller holds this project's lock{waited}") from error
+                sleep(min(1.0, max(deadline - clock(), 0)))
         yield
 
 
@@ -397,17 +412,41 @@ def published_issue(issue):
                                          issue.get("description", ""), flags=re.M))
 
 
+_MENTION_MARKUP = re.compile(r'<issue\b(?P<attrs>[^>]*)>(?P<id>[A-Z][A-Z0-9]{0,9}-\d+)</issue>'
+                             r'|\[(?P<link>[A-Z][A-Z0-9]{0,9}-\d+)\]\((?P<url>https://linear\.app/[^)\s]*)\)')
+
+
+def plain_mentions(text):
+    """``text`` with Linear's markup for an issue mention replaced by the identifier it shows.
+
+    Linear links a plain identifier it knows when it saves a description: ``W-242`` comes
+    back as ``<issue id="…" href="https://linear.app/<workspace>/issue/W-242/<slug>">W-242</issue>``
+    (W-242, written before that issue existed), or as a Markdown link to the issue. Markup
+    whose ``href`` or URL names a different issue than its text is left as it is.
+    """
+    def plain(match):
+        identifier = match.group("id") or match.group("link")
+        target = re.search(r'href="([^"]*)"', match.group("attrs") or "")
+        url = match.group("url") or (target.group(1) if target else None)
+        if url is not None and not re.search(rf"/issue/{re.escape(identifier)}(?:[/?#]|$)", url, re.I):
+            return match.group(0)
+        return identifier
+    return _MENTION_MARKUP.sub(plain, text or "")
+
+
 def publication_form(description):
     """``description`` as compared after the runner has written it to Linear.
 
-    Linear re-serializes a written description: it writes checked items as ``[X]``, and it
-    may move or drop emphasis markers (``*``) next to an issue mention (W-229, where
+    Linear re-serializes a written description: it writes checked items as ``[X]``, it may
+    move or drop emphasis markers (``*``) next to an issue mention (W-229, where
     ``*Accepted (*<issue>…</issue>*, 2026-09-27, at* `…`*)*`` came back without the middle
-    pair). Neither changes a word, link or code span, so checked items become ``[x]`` and
-    ``*`` outside code spans is dropped, except a line's ``* `` bullet.
+    pair), and it turns a plain issue identifier into mention markup (``plain_mentions``).
+    None of these changes a word, link target or code span, so checked items become ``[x]``,
+    mention markup becomes its identifier, and ``*`` outside code spans is dropped, except a
+    line's ``* `` bullet.
     """
     lines = []
-    for line in re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", description or "", flags=re.M).split("\n"):
+    for line in re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", plain_mentions(description), flags=re.M).split("\n"):
         bullet = re.match(r"\s*(?:\* )?", line).group()
         parts = re.split(r"(`+[^`]*`+)", line[len(bullet):])
         lines.append(bullet + "".join(p if i % 2 else p.replace("*", "") for i, p in enumerate(parts)))
@@ -426,9 +465,23 @@ def published_contract_matches(live, original):
     return issue_contract(normalized(live)) == issue_contract(normalized(published_issue(original)))
 
 
+def cached_only_overrun(usage, budget, result, issue_id):
+    """True when only cached input put a finished phase over its input budget: the phase
+    returned ``ready`` for its issue, and its uncached input (input minus cached input) and
+    every other figure are within budget (registry ``phases.json`` notes)."""
+    cached = usage.get("cached_input_tokens")
+    if not isinstance(result, dict) or result.get("status") != "ready" or result.get("issue_id") != issue_id \
+            or cached is None or usage.get("input_tokens") is None:
+        return False
+    if usage["input_tokens"] - cached > budget["input_tokens"]:
+        return False
+    return all(usage.get(k) is not None and usage[k] <= v for k, v in budget.items() if k != "input_tokens")
+
+
 def review_criteria(issue):
-    """Pin current unchecked text exactly, including Linear markup; deduplicate repeats."""
-    return list(dict.fromkeys(re.findall(r"^\s*[-*] \[ \] (.+)$", issue.get("description", ""), re.M)))
+    """Pin current unchecked text exactly, including Linear markup and nested sub-items joined
+    into their criterion (``intake.unchecked_criteria``); deduplicate repeats."""
+    return intake.unchecked_criteria(issue.get("description", ""))
 
 
 def review_schema(issue, commit):
@@ -469,6 +522,40 @@ def validate_review_result(result, issue, commit):
     if (result.get("status") != "ready" or not entries
             or not all(e.get("satisfied") is True and isinstance(e.get("evidence"), str) and e["evidence"].strip() for e in entries)):
         raise RuntimeError("Independent acceptance is incomplete")
+
+
+COMMIT_TITLE_CHARS = 72
+
+
+def commit_message(active, *, review_fix=False):
+    """The controller's commit message for ``active``: a Conventional Commits title that says
+    what the issue delivers (its Linear title), a body with the worker's summary, and a
+    ``Linear-Issue`` trailer. ``review_fix``: the commit of a repair of review findings.
+
+    ``feat(w-241): add a calibrated synthetic preset version with lognormal…`` replaces the
+    uninformative ``feat(w-241): implement validated issue deliverables`` (W-251). An issue
+    snapshot without a title keeps the old wording.
+    """
+    issue = active["issue_id"]
+    title = " ".join(str((active.get("issue") or {}).get("title") or "").split()).rstrip(".")
+    if title and not (len(title) > 1 and title[1].isupper()):  # keep an acronym's case
+        title = title[0].lower() + title[1:]
+    if review_fix:
+        prefix = f"fix({issue.lower()}): "
+        what = f"address review findings on {title}" if title else "address independent review findings"
+    else:
+        prefix = f"feat({issue.lower()}): "
+        what = title or "implement validated issue deliverables"
+    if len(prefix + what) > COMMIT_TITLE_CHARS:
+        what = what[:COMMIT_TITLE_CHARS - len(prefix) - 1].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+    summary = " ".join(str((active.get("last_result") or {}).get("summary") or "").split())
+    if len(summary) > 600:
+        summary = summary[:600].rsplit(" ", 1)[0] + " …"
+    paragraphs = [prefix + what]
+    if summary:
+        paragraphs.append(textwrap.fill(summary, 72, break_long_words=False, break_on_hyphens=False))
+    paragraphs.append(f"Linear-Issue: {issue}")
+    return "\n\n".join(paragraphs)
 
 
 def review_repair_request(active):
@@ -549,6 +636,13 @@ class Runner:
 
     # --- Model sessions and check subprocesses ---------------------------------------
 
+    def phase_timeout(self, phase):
+        """The hard timeout of a model ``phase`` of the active issue: the batch's
+        ``phase_overrides`` for that issue and phase, else the registry phase timeout."""
+        issue = (self.state.get("active") or {}).get("issue_id")
+        override = (self.config.get("phase_overrides") or {}).get(issue, {}).get(phase)
+        return override["timeout_seconds"] if override else self.policy["phases"]["phases"][phase]["timeout_seconds"]
+
     def backend(self, name=None):
         """The model backend ``name`` (default Codex), created once per runner."""
         name = name or backends.DEFAULT
@@ -588,7 +682,8 @@ class Runner:
                 "backend_details": backend.describe(request),
                 "environment_overrides": self.config["check_environment"],
                 "host": os.uname().nodename, "controller_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-        timeout = self.policy["phases"]["phases"][phase]["timeout_seconds"]
+        timeout = self.phase_timeout(phase)
+        meta["timeout_seconds"] = timeout
         # Built (and a configured credential read) now; passed only to this child, never recorded.
         env = backend.environment(dict(inherited_environment(self.config), **self.config["check_environment"]))
         events = []
@@ -851,6 +946,14 @@ class Runner:
             kind, text, problems = updates.lint_draft(path, phase, self.attention["lint"])
             record = {"issue": active["issue_id"], "phase": phase, "attempt": str(attempt), "kind": kind,
                       "sha256": hashlib.sha256(text.encode()).hexdigest(), "at": now(), "problems": problems}
+            if updates.length_only(problems):
+                # Too long but otherwise valid: post a cut form naming the full draft instead of
+                # losing the note (a resumed session only to shorten it costs millions of tokens).
+                short = updates.shorten(text, self.attention["lint"], path)
+                if short is not None and not updates.lint_text(short, kind, self.attention["lint"]):
+                    self.log(f"Outbox draft {path.name} shortened to fit: {'; '.join(problems)}")
+                    record.update(shortened={"problems": problems, "chars": len(text.strip())}, problems=[])
+                    text, problems = short, []
             if problems:
                 record["status"] = "rejected"
                 self.log(f"Outbox draft {path.name} rejected: {'; '.join(problems)}")
@@ -1135,6 +1238,15 @@ class Runner:
         budget = allowance["limits"] if allowance else self.policy["phases"]["phases"][phase]["budget"]
         unknown = sorted(k for k in budget if delta.get(k) is None)
         over = sorted(k for k, v in budget.items() if delta.get(k) is not None and delta[k] > v)
+        if over == ["input_tokens"] and not unknown and cached_only_overrun(delta, budget, result, active["issue_id"]):
+            # A resumed long session rereads its context as cached input on every turn (W-251):
+            # a finished phase within budget on uncached input is not stopped for that.
+            uncached = delta["input_tokens"] - delta["cached_input_tokens"]
+            delta["budget_note"] = (f"input {delta['input_tokens']} > {budget['input_tokens']}, but only {uncached} "
+                                    "was uncached and the phase finished ready; not stopped for cached input")
+            write_json(attempt / "phase-usage.json", delta)
+            self.log(f"{active['issue_id']}: {phase} {delta['budget_note']}")
+            over = []
         if unknown or over:
             active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget, "basis": delta["basis"]}
             if phase in ("implement", "repair") and result.get("status") == "ready" \
@@ -1412,7 +1524,6 @@ class Runner:
 
     def worker_packet(self, active):
         """Write ``intake.json`` (and, for the compact packet, ``issue.json``); return the prompt."""
-        from linear_runner.engine import intake
         from linear_runner.reporting import measure
         run = Path(active["run_dir"])
         notes = [{k: n[k] for k in ("id", "authorized_by", "reason", "text")} for n in active.get("operator_notes", [])]
@@ -1626,9 +1737,7 @@ class Runner:
             if fingerprint(self.repo) != active["validated_fingerprint"]:
                 raise RuntimeError("Source changed after validation")
             if git(self.repo, "status", "--porcelain"):
-                active["commit_intent"] = (f"fix({issue.lower()}): address independent review findings"
-                                           if base != active["starting_commit"] else
-                                           f"feat({issue.lower()}): implement validated issue deliverables")
+                active["commit_intent"] = commit_message(active, review_fix=base != active["starting_commit"])
                 self.save(active=active)
                 git(self.repo, "add", "--all")
                 git(self.repo, "commit", "-m", active["commit_intent"])
@@ -1680,7 +1789,9 @@ class Runner:
             # Reconcile a successful prior write without rewriting its description.
             if live.get("statusType") != "completed" or not published_contract_matches(live, active["issue"]):
                 self.linear.call("save_issue", id=issue, state=self.config["states"]["done"], description=published["description"])
-            confirmed = self.linear.issue(issue)
+            confirmed = read_back(lambda: self.linear.issue(issue),
+                                  lambda i: i.get("statusType") == "completed"
+                                  and published_contract_matches(i, active["issue"]))
             self.verify_issue(confirmed, completed=True)
             if not published_contract_matches(confirmed, active["issue"]):
                 raise RuntimeError("Published checklist read-back mismatch")
@@ -1787,7 +1898,7 @@ class Runner:
         progress = self.config["states"]["in_progress"]
         if self.linear.issue(issue).get("status") != progress:
             self.linear.call("save_issue", id=issue, state=progress)
-        confirmed = self.linear.issue(issue)
+        confirmed = self.read_back_status(issue, progress)
         self.verify_issue(confirmed)
         if confirmed.get("status") != progress or confirmed.get("statusType") != "started":
             raise RuntimeError(f"Linear read-back does not show {progress}; reconcile before the repair")
@@ -1852,12 +1963,18 @@ class Runner:
         if kind not in allowed or (allowed[kind] is not None and live.get("status") not in allowed[kind]):
             raise RuntimeError("Issue state changed outside this execution; reconcile ownership")
 
+    def read_back_status(self, issue, status):
+        """The issue as read back after a status write, read again for a short while until it
+        shows ``status`` (``client.read_back``); the write is not repeated."""
+        return read_back(lambda: self.linear.issue(issue),
+                         lambda i: i.get("status") == status and i.get("statusType") == "started")
+
     def enter_review(self, issue):
         """Move to the review state before independent review; idempotent on resume."""
         review = self.config["states"]["review"]
         if self.linear.issue(issue).get("status") != review:
             self.linear.call("save_issue", id=issue, state=review)
-        confirmed = self.linear.issue(issue)
+        confirmed = self.read_back_status(issue, review)
         self.verify_issue(confirmed)
         if confirmed.get("status") != review or confirmed.get("statusType") != "started":
             raise RuntimeError(f"Linear read-back does not show {review}; reconcile before review")

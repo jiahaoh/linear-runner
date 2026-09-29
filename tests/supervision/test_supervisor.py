@@ -187,6 +187,7 @@ class LaunchAndSupervisorTests(Harness):
         self.assertEqual({n: s["reason"] for n, s in first["steps"].items()},
                          {"config": "no previous preflight result", "worktree": "no previous preflight result",
                           "model_catalog": "no previous preflight result", "linear": "live state: always re-read",
+                          "linear_credential": "live state: always re-read",
                           "backend_start.codex": "no previous preflight result"})
         self.launch(stop_after=["DEV-2"], clear_stop=True)
         second = json.loads((self.state_dir / "preflight.json").read_text())["steps"]
@@ -636,6 +637,16 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         self.assertEqual(recovery.accepted_scope_changes(accepted, live), [])
         changed = dict(live, description=live["description"].replace("`abc1234`", "`abc9999`"))
         self.assertEqual(recovery.accepted_scope_changes(accepted, changed), ["acceptance criteria", "description"])
+
+    def test_accepted_scope_equates_linear_mention_markup(self):
+        # W-242: Linear linked a plain identifier in an accepted criterion when publication saved it.
+        accepted = dict(self.linear.data, description="- [ ] Draft the amendment as DEV-42 for review")
+        mention = ('- [X] Draft the amendment as <issue id="fixture-uuid" href="https://linear.app/example/issue/'
+                   'DEV-42/draft">DEV-42</issue> for review')
+        self.assertEqual(recovery.accepted_scope_changes(accepted, dict(accepted, description=mention)), [])
+        other = mention.replace(">DEV-42<", ">DEV-43<").replace("/DEV-42/", "/DEV-43/")
+        self.assertEqual(recovery.accepted_scope_changes(accepted, dict(accepted, description=other)),
+                         ["acceptance criteria", "description"])
 
     def test_accept_contract_drift_at_done_keeps_the_published_checklist(self):
         original = self.linear.post_comment
@@ -1828,6 +1839,46 @@ class CommandLineTests(Harness):
                 contextlib.redirect_stderr(errors), self.assertRaises(SystemExit):
             main(["recover", "cancel", *args, "--reason", "DEV-9 is not quoted anywhere"])
         self.assertNotIn("Warning", errors.getvalue())  # cancel posts no comment
+
+    def test_recover_while_the_supervisor_holds_the_lock_ends_with_one_line(self):
+        RecoveryScenarioTests.pause_at_publish(self)
+        args = ["--batch", str(self.batch), "--home", str(self.home), "--authorized-by", "Owner", "--reason", "r"]
+        errors = io.StringIO()
+        with project_lock(self.state_dir / "controller.lock"), \
+                patch.object(cli_module, "RECOVER_LOCK_WAIT_SECONDS", 0.2), \
+                patch.object(cli_module, "pin_resolution", side_effect=lambda c, l: pin_resolution(c, self.linear)), \
+                contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            main(["recover", "publish", *args, "--then", "stop"])
+        self.assertEqual(raised.exception.code, 2)
+        [line] = errors.getvalue().splitlines()
+        self.assertIn("Another controller holds this project's lock (waited 0.2 s). The supervisor may still be "
+                      "exiting", line)
+        self.assertIn("run the same recover command again", line)
+        self.assertNotIn("Traceback", errors.getvalue())
+        self.assertNotIn("pending_recovery", self.state())
+
+    def test_project_lock_waits_for_a_lock_released_meanwhile(self):
+        from linear_runner.engine.runner import LockBusy
+        path = self.root / "wait.lock"
+        with project_lock(path):
+            with self.assertRaises(LockBusy):
+                with project_lock(path):
+                    pass
+        # A holder that exits while the recovery waits: the lock is taken on a later try.
+        holder = project_lock(path)
+        holder.__enter__()
+        pauses = []
+        def sleep(seconds):
+            pauses.append(seconds)
+            holder.__exit__(None, None, None)
+        with project_lock(path, wait_seconds=30, sleep=sleep):
+            pass
+        self.assertEqual(len(pauses), 1)
+        # EACCES (flock emulated with POSIX locks) is a busy lock too, not a traceback.
+        with patch("fcntl.flock", side_effect=PermissionError(13, "Permission denied")), \
+                self.assertRaisesRegex(LockBusy, "Another controller"):
+            with project_lock(path):
+                pass
 
     def test_launch_refusal_writes_nothing_to_linear(self):
         args = ["--batch", str(self.batch), "--home", str(self.home)]

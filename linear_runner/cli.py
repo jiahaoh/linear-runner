@@ -14,7 +14,7 @@ import sys
 
 from linear_runner.config import (PHASES, ConfigError, load_config, pin_resolution, pinned_config, read_json,
                                   write_json, write_resolved)
-from linear_runner.engine.runner import Runner, now, project_lock
+from linear_runner.engine.runner import LockBusy, Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
 
 
@@ -33,7 +33,8 @@ def summarize(config):
             "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
-            "context_controls": config["context_controls"], "claude_auth": offline_auth_check(config),
+            "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
+            "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "interface": config.get("_interface"), "layers": config["_layers"]}
 
 
@@ -387,6 +388,28 @@ def main(argv=None):
             raise SystemExit(1)
 
 
+# A supervisor that just paused may still be posting its stop comments under the lock.
+RECOVER_LOCK_WAIT_SECONDS = 60
+
+
+def locked_recovery(parser, root, action, wait_seconds=None):
+    """Run a recovery under the project lock, waiting up to RECOVER_LOCK_WAIT_SECONDS for it.
+    A lock still held then ends with one line (exit 2), no traceback; refusals as before."""
+    from linear_runner.supervision import recovery
+    wait = RECOVER_LOCK_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    try:
+        with project_lock(root / "controller.lock", wait_seconds=wait):
+            try:
+                record = action()
+            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
+                parser.error(str(error))
+    except LockBusy as error:
+        print(f"{parser.prog} recover: {error}. The supervisor may still be exiting (posting its stop comments); "
+              "wait until `status` shows it exited, then run the same recover command again.", file=sys.stderr)
+        raise SystemExit(2)
+    print(json.dumps(record, indent=2))
+
+
 def supervised_command(parser, args, config, linear):
     """launch / supervise / recover. Refusals exit 2 without writing to Linear."""
     from linear_runner.supervision import launcher
@@ -395,24 +418,12 @@ def supervised_command(parser, args, config, linear):
     root = Path(config["state_dir"])
     if args.command == "recover" and args.kind == "repin-config":
         # The one recovery that runs against a configuration that differs from the pinned one.
-        with project_lock(root / "controller.lock"):
-            try:
-                record = recovery.recover_repin_config(config, linear, reason=args.reason,
-                                                       authorized_by=args.authorized_by)
-            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
-                parser.error(str(error))
-        print(json.dumps(record, indent=2))
-        return
+        return locked_recovery(parser, root, lambda: recovery.recover_repin_config(
+            config, linear, reason=args.reason, authorized_by=args.authorized_by))
     if args.command == "recover" and args.kind == "cancel":
         # Withdrawing a pending record changes no work: it runs against the pinned configuration,
         # so a configuration edited since pinning never blocks it (then `repin-config` adopts it).
-        with project_lock(root / "controller.lock"):
-            try:
-                record = recover(args, Runner(pinned_config(config), linear))
-            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
-                parser.error(str(error))
-        print(json.dumps(record, indent=2))
-        return
+        return locked_recovery(parser, root, lambda: recover(args, Runner(pinned_config(config), linear)))
     try:
         config, fresh = pin_resolution(config, linear)
     except (ConfigError, RuntimeError, OSError) as error:
@@ -420,13 +431,7 @@ def supervised_command(parser, args, config, linear):
     if args.command == "recover":
         if fresh:
             parser.error("This batch has no pinned state to recover")
-        with project_lock(root / "controller.lock"):
-            try:
-                record = recover(args, Runner(config, linear))
-            except (recovery.RecoveryError, ConfigError, RuntimeError, OSError) as error:
-                parser.error(str(error))
-        print(json.dumps(record, indent=2))
-        return
+        return locked_recovery(parser, root, lambda: recover(args, Runner(config, linear)))
     if args.command == "supervise":
         if fresh:
             parser.error("supervise needs the pinned configuration written by launch")

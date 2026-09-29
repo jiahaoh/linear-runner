@@ -27,6 +27,21 @@
         "timeout_seconds": {
           "type": "integer",
           "minimum": 1
+        },
+        "refresh_command": {
+          "description": "How the operator refreshes the OAuth credential in credentials_file; named in preflight and in the stop for an expired credential (default: a short `codex exec`).",
+          "type": "string",
+          "minLength": 1
+        },
+        "min_lifetime_minutes": {
+          "description": "Launch preflight fails when the OAuth credential in credentials_file expires sooner than this (default 30).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "warn_lifetime_minutes": {
+          "description": "Launch preflight warns when the OAuth credential in credentials_file expires sooner than this (default 720).",
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

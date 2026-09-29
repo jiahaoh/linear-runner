@@ -61,7 +61,9 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(git(self.repo, "status", "--porcelain"))
         # The controller, not the worker, made exactly one commit on top of the baseline.
         self.assertEqual(git(self.repo, "rev-parse", "HEAD^"), start)
-        self.assertEqual(git(self.repo, "log", "-1", "--format=%B"), "feat(dev-1): implement validated issue deliverables")
+        # The fixture issue has no title: the generic wording, the worker's summary and the trailer.
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s"), "feat(dev-1): implement validated issue deliverables")
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%(trailers:key=Linear-Issue,valueonly)").strip(), "DEV-1")
         self.runner.execute(limit=1)
         self.assertEqual(len(self.calls), 2)
         self.assertTrue((self.runner.root / "terminal-report.json").is_file())
@@ -126,6 +128,13 @@ class EngineTests(unittest.TestCase):
         self.runner.run_session = repairing
         self.runner.execute(limit=1)
         self.assertEqual(statuses, ["In Progress", "In Progress", "In Review"])
+        self.assertEqual(self.linear.writes, ["In Progress", "In Review", "Done"])
+
+    def test_lagging_status_read_back_is_read_again_without_a_second_write(self):
+        # W-238: Linear showed In Review only a moment after acknowledging the write.
+        self.linear.lag = 2
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
         self.assertEqual(self.linear.writes, ["In Progress", "In Review", "Done"])
 
     def test_in_review_readback_failure_stops_before_review(self):
@@ -243,6 +252,16 @@ class EngineTests(unittest.TestCase):
         self.linear.data["labels"] = ["Implementation", {"name": "Deep"}]
         self.assertEqual(resolve_profile(self.config, self.linear.data, "review")["model"], "astra")
         self.assertEqual(resolve_profile(self.config, self.linear.data, "review")["effort"], "high")
+
+    def test_phase_overrides_set_the_active_issue_phase_timeout(self):
+        self.runner.config["phase_overrides"] = {"DEV-1": {"repair": {"timeout_seconds": 9000}}}
+        registry = self.policy["phases"]["phases"]
+        self.assertEqual(self.runner.phase_timeout("repair"), registry["repair"]["timeout_seconds"])  # no active issue
+        self.runner.state["active"] = {"issue_id": "DEV-1"}
+        self.assertEqual(self.runner.phase_timeout("repair"), 9000)
+        self.assertEqual(self.runner.phase_timeout("implement"), registry["implement"]["timeout_seconds"])
+        self.runner.state["active"] = {"issue_id": "DEV-2"}
+        self.assertEqual(self.runner.phase_timeout("repair"), registry["repair"]["timeout_seconds"])
 
     def test_soft_budget_is_persistent_checkpoint(self):
         self.policy["phases"]["phases"]["implement"]["budget"]["input_tokens"] = 1
@@ -460,6 +479,54 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("minItems", RESULT_SCHEMA["properties"]["acceptance"])
         self.assertEqual(review_schema(dict(issue, description="No checkbox"), "sha")["properties"]["acceptance"]["minItems"], 1)
 
+    def test_the_controller_commit_says_what_the_issue_delivers(self):
+        self.linear.data["title"] = ("Add a calibrated synthetic preset version with lognormal brightness, correlated "
+                                     "noise and a balanced codebook")
+        original = self.runner.run_session
+        def summarized(*args, **kwargs):
+            result, events, session = original(*args, **kwargs)
+            result["summary"] = ("Added preset version 3 with lognormal spot brightness and correlated background "
+                                 "noise. The codebook is balanced across channels, and the focused tests pass.")
+            return result, events, session
+        self.runner.run_session = summarized
+        self.runner.execute(limit=1)
+        subject = git(self.repo, "log", "-1", "--format=%s")
+        self.assertEqual(subject, "feat(dev-1): add a calibrated synthetic preset version with lognormal…")
+        self.assertLessEqual(len(subject), 72)
+        body = git(self.repo, "log", "-1", "--format=%b")
+        self.assertIn("Added preset version 3 with lognormal spot brightness", body)
+        self.assertTrue(all(len(line) <= 72 for line in body.splitlines()))
+        self.assertTrue(body.strip().endswith("Linear-Issue: DEV-1"))
+        from linear_runner.engine.runner import commit_message
+        active = {"issue_id": "W-9", "issue": {"title": "QC report shows error bars."}, "last_result": {}}
+        self.assertEqual(commit_message(active), "feat(w-9): QC report shows error bars\n\nLinear-Issue: W-9")
+        self.assertEqual(commit_message(active, review_fix=True).splitlines()[0],
+                         "fix(w-9): address review findings on QC report shows error bars")
+
+    def test_nested_sub_items_are_joined_into_their_criterion(self):
+        # W-233's shape: a criterion ending in ':' whose content is a nested list.
+        description = ("## Acceptance criteria\n\n"
+                       "- [ ] Each recipe reports:\n"
+                       "  * the median spot SNR per preset;\n"
+                       "  * the runtime in seconds\n"
+                       "    per image.\n"
+                       "- [x] Accepted earlier:\n"
+                       "  * a sub-item of a checked criterion\n"
+                       "- [ ] One line\n"
+                       "  - [ ] A nested criterion\n"
+                       "\n"
+                       "  * after a blank line: not part of any criterion\n")
+        expected = ["Each recipe reports: the median spot SNR per preset; the runtime in seconds per image.",
+                    "One line", "A nested criterion"]
+        issue = dict(self.linear.data, description=description)
+        self.assertEqual(review_criteria(issue), expected)
+        from linear_runner.engine.intake import unchecked_criteria
+        self.assertEqual(unchecked_criteria(description), expected)
+        schema = review_schema(issue, "sha")["properties"]["acceptance"]
+        self.assertEqual((schema["minItems"], schema["maxItems"]), (3, 3))
+        # A one-line checklist is unchanged.
+        self.assertEqual(review_criteria(dict(issue, description="- [ ] A\n* [ ] B\n- [x] C")), ["A", "B"])
+
     def test_invalid_review_results_never_publish_and_resume_without_reimplementation(self):
         original = self.runner.run_session
         cases = [
@@ -559,6 +626,40 @@ class EngineTests(unittest.TestCase):
                     dict(live, description=after + "\n* [X] Produce validated output"), original))
         self.assertFalse(published_contract_matches(
             dict(live, description=self.RESERIALIZED + "\n- [X] Produce validated output"), original))
+
+    # The W-242 shape: a plain identifier written before that issue existed came back as a mention.
+    PLAIN = "- [ ] Draft the amendment as DEV-42 and link it from the report."
+    MENTION = ('- [X] Draft the amendment as <issue id="fixture-uuid" href="https://linear.app/example/issue/DEV-42/'
+               'draft-the-amendment">DEV-42</issue> and link it from the report.')
+
+    def test_linear_mention_markup_completes_publication(self):
+        context = "Context: " + self.PLAIN[6:]
+        self.linear.data["description"] = context + "\n\n- [ ] Produce validated output"
+        original = self.linear.call
+        def link(name, **args):
+            result = original(name, **args)
+            if name == "save_issue" and "description" in args:
+                self.linear.data["description"] = ("Context: " + self.MENTION[6:] + "\n\n- [X] Produce validated output")
+            return result
+        self.linear.call = link
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+
+    def test_publication_comparison_equates_mention_markup_with_its_identifier(self):
+        original = dict(self.linear.data, description=self.PLAIN)
+        live = dict(original, description=self.MENTION)
+        self.assertTrue(published_contract_matches(live, original))
+        # The raw contract hash still sees the difference.
+        self.assertNotEqual(issue_contract(dict(original, description=self.MENTION.replace("[X]", "[ ]"))),
+                            issue_contract(original))
+        link = "- [x] Draft the amendment as [DEV-42](https://linear.app/example/issue/DEV-42) and link it from the report."
+        self.assertTrue(published_contract_matches(dict(live, description=link), original))
+        for after in [self.MENTION.replace(">DEV-42<", ">DEV-43<").replace("/DEV-42/", "/DEV-43/"),  # another issue
+                      self.MENTION.replace("/DEV-42/", "/DEV-43/"),                                # href names another
+                      self.MENTION.replace("link it", "cite it"),                                  # a changed word
+                      link.replace("issue/DEV-42", "issue/DEV-43")]:
+            with self.subTest(after=after):
+                self.assertFalse(published_contract_matches(dict(live, description=after), original))
 
     # --- The issue contract: scope fields only, related links excluded -------------
 
@@ -771,8 +872,33 @@ class EngineTests(unittest.TestCase):
     def test_expired_oauth_is_not_silently_refreshed(self):
         p = self.root / "credentials.json"
         write_json(p, {"linear": {"server_name": "linear", "server_url": "https://mcp.linear.app/mcp", "expires_at": 1000, "access_token": "test"}})
-        with self.assertRaisesRegex(RuntimeError, "expired"):
+        with self.assertRaisesRegex(RuntimeError, "expired at .*refresh it with `codex exec "):
             LinearClient({"credentials_file": str(p)}).token()
+        with self.assertRaisesRegex(RuntimeError, "refresh it with `my-refresh`"):
+            LinearClient({"credentials_file": str(p), "refresh_command": "my-refresh"}).token()
+
+    def test_preflight_reports_the_linear_credential_lifetime(self):
+        from linear_runner.supervision.launcher import LaunchError, _check_linear_credential
+        p = self.root / "credentials.json"
+        def lifetime(minutes, **auth):
+            write_json(p, {"linear": {"server_name": "linear", "server_url": "https://mcp.linear.app/mcp",
+                                      "expires_at": 1_700_000_000 + minutes * 60, "access_token": "test"}})
+            auth = dict(auth, credentials_file=str(p))
+            return _check_linear_credential({"linear": auth}, LinearClient(auth), clock=lambda: 1_700_000_000)
+        result = lifetime(24 * 60)
+        self.assertEqual((result["remaining_minutes"], result.get("warning")), (1440, None))
+        self.assertNotIn("test", json.dumps(result))  # never the token
+        self.assertIn("expires in 5 h 0 min", lifetime(300)["warning"])
+        self.assertIn("refresh it now with `codex exec", lifetime(300)["warning"])
+        self.assertNotIn("warning", lifetime(300, warn_lifetime_minutes=120))
+        with self.assertRaisesRegex(LaunchError, r"expires in 20 minutes \(preflight needs at least 30\); refresh it"):
+            lifetime(20)
+        lifetime(20, min_lifetime_minutes=10)
+        write_json(p, {"linear": {"server_name": "linear", "server_url": "https://mcp.linear.app/mcp", "access_token": "t"}})
+        auth = {"credentials_file": str(p)}
+        self.assertIsNone(_check_linear_credential({"linear": auth}, LinearClient(auth))["remaining_minutes"])
+        auth = {"token_env": "TEST_LINEAR_TOKEN"}
+        self.assertEqual(_check_linear_credential({"linear": auth}, LinearClient(auth))["source"], "token_env")
 
     # --- Evidence, usage and reports ----------------------------------------------
 
@@ -844,16 +970,49 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(totals["sessions"], 2)
 
     def test_upper_bound_over_budget_still_checkpoints(self):
-        self.canary_budget(input_tokens=1_000_000)
+        self.canary_budget(input_tokens=100_000)  # below the 103,356 uncached input too
         self.replay_implement([(None, False), (self.W193, True)])
         with self.assertRaisesRegex(RuntimeError, "did not finish a turn"):
             self.runner.execute(limit=1)
-        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: input_tokens 1602748 > 1000000 \(an upper bound\)"):
+        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: input_tokens 1602748 > 100000 \(an upper bound\)"):
             self.runner.execute(limit=1, resume=True)
         exceeded = self.runner.state["active"]["budget_exceeded"]
         self.assertEqual((exceeded["basis"], exceeded["observed"]["input_tokens"]), ("cumulative-upper-bound", 1_602_748))
         with self.assertRaisesRegex(RuntimeError, "reconciliation"):
             self.runner.execute(limit=1, resume=True)
+
+    # W-249's figures: implement read 22.2M input, 21.8M of it cached context of a resumed session.
+    W249_IMPLEMENT = {"input_tokens": 22_200_000, "cached_input_tokens": 21_800_000, "output_tokens": 90_000,
+                      "reasoning_output_tokens": 40_000}
+
+    def test_a_ready_phase_over_budget_only_on_cached_input_is_not_stopped(self):
+        self.canary_budget()  # 15M input, 150k output
+        self.replay_implement([(self.W249_IMPLEMENT, True)])
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+        [usage] = self.implement_usage()
+        self.assertIn("only 400000 was uncached", usage["budget_note"])
+
+    def test_cached_only_overrun_rule(self):
+        from linear_runner.engine.runner import cached_only_overrun
+        implement = {"input_tokens": 15_000_000, "output_tokens": 150_000, "tool_calls": 250}
+        repair = {"input_tokens": 5_000_000, "output_tokens": 50_000, "tool_calls": 100}
+        ready = {"status": "ready", "issue_id": "DEV-1"}
+        w249_repair = {"input_tokens": 16_800_000, "cached_input_tokens": 15_600_000, "output_tokens": 40_000,
+                       "tool_calls": 60}
+        w233_repair = {"input_tokens": 6_250_000, "cached_input_tokens": 6_210_000, "output_tokens": 20_000,
+                       "tool_calls": 30}
+        w249_implement = dict(self.W249_IMPLEMENT, tool_calls=120)
+        for usage, budget in ((w249_implement, implement), (w249_repair, repair), (w233_repair, repair)):
+            with self.subTest(usage=usage):
+                self.assertTrue(cached_only_overrun(usage, budget, ready, "DEV-1"))
+                self.assertFalse(cached_only_overrun(usage, budget, dict(ready, status="blocked"), "DEV-1"))
+                self.assertFalse(cached_only_overrun(usage, budget, ready, "DEV-2"))
+        # Uncached input over budget, another figure over budget, or no cached figure: stopped.
+        self.assertFalse(cached_only_overrun(dict(w249_repair, cached_input_tokens=11_000_000), repair, ready, "DEV-1"))
+        self.assertFalse(cached_only_overrun(dict(w249_repair, output_tokens=60_000), repair, ready, "DEV-1"))
+        self.assertFalse(cached_only_overrun(dict(w249_repair, tool_calls=None), repair, ready, "DEV-1"))
+        self.assertFalse(cached_only_overrun(dict(w249_repair, cached_input_tokens=None), repair, ready, "DEV-1"))
 
     def test_current_attempt_without_a_counter_is_unavailable_never_zero(self):
         self.canary_budget()

@@ -10,6 +10,7 @@ config                    resolved configuration fingerprint     yes
 worktree                  source (branch, HEAD, clean, content)  yes
 model_catalog             catalog bytes + configuration          yes
 claude_auth (opt.)        the configured Claude token            never (always re-read)
+linear_credential         the Linear OAuth credential's expiry   never (always re-read)
 baseline_checks (opt.)    source, configuration, environment,    yes
                           fixtures (identity files)
 linear                    live Linear state                      never (always re-read)
@@ -25,7 +26,10 @@ unchanged, and records ``skipped`` (with the reason) otherwise.
 ``claude_auth`` runs only when
 ``site.claude.auth`` names a token file or variable: the token must be readable (a file of
 mode 600 or stricter, non-empty; a set variable) and ``claude auth status`` must show the CLI
-uses it. It records the mode and the path or name, never the token. The ``linear`` step reads
+uses it. It records the mode and the path or name, never the token. ``linear_credential``
+records how long the Codex-owned Linear OAuth credential has left (when its file records an
+expiry), fails below the workspace's ``auth.min_lifetime_minutes`` (30) and warns below
+``auth.warn_lifetime_minutes`` (720), naming the refresh command. The ``linear`` step reads
 every allowlisted issue (proving authentication), checks gates, ownership, dependencies,
 decision-rule blocks and model/effort availability for each pending issue, and performs
 the dry-run selection (or, for a saved active issue, the resume-specific checks).
@@ -160,6 +164,33 @@ def _baseline_checks(runner, directory):
     return records
 
 
+CREDENTIAL_DEFAULTS = {"min_lifetime_minutes": 30, "warn_lifetime_minutes": 720}
+
+
+def _check_linear_credential(config, linear, clock=time.time):
+    """The Linear OAuth credential's remaining lifetime, when it can be read (a Codex-owned
+    ``credentials_file`` with an expiry). Fails below ``auth.min_lifetime_minutes`` and warns
+    below ``auth.warn_lifetime_minutes`` (workspace), naming the refresh command."""
+    auth = config["linear"]
+    lifetime = linear.credential_lifetime(clock) if hasattr(linear, "credential_lifetime") else None
+    if lifetime is None:
+        source = "token_env" if auth.get("token_env") else "credentials_file"
+        return {"source": source, "remaining_minutes": None,
+                "note": "the credential records no expiry the runner can read"}
+    minutes = int(lifetime // 60)
+    limits = {k: auth.get(k, v) for k, v in CREDENTIAL_DEFAULTS.items()}
+    refresh = linear.refresh_command()
+    result = {"source": "credentials_file", "remaining_minutes": minutes,
+              "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(clock() + lifetime)), **limits}
+    if minutes < limits["min_lifetime_minutes"]:
+        raise LaunchError(f"The Linear OAuth credential expires in {max(minutes, 0)} minutes (preflight needs at "
+                          f"least {limits['min_lifetime_minutes']}); refresh it with `{refresh}`, then launch again")
+    if minutes < limits["warn_lifetime_minutes"]:
+        result["warning"] = (f"The Linear OAuth credential expires in {minutes // 60} h {minutes % 60} min, which may "
+                             f"be before this batch ends; refresh it now with `{refresh}` to start with a full lifetime")
+    return result
+
+
 def _check_linear(runner, supervisor, pending=None):
     """Live Linear read-back, gates, ownership, dependencies, rules, models and dry-run.
     ``pending`` (a list) receives the live issues not yet done, in allowlist order."""
@@ -279,6 +310,7 @@ def preflight(config, runner, *, launch_id, force=False):
         else:
             step("baseline_checks", ["source", "config", "environment", "fixtures"],
                  lambda: _baseline_checks(runner, directory / "baseline"))
+    step("linear_credential", [], lambda: _check_linear_credential(config, runner.linear), live=True)
     pending = []
     step("linear", [], lambda: _check_linear(runner, supervisor, pending), live=True)
     for name, check in backend_start.plan(config, pending).items():
@@ -536,5 +568,7 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
                     "watchdog_timer": (entry.get("watchdog_timer") or {}).get("timer"),
                     "preflight": {n: ("reused" if s.get("reused") else "skipped" if s.get("status") == "skipped"
                                       else "ran") + f" ({s['reason']})"
-                                  for n, s in record["steps"].items()}}, indent=2))
+                                  for n, s in record["steps"].items()},
+                    "warnings": [s["result"]["warning"] for s in record["steps"].values()
+                                 if isinstance(s.get("result"), dict) and s["result"].get("warning")]}, indent=2))
     return entry

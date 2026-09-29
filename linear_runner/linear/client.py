@@ -9,6 +9,31 @@ import urllib.error
 import urllib.request
 
 
+# Linear may acknowledge a write before a read shows it: In Review read one second after the
+# write, a label and a new comment each missing on the first read (W-251). A read-back that
+# does not yet show the write is repeated after these pauses (about 10 s in all) before it
+# fails. Only the read is repeated; the write is never re-sent inside the retry.
+READ_BACK_DELAYS = (0.5, 1, 1.5, 2, 2.5, 2.5)
+SLEEP = time.sleep  # the pause between reads (the test package makes it a no-op)
+
+
+def read_back(read, accepted, *, delays=None, sleep=None):
+    """``read()`` until ``accepted(value)``, pausing READ_BACK_DELAYS between reads; return the
+    last value read (accepted or not: the caller raises its own error)."""
+    value = read()
+    for delay in READ_BACK_DELAYS if delays is None else delays:
+        if accepted(value):
+            break
+        (sleep or SLEEP)(delay)
+        value = read()
+    return value
+
+
+# Workspace ``auth.refresh_command`` overrides it. A short Codex session starts the configured
+# Linear MCP server, which refreshes the Codex-owned credential (W-251).
+DEFAULT_REFRESH_COMMAND = "codex exec --skip-git-repo-check 'Reply with OK.'"
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise RuntimeError("MCP redirect refused; verify the configured endpoint")
@@ -26,6 +51,32 @@ class LinearClient:
         self.initialized = False
         self.opener = urllib.request.build_opener(NoRedirect())
 
+    def refresh_command(self):
+        """How the operator refreshes the OAuth credential (workspace ``auth.refresh_command``)."""
+        return self.config.get("refresh_command") or DEFAULT_REFRESH_COMMAND
+
+    def credential(self):
+        """The Codex-owned OAuth credential for the endpoint and its expiry in epoch seconds
+        (0 when it records none)."""
+        path = Path(self.config["credentials_file"]).expanduser()
+        entries = json.loads(path.read_text())
+        matches = [v for v in entries.values() if isinstance(v, dict)
+                   and v.get("server_name") == "linear" and v.get("server_url") == self.url]
+        if len(matches) != 1:
+            raise RuntimeError("Expected one Linear OAuth credential for the configured endpoint")
+        expiry = matches[0].get("expires_at") or 0
+        if expiry > 100_000_000_000:  # Codex's file backend records milliseconds.
+            expiry /= 1000
+        return matches[0], expiry
+
+    def credential_lifetime(self, clock=time.time):
+        """Seconds until the OAuth credential expires; None when it cannot be read (a
+        ``token_env`` token, or a credential without an expiry). The token is never returned."""
+        if self.config.get("token_env"):
+            return None
+        _, expiry = self.credential()
+        return expiry - clock() if expiry else None
+
     def token(self):
         """Reread credentials so refresh by the owning CLI is visible; never refresh secretly."""
         if self.config.get("token_env"):
@@ -33,18 +84,11 @@ class LinearClient:
             if not token:
                 raise RuntimeError("Configured Linear bearer-token environment variable is missing")
             return token
-        path = Path(self.config["credentials_file"]).expanduser()
-        entries = json.loads(path.read_text())
-        matches = [v for v in entries.values() if isinstance(v, dict)
-                   and v.get("server_name") == "linear" and v.get("server_url") == self.url]
-        if len(matches) != 1:
-            raise RuntimeError("Expected one Linear OAuth credential for the configured endpoint")
-        credential = matches[0]
-        expiry = credential.get("expires_at", 0)
-        if expiry > 100_000_000_000:  # Codex's file backend records milliseconds.
-            expiry /= 1000
+        credential, expiry = self.credential()
         if expiry and expiry <= time.time() + 30:
-            raise RuntimeError("Linear OAuth expired; refresh with the owning CLI and resume")
+            expired = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(expiry))
+            raise RuntimeError(f"Linear OAuth expired at {expired}; refresh it with `{self.refresh_command()}` "
+                               "(the owning CLI refreshes the stored credential), then resume")
         return credential["access_token"]
 
     def rpc(self, method, params=None, notification=False):
@@ -175,7 +219,8 @@ def append_comment(list_comments, create, issue, body, marker, *, reconcile=Fals
 
     With ``reconcile`` (a previous attempt may have written it before its response or the
     local save was lost), an existing comment carrying the marker is adopted instead of
-    posting again. Existing comments are never edited. The comment is read back.
+    posting again. Existing comments are never edited. The comment is read back (``read_back``:
+    a comment not listed yet is looked for again; it is never posted twice).
     """
     identity = None
     if reconcile:
@@ -189,7 +234,10 @@ def append_comment(list_comments, create, issue, body, marker, *, reconcile=Fals
         identity = created.get("id") if isinstance(created, dict) else None
         if not identity:
             raise RuntimeError(f"Linear comment on {issue} returned no ID; reconcile before resuming")
-    confirmed = [c for c in list_comments(issue) if c.get("id") == identity]
+    def matching():
+        return [c for c in list_comments(issue) if c.get("id") == identity]
+    confirmed = read_back(matching, lambda found: len(found) == 1
+                          and (found[0].get("body") or "").strip() == body.strip())
     if len(confirmed) != 1 or (confirmed[0].get("body") or "").strip() != body.strip():
         raise RuntimeError(f"Linear comment read-back failed on {issue}")
     return identity

@@ -58,7 +58,8 @@ ATTENTION_DEFAULTS = {
                  "command": [],               # argv; the message is on stdin, {subject} is replaced
                  "timeout_seconds": 30},
     "watchdog": {"stall_minutes": 120,        # alert after this long without recorded progress
-                 "interval_minutes": 10},     # how often the launch-started timer runs the watchdog
+                 "interval_minutes": 10,      # how often the launch-started timer runs the watchdog
+                 "paused_minutes": 60},       # remind once when a stop waits this long for a recovery (0: off)
     "lint": {"max_chars": 1500, "max_lines": 30, "max_first_sentence_chars": 240},  # draft limits
     "outbox": {"poll_seconds": 15, "settle_seconds": 3},  # poll interval; files newer than this wait
 }
@@ -66,6 +67,23 @@ ATTENTION_DEFAULTS = {
 
 class ConfigError(ValueError):
     pass
+
+
+def phase_overrides(overrides, issues, phases, where):
+    """A batch's per-issue phase limits, checked against the allowlist and the registry: a
+    ``timeout_seconds`` may not exceed ``phases.max_timeout_seconds`` (none: the phase's own
+    registry timeout)."""
+    overrides = copy.deepcopy(overrides)
+    outside = sorted(set(overrides) - set(issues))
+    if outside:
+        raise ConfigError(f"{where}: {outside} not in the issue allowlist")
+    for issue, by_phase in overrides.items():
+        for phase, limits in by_phase.items():
+            ceiling = phases.get("max_timeout_seconds", phases["phases"][phase]["timeout_seconds"])
+            if limits["timeout_seconds"] > ceiling:
+                raise ConfigError(f"{where}.{issue}.{phase}.timeout_seconds: {limits['timeout_seconds']} exceeds the "
+                                  f"registry maximum {ceiling} (phases.max_timeout_seconds)")
+    return overrides
 
 
 def write_json(path, value):
@@ -537,6 +555,10 @@ def load_config(batch_path, home=None):
         if name.partition("@")[0] not in policy["models"]["models"]:
             raise ConfigError(f"{batch_label}.model_overrides.{where}: unknown model {name!r}")
     put("model_overrides", overrides, batch_label)
+    if "phase_overrides" in batch:
+        # Only a batch that sets them records them, so other fingerprints are unchanged.
+        put("phase_overrides", phase_overrides(batch["phase_overrides"], config["issues"], policy["phases"],
+                                               f"{batch_label}.phase_overrides"), batch_label)
     if "worktree" in batch:
         put("worktree", str(_path(batch["worktree"], batch_path.parent, variables, f"{batch_label}.worktree")), batch_label)
     else:

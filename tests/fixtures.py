@@ -152,9 +152,16 @@ class FakeLinear:
         self.fail_posts = False
         self.lose_responses = 0
         self.on_post = None       # optional hook(issue, body) called after each accepted write
+        self.lag = 0              # reads after a save_issue that still show the issue as before it
+        self.comment_lag = 0      # comment listings after a post that do not show it yet
+        self.stale = None         # [issue as before the latest write, reads left]
+        self.hidden = None        # [comment id, listings left]
 
     def issue(self, identifier):
         self.reads += 1
+        if self.stale and self.stale[1] > 0 and identifier == self.stale[0]["id"]:
+            self.stale[1] -= 1
+            return copy.deepcopy(self.stale[0])
         return copy.deepcopy(self.data if identifier == self.data["id"] else self.others[identifier])
 
     def comments(self, identifier):
@@ -163,6 +170,8 @@ class FakeLinear:
     def call(self, name, **args):
         target = self.others.get(args.get("id"), self.data) if name == "save_issue" else self.data
         if name == "save_issue":
+            if self.lag:
+                self.stale = [copy.deepcopy(target), self.lag]
             if "state" in args:
                 self.writes.append(args["state"])
                 target["status"] = args["state"]
@@ -182,14 +191,21 @@ class FakeLinear:
             comment = {"id": f"comment-{len(self.posts) + 1}", "body": text}
             self.comment_store.setdefault(issue, []).append(comment)
             self.posts.append((issue, text))
+            if self.comment_lag:
+                self.hidden = [comment["id"], self.comment_lag]
             if self.on_post:
                 self.on_post(issue, text)
             if self.lose_responses:
                 self.lose_responses -= 1
                 raise RuntimeError("response lost after the comment was written")
             return dict(comment)
-        return append_comment(lambda i: copy.deepcopy(self.comment_store.get(i, [])), create, issue, body, marker,
-                              reconcile=reconcile)
+        def listing(identifier):
+            found = copy.deepcopy(self.comment_store.get(identifier, []))
+            if self.hidden and self.hidden[1] > 0:
+                self.hidden[1] -= 1
+                found = [c for c in found if c["id"] != self.hidden[0]]
+            return found
+        return append_comment(listing, create, issue, body, marker, reconcile=reconcile)
 
     def bodies(self, issue):
         return [c["body"] for c in self.comment_store.get(issue, [])]

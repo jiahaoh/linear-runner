@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from linear_runner.config import RUNNER_ROOT
+from linear_runner.config import ATTENTION_DEFAULTS, RUNNER_ROOT
 from linear_runner.linear import messages
 from linear_runner.linear import updates
 from linear_runner.reporting import trajectory
@@ -84,6 +84,11 @@ Error bars use 200 bootstrap samples to keep the report fast.
 
 Evidence: /absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d/implement-20260923T101500Z-5e6f7a8b
 """
+# A ready note over the 1500-character limit; the runner posts it cut to fit (updates.shorten).
+LONG_READY_DRAFT = READY_DRAFT.replace(
+    "instead of hard-coded values.", "instead of hard-coded values. " + " ".join(
+        f"Tile group {n} needed its own calibration offset, which is now read from the table and checked against "
+        "the hard-coded value it replaces." for n in range(1, 9)))
 BLOCKED_DRAFT = """I cannot finish TEAM-12 because the calibration table it names is not in the data folder, and I need the owner to say where it lives.
 
 **What is blocking**
@@ -143,6 +148,11 @@ def samples():
          "TEAM-12", "progress", messages.draft_post(PROGRESS_DRAFT, "worker", "implement", luna["implement"])),
         ("Ready for validation", "draft-ready.md", "worker", "when the session ends with status ready",
          "TEAM-12", "ready", messages.draft_post(READY_DRAFT, "worker", "implement", luna["implement"])),
+        ("Ready for validation, shortened by the runner", "draft-ready.md", "worker",
+         "when the note is valid but longer than the lint limit: cut to fit, naming the full draft", "TEAM-12", "ready",
+         messages.draft_post(updates.shorten(LONG_READY_DRAFT, ATTENTION_DEFAULTS["lint"],
+                                             f"{RUN}/implement-20260923T101500Z-5e6f7a8b/outbox/002-ready.md"),
+                             "worker", "implement", luna["implement"])),
         ("Ready for validation, runner fallback", "ready.md", "runner",
          "instead of the worker's note when it is missing or fails the lint", "TEAM-12", "ready",
          messages.ready(CTX, issue="TEAM-12", result=READY_RESULT, attempt=attempt,
@@ -189,7 +199,7 @@ def samples():
         ("Blocked or stopped, environment", "blocked.md", "runner", "when a host or service problem pauses the batch",
          "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="environment", error=(
-             "Linear OAuth expired; refresh with the owning CLI and resume"), step="validate",
+             "Linear OAuth expired at 2026-01-02 03:04 UTC; refresh it with `codex exec --skip-git-repo-check 'Reply with OK.'` (the owning CLI refreshes the stored credential), then resume"), step="validate",
              evidence_paths=[RUN, f"{STATE}/state.json"])),
         ("Blocked or stopped, Claude token rejected", "blocked.md", "runner",
          "when a Claude session fails to authenticate with the configured long-lived token", "TEAM-15", "blocked",
@@ -265,6 +275,15 @@ def samples():
              "2026-09-23 10:42 UTC."), last_update=("From the progress comment: The spot-count section of the QC "
                                                   "report now renders for all tiles; no action is needed."),
              evidence_paths=[status, f"{STATE}/supervisor.log", RUN])),
+        ("Watchdog reminder, paused batch", "watchdog.md", "runner (model-free watchdog)",
+         "when a stop has waited attention.watchdog.paused_minutes without a recorded recovery", "TEAM-12", "watchdog",
+         messages.watchdog(CTX, condition="paused", subject="TEAM-12", minutes=60, observed=(
+             "The supervisor (launch L-20260923T090000Z-7f8e9d0c) paused the batch at 2026-09-23 10:42 UTC on stop "
+             "S-20260923T104200Z-3c4d5e6f (needs-decision), and no recovery has been recorded since. The stop comment "
+             "on TEAM-12 says what it needs."), last_update=("From the blocked comment: TEAM-12 is paused because the "
+                                                           "worker reported that it cannot finish, and it needs your "
+                                                           "decision to continue."),
+             evidence_paths=[status, f"{STATE}/supervisor.log"])),
         ("Done, nothing to review", "done.md", "runner", "after Done is published and read back", "TEAM-11", "done",
          messages.done(CTX, issue="TEAM-11", commit="9a8b7c6d5e4f3a2b", criteria_count=2, repairs=0,
                        run_dir="/absolute/path/to/runs/TEAM-11/20260923T081500Z-0f1e2d3c")),
