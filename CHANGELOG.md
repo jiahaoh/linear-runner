@@ -15,6 +15,21 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.2.0 — 2026-09-29
+
+The fixes for the runner problems found in the §2.5 batches (`W-251`), the `W-236` emphasis
+fix, descriptive controller commit messages and `runner/` batch branches; the runner release
+for the start of §2.6.
+
+**Project impact:** none. Existing configurations need no change. Optionally: set
+`site.attention.notifier` to a `command` backend for unattended batches (README "Stops"), set
+the workspace `auth.refresh_command`, `min_lifetime_minutes` or `warn_lifetime_minutes`, use
+batch `phase_overrides` for a known long phase, and pin `"runner_version": "2.2.0"`. A paused
+batch adopts the release with `recover repin-config`.
+
+**Canary tier:** canary batch; the engine, prompts (draft rules) and the budget rule changed.
+Run a small canary batch before the first §2.6 production batch.
+
 ### Added
 
 * Launch preflight step `linear_credential`: the Codex-owned Linear OAuth credential's
