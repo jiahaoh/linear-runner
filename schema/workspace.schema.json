@@ -34,7 +34,7 @@
           "minLength": 1
         },
         "min_lifetime_minutes": {
-          "description": "Launch preflight fails when the OAuth credential in credentials_file expires sooner than this (default 30).",
+          "description": "Launch preflight fails when the OAuth credential in credentials_file expires sooner than this (default 0: off; Codex refreshes the credential only after it has expired).",
           "type": "integer",
           "minimum": 0
         },

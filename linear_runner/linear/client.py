@@ -88,7 +88,7 @@ class LinearClient:
         if expiry and expiry <= time.time() + 30:
             expired = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(expiry))
             raise RuntimeError(f"Linear OAuth expired at {expired}; refresh it with `{self.refresh_command()}` "
-                               "(the owning CLI refreshes the stored credential), then resume")
+                               "(the owning CLI refreshes a credential once it has expired), then resume")
         return credential["access_token"]
 
     def rpc(self, method, params=None, notification=False):

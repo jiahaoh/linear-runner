@@ -429,7 +429,7 @@ Template `blocked.md`, written by the runner, posted when a host or service prob
 TEAM-12 is paused by a host or service problem (Linear OAuth expired at 2026-01-02 03:04 UTC; refresh it with `codex exec --skip-git-repo-check 'Reply with OK.'` (the owning CLI refreshes …), and it needs you to fix it and relaunch.
 
 **What happened**
-The runner stopped at the validate step with this message: Linear OAuth expired at 2026-01-02 03:04 UTC; refresh it with `codex exec --skip-git-repo-check 'Reply with OK.'` (the owning CLI refreshes the stored credential), then resume.
+The runner stopped at the validate step with this message: Linear OAuth expired at 2026-01-02 03:04 UTC; refresh it with `codex exec --skip-git-repo-check 'Reply with OK.'` (the owning CLI refreshes a credential once it has expired), then resume.
 
 **What is needed**
 Fix the host or service problem (for example refresh the Linear login or free disk space), then resume.

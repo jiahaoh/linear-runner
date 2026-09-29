@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Fixed
+
+* The `linear_credential` preflight no longer tells the operator to refresh early "to start with
+  a full lifetime": Codex refreshes the Linear credential only once it has expired, and running
+  the refresh command earlier left the expiry unchanged in the 2.2.0 canary (`W-251`). The
+  warning now names the expiry time and says to run the command when the batch pauses at it,
+  then `recover resume`. `auth.min_lifetime_minutes` is off by default (was 30), because
+  failing a launch early would only make the operator wait for the expiry. Project impact:
+  none; a workspace that relied on the 30-minute failure sets `min_lifetime_minutes`. Canary
+  tier: first-issue checkpoint (preflight).
+
 ## v2.2.0 — 2026-09-29
 
 The fixes for the runner problems found in the §2.5 batches (`W-251`), the `W-236` emphasis

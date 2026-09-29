@@ -199,7 +199,7 @@ def samples():
         ("Blocked or stopped, environment", "blocked.md", "runner", "when a host or service problem pauses the batch",
          "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="environment", error=(
-             "Linear OAuth expired at 2026-01-02 03:04 UTC; refresh it with `codex exec --skip-git-repo-check 'Reply with OK.'` (the owning CLI refreshes the stored credential), then resume"), step="validate",
+             "Linear OAuth expired at 2026-01-02 03:04 UTC; refresh it with `codex exec --skip-git-repo-check 'Reply with OK.'` (the owning CLI refreshes a credential once it has expired), then resume"), step="validate",
              evidence_paths=[RUN, f"{STATE}/state.json"])),
         ("Blocked or stopped, Claude token rejected", "blocked.md", "runner",
          "when a Claude session fails to authenticate with the configured long-lived token", "TEAM-15", "blocked",

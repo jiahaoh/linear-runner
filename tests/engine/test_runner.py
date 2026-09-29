@@ -889,10 +889,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual((result["remaining_minutes"], result.get("warning")), (1440, None))
         self.assertNotIn("test", json.dumps(result))  # never the token
         self.assertIn("expires in 5 h 0 min", lifetime(300)["warning"])
-        self.assertIn("refresh it now with `codex exec", lifetime(300)["warning"])
+        self.assertIn("refreshes it only once it has expired", lifetime(300)["warning"])
+        self.assertIn("run `codex exec", lifetime(300)["warning"])
+        self.assertIn("recover resume", lifetime(300)["warning"])
         self.assertNotIn("warning", lifetime(300, warn_lifetime_minutes=120))
-        with self.assertRaisesRegex(LaunchError, r"expires in 20 minutes \(preflight needs at least 30\); refresh it"):
-            lifetime(20)
+        self.assertIn("warning", lifetime(20))  # no failure by default: an early refresh changes nothing
+        with self.assertRaisesRegex(LaunchError, r"expires in 20 minutes, at .* \(preflight needs at least 30\); "
+                                                 r"the owning CLI refreshes it only once it has expired"):
+            lifetime(20, min_lifetime_minutes=30)
         lifetime(20, min_lifetime_minutes=10)
         write_json(p, {"linear": {"server_name": "linear", "server_url": "https://mcp.linear.app/mcp", "access_token": "t"}})
         auth = {"credentials_file": str(p)}
