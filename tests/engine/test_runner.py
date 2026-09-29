@@ -501,7 +501,18 @@ class EngineTests(unittest.TestCase):
         active = {"issue_id": "W-9", "issue": {"title": "QC report shows error bars."}, "last_result": {}}
         self.assertEqual(commit_message(active), "feat(w-9): QC report shows error bars\n\nLinear-Issue: W-9")
         self.assertEqual(commit_message(active, review_fix=True).splitlines()[0],
-                         "fix(w-9): address review findings on QC report shows error bars")
+                         "fix(w-9): address review findings (QC report shows error bars)")
+        # The 2.2.0 canary: a long title, and a summary written before the controller committed.
+        active = {"issue_id": "W-253", "issue": {"title": "Document the codebook-aware research scripts in the "
+                                                          "developer docs"},
+                  "last_result": {"summary": "Added the page and its index link. Changes are uncommitted. The "
+                                             "focused option check passes; nothing was committed."}}
+        message = commit_message(active, review_fix=True)
+        subject = message.splitlines()[0]
+        self.assertEqual(subject, "fix(w-253): address review findings (document the codebook-aware…)")
+        self.assertLessEqual(len(subject), 72)
+        self.assertIn("Added the page and its index link.", message)
+        self.assertNotIn("ommit", message.split("\n\n")[1])
 
     def test_nested_sub_items_are_joined_into_their_criterion(self):
         # W-233's shape: a criterion ending in ':' whose content is a nested list.
@@ -868,6 +879,49 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "read-back failed"):
             client.post_comment("DEV-1", "Other.\n\n<!-- linear-runner b/DEV-1/claim/1 -->",
                                 "<!-- linear-runner b/DEV-1/claim/1 -->")
+
+    UNAVAILABLE = {"isError": True, "content": [{"type": "text", "text": '{"error":"upstream_unavailable","message":'
+                                                                          '"Linear is temporarily unavailable. Please '
+                                                                          'try again.","status":502}'}]}
+
+    def test_transient_linear_errors_are_retried_without_double_posting(self):
+        # The 2.2.0 canary: a 502 upstream_unavailable on a comment write stopped the batch.
+        from linear_runner.linear.client import LinearTransient
+        client = LinearClient({"token_env": "TEST"}); client.initialized = True
+        answers = [self.UNAVAILABLE, self.UNAVAILABLE, {"content": [{"type": "text", "text": '{"id": "DEV-1"}'}]}]
+        client.rpc = lambda method, params=None, notification=False: answers.pop(0)
+        self.assertEqual(client.issue("DEV-1"), {"id": "DEV-1"})  # a read: retried twice
+        answers[:] = [self.UNAVAILABLE] * 3
+        with self.assertRaisesRegex(LinearTransient, "Linear temporarily unavailable: get_issue failed"):
+            client.issue("DEV-1")
+        from linear_runner.linear import attention
+        self.assertEqual(attention.classify_stop(LinearTransient("Linear temporarily unavailable: save_comment "
+                                                                 "failed (...)")), "environment")
+        # A comment write is never repeated by call(); append_comment adopts one that landed ...
+        answers[:] = [self.UNAVAILABLE]
+        with self.assertRaises(LinearTransient):
+            client.call("save_comment", issueId="DEV-1", body="x")
+        marker = "<!-- linear-runner b/DEV-1/blocked/1 -->"
+        body = "DEV-1 is paused.\n\n" + marker
+        comments, writes = [], []
+        client.comments = lambda issue: copy.deepcopy(comments)
+        def landed_then_failed(name, **args):
+            writes.append(args["body"]); comments.append({"id": "c1", "body": args["body"]})
+            raise LinearTransient("Linear temporarily unavailable: save_comment failed")
+        client.call = landed_then_failed
+        self.assertEqual(client.post_comment("DEV-1", body, marker), "c1")
+        self.assertEqual(len(writes), 1)
+        # ... and posts again only when it did not land.
+        comments.clear(); writes.clear()
+        def failed_once(name, **args):
+            writes.append(args["body"])
+            if len(writes) == 1:
+                raise LinearTransient("Linear temporarily unavailable: save_comment failed")
+            comments.append({"id": "c2", "body": args["body"]})
+            return {"id": "c2"}
+        client.call = failed_once
+        self.assertEqual(client.post_comment("DEV-1", body, marker), "c2")
+        self.assertEqual((len(writes), len(comments)), (2, 1))
 
     def test_expired_oauth_is_not_silently_refreshed(self):
         p = self.root / "credentials.json"

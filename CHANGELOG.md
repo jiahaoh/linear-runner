@@ -15,7 +15,32 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.2.1 — 2026-09-29
+
+The findings of the 2.2.0 canary batches (canary-w224-20260929 and canary-w253-20260929, both
+complete; `W-251`).
+
+**Project impact:** none. A workspace that relied on the launch failing 30 minutes before the
+Linear credential expires sets `auth.min_lifetime_minutes`. A paused batch adopts the release
+with `recover repin-config`.
+
+**Canary tier:** canary batch; the controller's commit message (engine) changed. The other
+changes are the Linear client's retry of unavailable answers and preflight and README wording.
+
 ### Fixed
+
+* A Linear answer that it is temporarily unavailable (a 5xx or `upstream_unavailable`) no
+  longer stops the batch at once: reads and idempotent writes are repeated after 2 s and 5 s,
+  and a comment write is repeated only after its marker is looked for, so a comment that did
+  land is adopted and never posted twice. A failure that remains is an `environment` stop
+  ("Linear temporarily unavailable"); it was a `technical-block`. The 2.2.0 canary paused on a
+  502 while posting W-224's review comment. Project impact: none.
+* Controller commit messages leave out the worker summary's sentences about commits ("Changes
+  are uncommitted.", written before the controller committed), and a repair of review findings
+  is titled `fix(<issue>): address review findings (<issue title>)` instead of the
+  ungrammatical "address review findings on <title>". Project impact: none.
+* README operator practice: do not change an issue's `blocks`, `blockedBy` or `duplicateOf`
+  relations while a batch runs it; the 2.2.0 canary's relaunch was refused for that.
 
 * The `linear_credential` preflight no longer tells the operator to refresh early "to start with
   a full lifetime": Codex refreshes the Linear credential only once it has expired, and running

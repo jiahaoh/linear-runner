@@ -29,6 +29,20 @@ def read_back(read, accepted, *, delays=None, sleep=None):
     return value
 
 
+# A Linear 5xx or "temporarily unavailable" answer (the 2.2.0 canary hit a 502
+# ``upstream_unavailable`` on a comment write) is retried after these pauses. Every tool but
+# ``save_comment`` is a read or an idempotent write (a state, a full label set, a description),
+# so ``call`` repeats it; a comment is retried by ``append_comment``, which first looks for the
+# comment's marker so a write that did land is never posted twice.
+TRANSIENT_DELAYS = (2, 5)
+_TRANSIENT = ("upstream_unavailable", "temporarily unavailable", '"status":500', '"status":502', '"status":503',
+              '"status":504')
+
+
+class LinearTransient(RuntimeError):
+    """Linear answered that it is temporarily unavailable (a 5xx); the message says so."""
+
+
 # Workspace ``auth.refresh_command`` overrides it. A short Codex session starts the configured
 # Linear MCP server, which refreshes the Codex-owned credential (W-251).
 DEFAULT_REFRESH_COMMAND = "codex exec --skip-git-repo-check 'Reply with OK.'"
@@ -126,6 +140,9 @@ class LinearClient:
                     raise RuntimeError("Linear MCP protocol request failed; no automatic mutation retry")
                 return item["result"]
         except urllib.error.HTTPError as error:
+            if error.code >= 500:
+                raise LinearTransient(f"Linear temporarily unavailable (HTTP {error.code}); reconcile the write "
+                                      "outcome before resume") from None
             raise RuntimeError(f"Linear HTTP {error.code}; reconcile authentication/write outcome before resume") from None
 
     def call(self, name, **arguments):
@@ -135,16 +152,34 @@ class LinearClient:
             self.protocol = result["protocolVersion"]
             self.rpc("notifications/initialized", notification=True)
             self.initialized = True
-        result = self.rpc("tools/call", {"name": name, "arguments": arguments})
-        if result.get("isError"):
-            detail = " ".join(part.get("text", "") for part in result.get("content", [])
-                              if part.get("type") == "text").strip()[:300]
-            raise RuntimeError(f"Linear {name} failed ({detail or 'no detail'}); inspect the issue before retrying")
+        pauses = iter(TRANSIENT_DELAYS if name != "save_comment" else ())
+        while True:
+            try:
+                result = self.tool(name, arguments)
+                break
+            except LinearTransient:
+                pause = next(pauses, None)
+                if pause is None:
+                    raise
+                SLEEP(pause)
         texts = [part["text"] for part in result.get("content", []) if part.get("type") == "text"]
         try:
             return json.loads("\n".join(texts))
         except ValueError:
             raise RuntimeError(f"Linear {name} returned unexpected non-JSON content") from None
+
+    def tool(self, name, arguments):
+        """One ``tools/call``; an error result raises (``LinearTransient`` when Linear says it is
+        temporarily unavailable)."""
+        result = self.rpc("tools/call", {"name": name, "arguments": arguments})
+        if result.get("isError"):
+            detail = " ".join(part.get("text", "") for part in result.get("content", [])
+                              if part.get("type") == "text").strip()[:300]
+            if any(mark in detail.replace(" ", "") or mark in detail for mark in _TRANSIENT):
+                raise LinearTransient(f"Linear temporarily unavailable: {name} failed ({detail}); "
+                                      "inspect the issue before retrying")
+            raise RuntimeError(f"Linear {name} failed ({detail or 'no detail'}); inspect the issue before retrying")
+        return result
 
     def issue(self, identifier):
         return self.call("get_issue", id=identifier, includeRelations=True)
@@ -222,15 +257,30 @@ def append_comment(list_comments, create, issue, body, marker, *, reconcile=Fals
     posting again. Existing comments are never edited. The comment is read back (``read_back``:
     a comment not listed yet is looked for again; it is never posted twice).
     """
-    identity = None
-    if reconcile:
+    def marked():
         matches = [c for c in list_comments(issue) if marker in (c.get("body") or "")]
         if len(matches) > 1:
             raise RuntimeError(f"Duplicate event marker on {issue}; reconcile manually")
-        if matches:
-            identity = matches[0]["id"]
+        return matches[0]["id"] if matches else None
+
+    identity = marked() if reconcile else None
     if identity is None:
-        created = create(body)
+        pauses = iter(TRANSIENT_DELAYS)
+        while True:
+            try:
+                created = create(body)
+                break
+            except LinearTransient:
+                # The write may have landed before Linear failed: adopt it by its marker, or
+                # post again after a pause (TRANSIENT_DELAYS), never twice.
+                pause = next(pauses, None)
+                if pause is None:
+                    raise
+                SLEEP(pause)
+                found = marked()
+                if found:
+                    created = {"id": found}
+                    break
         identity = created.get("id") if isinstance(created, dict) else None
         if not identity:
             raise RuntimeError(f"Linear comment on {issue} returned no ID; reconcile before resuming")

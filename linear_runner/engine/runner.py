@@ -533,22 +533,32 @@ def commit_message(active, *, review_fix=False):
     ``Linear-Issue`` trailer. ``review_fix``: the commit of a repair of review findings.
 
     ``feat(w-241): add a calibrated synthetic preset version with lognormal…`` replaces the
-    uninformative ``feat(w-241): implement validated issue deliverables`` (W-251). An issue
-    snapshot without a title keeps the old wording.
+    uninformative ``feat(w-241): implement validated issue deliverables`` (W-251); a repair of
+    review findings is ``fix(w-253): address review findings (document the codebook-aware…)``.
+    Sentences of the summary that mention commits are left out: the worker wrote them before
+    the controller committed. An issue snapshot without a title keeps the old wording.
     """
     issue = active["issue_id"]
     title = " ".join(str((active.get("issue") or {}).get("title") or "").split()).rstrip(".")
     if title and not (len(title) > 1 and title[1].isupper()):  # keep an acronym's case
         title = title[0].lower() + title[1:]
+
+    def fit(text, room):
+        return text if len(text) <= room else text[:room - 1].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
     if review_fix:
         prefix = f"fix({issue.lower()}): "
-        what = f"address review findings on {title}" if title else "address independent review findings"
+        # "fix(w-253): address review findings (document the codebook-aware…)"
+        lead = "address review findings"
+        what = (f"{lead} ({fit(title, COMMIT_TITLE_CHARS - len(prefix) - len(lead) - 3)})" if title
+                else "address independent review findings")
     else:
         prefix = f"feat({issue.lower()}): "
-        what = title or "implement validated issue deliverables"
-    if len(prefix + what) > COMMIT_TITLE_CHARS:
-        what = what[:COMMIT_TITLE_CHARS - len(prefix) - 1].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+        what = fit(title or "implement validated issue deliverables", COMMIT_TITLE_CHARS - len(prefix))
     summary = " ".join(str((active.get("last_result") or {}).get("summary") or "").split())
+    # The worker writes its summary before the controller commits, so what it says about
+    # commits ("Changes are uncommitted.") is stale in the commit message: drop those sentences.
+    summary = " ".join(sentence for sentence in re.split(r"(?<=[.!?])\s+", summary)
+                       if not re.search(r"commit", sentence, re.I))
     if len(summary) > 600:
         summary = summary[:600].rsplit(" ", 1)[0] + " …"
     paragraphs = [prefix + what]

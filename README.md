@@ -427,6 +427,10 @@ nothing and never creates a second template.
   an unrelated issue. Describe future work in words and add the link once the issue exists.
 * Scope batch guidance rules precisely: name the issues, phases or paths a rule applies to, so
   a rule written for one issue does not constrain or block another.
+* Do not add or remove `blocks`, `blockedBy` or `duplicateOf` relations on an issue while a
+  batch runs it: they are part of its pinned contract, so the next launch refuses the changed
+  issue (after acceptance even `--accept-contract-drift` does). Add the relation from the new
+  issue once the running one is Done (the 2.2.0 canary).
 
 ## Running a batch
 
@@ -569,7 +573,8 @@ elsewhere stops the batch for reconciliation.
    commit or other history change stops the batch. The message says what the issue delivers:
    the title is `feat(<issue>): <the Linear issue title>` (first letter lower-cased, cut at a
    word boundary to 72 characters with `…`), the body is the worker's summary (at most 600
-   characters, wrapped at 72) and the last line is the trailer `Linear-Issue: <issue>`. A
+   characters, wrapped at 72, without its sentences about commits, which the worker wrote
+   before the controller committed) and the last line is the trailer `Linear-Issue: <issue>`. A
    state without the issue title keeps `feat(<issue>): implement validated issue deliverables`.
 7. **Delivery.** Optional `delivery_checks` receive `RUNNER_DELIVERY_CONTEXT` (a JSON file
    with the revision, validation records, issue, `issue_run_dir` and `delivery_dir`). With
@@ -859,7 +864,11 @@ pending before the write and as posted after the comment is read back. Linear ma
 acknowledge a write before a read shows it, so every read-back (comments, the review and
 in-progress states, the needs-input label or state, publication) that does not yet show the
 write reads again after short pauses, about 10 s in all (`client.READ_BACK_DELAYS`), before it
-fails; the write itself is never repeated inside that retry. The comment ends with
+fails; the write itself is never repeated inside that retry. When Linear answers that it is
+temporarily unavailable (a 5xx, or `upstream_unavailable`), a read or an idempotent write
+(state, labels, description) is repeated after 2 s and 5 s; a comment write is repeated only
+after its marker is looked for, so a comment that did land is adopted, never posted twice. A
+failure that remains is an `environment` stop ("Linear temporarily unavailable"). The comment ends with
 one hidden line, `<!-- linear-runner <batch>/<issue>/<kind>/<n> -->`. If a write's response
 or the following save is lost, the next run finds the comment by that line and adopts it, so
 an event is never posted twice. A failed write keeps the batch from advancing; the pending
@@ -1132,7 +1141,7 @@ criterion with the reviewer's evidence, the reviewer's summary and limitations, 
 owner's note, as problems the independent reviewer found in the committed work, to fix
 within the issue's scope on top of the clean committed source. Then the full checks run
 (failures enter the normal repair loop), the repair is committed as a new controller commit
-on top of the earlier one (`fix(<issue>): address review findings on <issue title>`; the earlier
+on top of the earlier one (`fix(<issue>): address review findings (<issue title>)`; the earlier
 commit is never amended), delivery runs again (the earlier packet is kept as
 `delivery-superseded-<id>`) and a fresh review session assesses
 `<starting commit>..<new commit>`, i.e. every controller commit of the issue.
