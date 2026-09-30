@@ -15,7 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
-The findings of the §2.6 batches (`W-263`).
+## v2.3.0 — 2026-09-30
+
+The findings of the §2.6 batches (s26-spec-20260929, s26-impl-20260930, s26-notebook-20260930
+and s26-direction-20260930, all complete; `W-263`).
+
+**Project impact:** none; the new batch `variables` and workspace `auth.auto_refresh` fields are
+optional. The implement output budget rises from 150k to 250k, and the input budget now judges
+uncached input, which changes configuration fingerprints: a paused batch adopts the release
+with `recover repin-config`.
+
+**Canary tier:** canary batch; the engine (budget judgement, contract check before review) and
+the Linear client (automatic credential refresh) changed.
 
 ### Added
 
