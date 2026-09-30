@@ -1,9 +1,14 @@
 """Small authenticated Streamable HTTP MCP client; no model or credential logging."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -46,6 +51,19 @@ class LinearTransient(RuntimeError):
 # Workspace ``auth.refresh_command`` overrides it. A short Codex session starts the configured
 # Linear MCP server, which refreshes the Codex-owned credential (W-251).
 DEFAULT_REFRESH_COMMAND = "codex exec --skip-git-repo-check 'Reply with OK.'"
+# With workspace ``auth.auto_refresh`` the runner itself runs the refresh command once an
+# expired credential is read, bounded by this timeout. Each expiry value is tried at most once
+# per process, so a refresh that does not move the expiry pauses the batch instead of looping.
+REFRESH_TIMEOUT_SECONDS = 180
+_REFRESH_ATTEMPTS = set()  # (credentials file, expiry) pairs already tried in this process
+
+
+def _log(message):
+    print(f"{dt.datetime.now(dt.timezone.utc).isoformat()} {message}", file=sys.stderr, flush=True)
+
+
+def _when(epoch):
+    return time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(epoch))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -64,6 +82,8 @@ class LinearClient:
         self.sequence = 0
         self.initialized = False
         self.opener = urllib.request.build_opener(NoRedirect())
+        self.log = _log  # one line per automatic credential refresh; never the token
+        self.run = subprocess.run  # the refresh command's process boundary (replaced in tests)
 
     def refresh_command(self):
         """How the operator refreshes the OAuth credential (workspace ``auth.refresh_command``)."""
@@ -100,10 +120,39 @@ class LinearClient:
             return token
         credential, expiry = self.credential()
         if expiry and expiry <= time.time() + 30:
-            expired = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(expiry))
-            raise RuntimeError(f"Linear OAuth expired at {expired}; refresh it with `{self.refresh_command()}` "
-                               "(the owning CLI refreshes a credential once it has expired), then resume")
+            refreshed = self.auto_refresh(expiry) if self.config.get("auto_refresh") else None
+            if refreshed is None:
+                raise RuntimeError(f"Linear OAuth expired at {_when(expiry)}; refresh it with "
+                                   f"`{self.refresh_command()}` (the owning CLI refreshes a credential once it has "
+                                   "expired), then resume")
+            credential = refreshed
         return credential["access_token"]
+
+    def auto_refresh(self, expiry):
+        """Workspace ``auth.auto_refresh``: run the refresh command once for this expiry (argv, no
+        stdin, a temporary cwd, REFRESH_TIMEOUT_SECONDS) and reread the credential. Returns it
+        when its new expiry is in the future, else None (the caller raises the expired error)."""
+        key = (str(Path(self.config["credentials_file"]).expanduser()), expiry)
+        if key in _REFRESH_ATTEMPTS:
+            return None
+        _REFRESH_ATTEMPTS.add(key)
+        if expiry > time.time():
+            SLEEP(expiry - time.time() + 1)  # the owning CLI refreshes only an expired credential
+        try:
+            with tempfile.TemporaryDirectory(prefix="linear-runner-refresh-") as cwd:
+                process = self.run(shlex.split(self.refresh_command()), cwd=cwd, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=REFRESH_TIMEOUT_SECONDS, check=False)
+            if process.returncode != 0:
+                return None
+            credential, renewed = self.credential()
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            return None
+        if not renewed or renewed <= time.time() + 30:
+            return None
+        self.log(f"Linear OAuth credential refreshed automatically with `{self.refresh_command()}`: it expired at "
+                 f"{_when(expiry)} and now expires at {_when(renewed)}")
+        return credential
 
     def rpc(self, method, params=None, notification=False):
         self.sequence += 1

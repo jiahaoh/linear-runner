@@ -33,6 +33,10 @@
           "type": "string",
           "minLength": 1
         },
+        "auto_refresh": {
+          "description": "When the OAuth credential in credentials_file has expired, run refresh_command once (argv, no shell, bounded timeout) and continue if the reread credential expires in the future; otherwise pause as without it (default false).",
+          "type": "boolean"
+        },
         "min_lifetime_minutes": {
           "description": "Launch preflight fails when the OAuth credential in credentials_file expires sooner than this (default 0: off; Codex refreshes the credential only after it has expired).",
           "type": "integer",

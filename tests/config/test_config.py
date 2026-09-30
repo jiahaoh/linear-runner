@@ -198,6 +198,12 @@ class LayeredConfigTests(unittest.TestCase):
             self.load(workspace={"auth": {"token": "lin_api_secret"}})
         loaded = self.load(workspace={"auth": {"credentials_file": "~/.codex/.credentials.json"}})
         self.assertEqual(loaded["linear"], {"credentials_file": str(Path("~/.codex/.credentials.json").expanduser())})
+        loaded = self.load(workspace={"auth": {"credentials_file": "/c.json", "auto_refresh": True}})
+        self.assertEqual(loaded["linear"], {"credentials_file": "/c.json", "auto_refresh": True})
+        with self.assertRaisesRegex(ConfigError, "auto_refresh: needs credentials_file"):
+            self.load(workspace={"auth": {"token_env": "A", "auto_refresh": True}})
+        with self.assertRaisesRegex(ConfigError, "expected boolean"):
+            self.load(workspace={"auth": {"credentials_file": "/c.json", "auto_refresh": "yes"}})
 
     def test_phase_overrides_raise_a_timeout_up_to_the_registry_maximum(self):
         loaded = self.load(batch={"phase_overrides": {"DEV-1": {"repair": {"timeout_seconds": 9000}}}})

@@ -105,7 +105,7 @@ model does not allow) are errors.
 | Layer | Fields |
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
-| Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
+| Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases") |
 
@@ -509,7 +509,14 @@ messages name the expiry time and the refresh command: `auth.refresh_command`, o
 MCP server). Codex refreshes the stored credential only once it has expired: running the
 command earlier leaves the expiry unchanged (seen in the 2.2.0 canary). So a batch that
 outlives the credential pauses at the expiry; run the command then and continue with
-`recover resume`. A `token_env` token has no readable expiry; the step records that. `run --max-issues N`
+`recover resume`. With `auth.auto_refresh: true` (off by default) the runner does this itself:
+when it reads an expired credential it runs the refresh command once (as an argv split like a
+shell would, no shell, no stdin, in a temporary directory, at most 180 s), rereads the file and
+continues if the new expiry is in the future, logging one line with the old and new expiry
+(never the token). A command that fails, times out or leaves the expiry in the past ends in the
+same "Linear OAuth expired" stop; each expiry value is tried at most once per process, so a
+refresh that does not help never loops. The preflight warning then says the runner will
+refresh automatically. A `token_env` token has no readable expiry; the step records that. `run --max-issues N`
 still works for a single in-process run without the supervisor.
 
 **Backend start check.** A backend that cannot start in the worktree (for example a CLI

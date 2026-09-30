@@ -947,6 +947,11 @@ class EngineTests(unittest.TestCase):
         self.assertIn("run `codex exec", lifetime(300)["warning"])
         self.assertIn("recover resume", lifetime(300)["warning"])
         self.assertNotIn("warning", lifetime(300, warn_lifetime_minutes=120))
+        self.assertFalse(lifetime(300)["auto_refresh"])
+        automatic = lifetime(300, auto_refresh=True)
+        self.assertTrue(automatic["auto_refresh"])
+        self.assertIn("The runner then refreshes it automatically with `codex exec", automatic["warning"])
+        self.assertIn("only if that fails", automatic["warning"])
         self.assertIn("warning", lifetime(20))  # no failure by default: an early refresh changes nothing
         with self.assertRaisesRegex(LaunchError, r"expires in 20 minutes, at .* \(preflight needs at least 30\); "
                                                  r"the owning CLI refreshes it only once it has expired"):

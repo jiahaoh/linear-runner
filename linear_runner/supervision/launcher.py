@@ -29,7 +29,8 @@ mode 600 or stricter, non-empty; a set variable) and ``claude auth status`` must
 uses it. It records the mode and the path or name, never the token. ``linear_credential``
 records how long the Codex-owned Linear OAuth credential has left (when its file records an
 expiry), warns below the workspace's ``auth.warn_lifetime_minutes`` (720) and, when set, fails
-below ``auth.min_lifetime_minutes`` (off by default), naming the expiry and the refresh command. The ``linear`` step reads
+below ``auth.min_lifetime_minutes`` (off by default), naming the expiry and the refresh command
+(and, with ``auth.auto_refresh``, that the runner runs it itself). The ``linear`` step reads
 every allowlisted issue (proving authentication), checks gates, ownership, dependencies,
 decision-rule blocks and model/effort availability for each pending issue, and performs
 the dry-run selection (or, for a saved active issue, the resume-specific checks).
@@ -173,7 +174,8 @@ def _check_linear_credential(config, linear, clock=time.time):
     """The Linear OAuth credential's remaining lifetime, when it can be read (a Codex-owned
     ``credentials_file`` with an expiry). Warns below ``auth.warn_lifetime_minutes`` and, when a
     workspace sets it, fails below ``auth.min_lifetime_minutes``. The owning CLI refreshes the
-    credential only after it has expired, so both messages say when that is and what to run then."""
+    credential only after it has expired, so both messages say when that is and what to run then;
+    with ``auth.auto_refresh`` the warning says the runner runs the refresh command itself."""
     auth = config["linear"]
     lifetime = linear.credential_lifetime(clock) if hasattr(linear, "credential_lifetime") else None
     if lifetime is None:
@@ -185,13 +187,19 @@ def _check_linear_credential(config, linear, clock=time.time):
     refresh = linear.refresh_command()
     expires = time.localtime(clock() + lifetime)
     result = {"source": "credentials_file", "remaining_minutes": minutes,
-              "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", expires), **limits}
+              "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", expires), **limits,
+              "auto_refresh": bool(auth.get("auto_refresh"))}
     at = time.strftime("%H:%M %Z", expires)
     if minutes < limits["min_lifetime_minutes"]:
         raise LaunchError(f"The Linear OAuth credential expires in {max(minutes, 0)} minutes, at {at} (preflight needs "
                           f"at least {limits['min_lifetime_minutes']}); the owning CLI refreshes it only once it has "
                           f"expired, so run `{refresh}` after {at}, then launch again")
-    if minutes < limits["warn_lifetime_minutes"]:
+    if minutes < limits["warn_lifetime_minutes"] and result["auto_refresh"]:
+        result["warning"] = (f"The Linear OAuth credential expires in {minutes // 60} h {minutes % 60} min, at {at}, "
+                             "which may be before this batch ends. The runner then refreshes it automatically with "
+                             f"`{refresh}` (workspace auth.auto_refresh) and pauses with 'Linear OAuth expired' only "
+                             "if that fails; then run the command yourself and resume with `recover resume`")
+    elif minutes < limits["warn_lifetime_minutes"]:
         result["warning"] = (f"The Linear OAuth credential expires in {minutes // 60} h {minutes % 60} min, at {at}, "
                              "which may be before this batch ends. The owning CLI refreshes it only once it has "
                              "expired, so the batch may pause then with 'Linear OAuth expired'; run "

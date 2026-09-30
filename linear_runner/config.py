@@ -599,6 +599,8 @@ def load_config(batch_path, home=None):
     auth = workspace["auth"]
     if bool(auth.get("token_env")) == bool(auth.get("credentials_file")):
         raise ConfigError(f"{workspace_label}.auth: choose exactly one of token_env or credentials_file; never store credentials")
+    if auth.get("auto_refresh") and not auth.get("credentials_file"):
+        raise ConfigError(f"{workspace_label}.auth.auto_refresh: needs credentials_file (a token_env token is not refreshed)")
     linear = dict(auth)
     if "credentials_file" in linear:
         linear["credentials_file"] = str(_path(linear["credentials_file"], workspace_path.parent, variables,

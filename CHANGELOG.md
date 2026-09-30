@@ -26,6 +26,14 @@ The findings of the §2.6 batches (`W-263`).
   values are in the configuration fingerprint and `validate-config` lists them under
   `variable_overrides`. Project impact: none; optional. Canary tier: first-issue checkpoint
   (configuration).
+* Workspace `auth.auto_refresh` (default `false`): when the Linear client reads an expired
+  Codex-owned credential, it runs `auth.refresh_command` once (argv, no stdin, a temporary
+  directory, 180 s at most), rereads the credential and continues when the new expiry is in the
+  future, logging one line with the old and new expiry, never the token. A failed, timed-out or
+  ineffective refresh ends in the same "Linear OAuth expired" stop as before; each expiry value
+  is tried at most once per process. The `linear_credential` preflight warning says the runner
+  will refresh automatically. Project impact: none; optional (with `credentials_file` only).
+  Canary tier: canary batch (the Linear client runs a command during the batch).
 
 ## v2.2.1 — 2026-09-29
 
