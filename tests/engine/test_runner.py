@@ -16,7 +16,8 @@ from linear_runner import cli as cli_module
 from linear_runner.engine import runner as runner_module
 from linear_runner.cli import main
 from linear_runner.backends.codex import execution_evidence
-from linear_runner.engine.runner import (RESULT_SCHEMA, Runner, fingerprint, git, issue_contract, project_lock,
+from linear_runner.linear import attention
+from linear_runner.engine.runner import (RESULT_SCHEMA, ContractChanged, Runner, fingerprint, git, issue_contract, project_lock,
                                          publication_form, published_contract_matches, published_issue, resolve_profile, review_criteria,
                                          review_schema, usage_totals, write_json)
 
@@ -794,6 +795,76 @@ class EngineTests(unittest.TestCase):
             self.runner.execute(limit=1)
         self.assertEqual(self.runner.state["history"], [])
         self.assertEqual(self.runner.state["active"]["step"], "publish")
+
+    def test_a_live_edit_after_the_pin_pauses_before_the_review(self):
+        original = self.runner.run_session
+        def edit_during_implement(prompt, directory, **kwargs):
+            value = original(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("implement"):
+                self.linear.data["description"] = "- [ ] Produce validated output with a legend"
+            return value
+        self.runner.run_session = edit_during_implement
+        with self.assertRaises(ContractChanged) as raised:
+            self.runner.execute(limit=1)
+        message = str(raised.exception)
+        self.assertIn("DEV-1: the live acceptance criteria or scope changed after the contract was pinned "
+                      "(acceptance criteria), so the runner stopped before the review", message)
+        self.assertRegex(message, r"`python3 \S+/runner\.py recover review --repin-contract --batch fixture "
+                                  r"--home \S+ --reason \"<why>\" --authorized-by \"<your name>\"`, then launch$")
+        self.assertEqual(attention.classify_stop(raised.exception), "needs-decision")
+        # No review model call, and the issue never moved to In Review.
+        self.assertEqual(self.calls, ["implement"])
+        self.assertEqual(self.linear.writes, ["In Progress"])
+        self.assertEqual(self.runner.state["active"]["step"], "review")
+        stop = self.runner.record_stop(raised.exception)
+        self.assertEqual((stop["event"], stop["class"]), ("contract_changed", "needs-decision"))
+        body = self.runner.blocked_body(stop)
+        self.assertIn("DEV-1 is paused because its acceptance criteria or scope changed in Linear after the runner "
+                      "pinned them", body)
+        self.assertIn("Changed: acceptance criteria.", body)
+        commands = [line.split(" --batch")[0].split("runner.py ")[1] for line in body.splitlines() if "runner.py" in line]
+        self.assertEqual(commands, ["recover review --repin-contract", "recover resume", "launch",
+                                    "recover defer --issue DEV-1 --restore-worktree"])
+        # With the pinned wording restored, the review proceeds.
+        self.linear.data["description"] = "- [ ] Produce validated output"
+        self.runner.execute(limit=1, resume=True)
+        self.assertEqual(self.calls, ["implement", "review"])
+        self.assertEqual(self.linear.data["statusType"], "completed")
+
+    def test_an_edit_before_a_resumed_review_pauses_before_the_model_call(self):
+        original = self.runner.run_session
+        def review_fails_once(prompt, directory, **kwargs):
+            if Path(directory).name.startswith("review") and not self.runner.state.get("review_failed"):
+                self.runner.state["review_failed"] = True
+                raise RuntimeError("Codex failed or did not finish a turn")
+            return original(prompt, directory, **kwargs)
+        self.runner.run_session = review_fails_once
+        with self.assertRaisesRegex(RuntimeError, "did not finish a turn"):
+            self.runner.execute(limit=1)
+        self.assertEqual((self.runner.state["active"]["step"], self.calls), ("review", ["implement"]))
+        self.linear.data["description"] = "- [ ] Produce validated output with a legend"
+        with self.assertRaisesRegex(ContractChanged, r"DEV-1: the live acceptance criteria or scope changed .*"
+                                                     r"recover review --repin-contract"):
+            self.runner.execute(limit=1, resume=True)
+        self.assertEqual(self.calls, ["implement"])
+
+    def test_publication_keeps_its_own_contract_check(self):
+        original = self.linear.call
+        def interrupted(name, **args):
+            result = original(name, **args)
+            if name == "save_issue" and "description" in args:
+                raise RuntimeError("response lost after successful write")
+            return result
+        self.linear.call = interrupted
+        with self.assertRaisesRegex(RuntimeError, "response lost"):
+            self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["active"]["step"], "publish")
+        self.linear.call = original
+        self.linear.data["description"] = "- [x] Produce validated output, changed after acceptance"
+        with self.assertRaisesRegex(RuntimeError, "scope/dependencies/ownership changed; reconcile intake") as raised:
+            self.runner.execute(limit=1, resume=True)
+        self.assertNotIsInstance(raised.exception, ContractChanged)
+        self.assertIn("recover publish --accept-contract-drift", str(raised.exception))
 
     def test_interrupted_publish_reconciles_uppercase_without_rewrite_or_model(self):
         original = self.linear.call

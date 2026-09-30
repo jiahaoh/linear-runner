@@ -50,6 +50,21 @@ The findings of the §2.6 batches (`W-263`).
   impact: none; the registry change changes configuration fingerprints, so a paused batch
   adopts it with `recover repin-config`. Canary tier: canary batch (engine and registry).
 
+### Fixed
+
+* The live issue contract is compared with the pinned one again immediately before every
+  independent review (a first review, the fresh review after a repair, or `recover review`),
+  not only when a launch starts. A difference stops the batch before the issue moves to review
+  or a model runs, with a `needs-decision` stop (event `contract_changed`) that names the issue,
+  what changed and the command `recover review --repin-contract`; the Linear stop comment
+  offers it first. Before, a criterion edited in Linear while a `recover repair
+  --repin-contract` ran was not noticed, the fresh review assessed the old wording and blocked
+  again, and the operator needed `recover review --repin-contract`. When a pending `recover
+  review` or `recover repair` meets a changed issue, the launch preflight now names what
+  changed and gives `recover cancel` and the recovery with `--repin-contract`. Publication
+  (`--accept-contract-drift`) is unchanged. Project impact: none. Canary tier: canary batch
+  (engine, stop comment template).
+
 ## v2.2.1 — 2026-09-29
 
 The findings of the 2.2.0 canary batches (canary-w224-20260929 and canary-w253-20260929, both

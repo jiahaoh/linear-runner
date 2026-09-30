@@ -283,6 +283,12 @@ def recovery_steps(ctx, *, issue=None, event=None, step=None, phase=None, classi
     if event == "checks_failed":
         return blocks(("After fixing the configuration or the environment the failing checks depend on, re-run the "
                        "checks on the current source without a model:", revalidate), launch, aside)
+    if event == "contract_changed":
+        # The live issue changed before a review (the implementation is frozen at that step).
+        return blocks(("Adopt the edited issue and re-run only the review of the frozen commit against it:",
+                       command(ctx, "recover", "review", "--repin-contract", auth=True)),
+                      ("Or, after restoring the pinned wording in Linear, continue without re-pinning:",
+                       command(ctx, "recover", "resume", auth=True)), launch, aside)
     if event == "budget_exceeded":
         primary = ("Record the new budget allowance for the phase:",
                    command(ctx, "recover", "budget", "--phase", phase or "<phase>", "--input-tokens", "<N>",
@@ -331,11 +337,16 @@ def blocked(ctx, *, issue, classification, event=None, error="", step=None, phas
     subject = issue or f"Batch {ctx['batch']}"
     values = {"subject": subject, "phase": phase or step or "model", "step": step or "current",
               "error": said(error, 300)}
-    known = event in ("worker_blocked", "review_blocked", "checks_failed", "delivery_failed", "budget_exceeded")
+    known = event in ("worker_blocked", "review_blocked", "checks_failed", "delivery_failed", "budget_exceeded",
+                      "contract_changed")
     cause = variant("blocked", "cause", event, values) if known else said(error)
     happened = variant("blocked", "happened", event if known else "other", values)
     if event in ("review_blocked", "checks_failed", "delivery_failed"):
         happened += f" The runner reported: {said(error, 300)}."
+    changed = re.search(r"after the contract was pinned \(([^)]*)\)", str(error or "")) \
+        if event == "contract_changed" else None
+    if changed:
+        happened += f" Changed: {said(changed.group(1))}."
     if model_text(stage):
         happened += f" The {stage.get('phase')} phase ran with {model_text(stage)}."
     auth = claude_auth_variant(error) if classification == "environment" and not known else None

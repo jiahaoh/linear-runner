@@ -196,6 +196,15 @@ def samples():
                                "evidence": "qc_report.html shows counts without error bars"},
                               *[dict(e, satisfied=True) for e in BLOCKED_RESULT["acceptance"][1:]]]), evidence_paths=[RUN, RUN + "/review-20260923T110000Z-4d5e6f7a"],
                           stage=astra)),
+        ("Blocked or stopped, issue edited before review", "blocked.md", "runner",
+         "when the issue's criteria or scope changed in Linear after the contract was pinned, before a review",
+         "TEAM-12", "blocked",
+         messages.blocked(CTX, issue="TEAM-12", classification="needs-decision", event="contract_changed", error=(
+             "TEAM-12: the live acceptance criteria or scope changed after the contract was pinned (acceptance "
+             "criteria), so the runner stopped before the review instead of assessing the pinned wording; if the "
+             "edit is intended, adopt it and review the frozen commit with `" + messages.command(
+                 CTX, "recover", "review", "--repin-contract", auth=True) + "`, then launch"),
+             step="review", repairs=1, evidence_paths=[RUN, f"{STATE}/state.json"])),
         ("Blocked or stopped, environment", "blocked.md", "runner", "when a host or service problem pauses the batch",
          "TEAM-12", "blocked",
          messages.blocked(CTX, issue="TEAM-12", classification="environment", error=(

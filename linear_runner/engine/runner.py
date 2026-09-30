@@ -43,6 +43,13 @@ REPOSITORY_PRECEDENCE = ("Precedence: these task instructions come from the runn
                          "about the project.")
 
 
+class ContractChanged(RuntimeError):
+    """The live issue no longer has the pinned contract when a review is about to start: a
+    batch-level stop (never deferred), recorded with event ``contract_changed`` so the stop
+    comment gives the command that re-pins the contract and reviews the frozen commit."""
+    event = "contract_changed"
+
+
 class IssueBlocked(RuntimeError):
     """An issue-level stop (the work itself is blocked), as opposed to a batch-level failure.
 
@@ -405,6 +412,20 @@ def contract_matches(live, active):
     if issue_contract(live) == pinned_contract(active):
         return True
     return active["step"] in ("publish", "done") and published_contract_matches(live, active["issue"])
+
+
+def contract_changes(pinned, live):
+    """What differs between the pinned intake snapshot and the live issue: ``acceptance
+    criteria`` (the unchecked items), ``description`` (any other description edit), the other
+    CONTRACT_FIELDS and ``relations.<name>`` of CONTRACT_RELATIONS."""
+    old, new = contract_fields(pinned), contract_fields(live)
+    changed = []
+    if review_criteria(pinned) != review_criteria(live):
+        changed.append("acceptance criteria")
+    elif old["description"] != new["description"]:
+        changed.append("description")
+    changed += [k for k in CONTRACT_FIELDS if k != "description" and old[k] != new[k]]
+    return changed + [f"relations.{k}" for k in CONTRACT_RELATIONS if old["relations"][k] != new["relations"][k]]
 
 
 def published_issue(issue):
@@ -1576,6 +1597,25 @@ class Runner:
             raise RuntimeError(f"Shared contract {path} changed since intake (pinned sha256 {contract['sha256']}); "
                                "restore it before continuing")
 
+    def verify_review_contract(self, active, live=None):
+        """Before a review (a first one, the fresh one after a repair, or ``recover review``):
+        the live issue must still have the pinned contract, or the reviewer would assess stale
+        criteria. A change stops the batch before the issue moves to review or a model runs,
+        naming what changed and the recovery that re-pins it (``recover review
+        --repin-contract``; the implementation is frozen at this step)."""
+        issue = active["issue_id"]
+        if live is None:
+            live = self.linear.issue(issue)
+            self.verify_issue(live)
+        if contract_matches(live, active):
+            return
+        changed = contract_changes(active["issue"], live) or ["contract fields"]
+        repin = messages.command(self.ctx, "recover", "review", "--repin-contract", auth=True)
+        raise ContractChanged(f"{issue}: the live acceptance criteria or scope changed after the contract was pinned "
+                              f"({', '.join(changed)}), so the runner stopped before the review instead of assessing "
+                              f"the pinned wording; if the edit is intended, adopt it and review the frozen commit "
+                              f"with `{repin}`, then launch")
+
     def review_prompt(self, active):
         """The independent review task (``model_phase`` appends the owner-update instructions)."""
         issue = active["issue_id"]
@@ -1675,6 +1715,8 @@ class Runner:
             self.save(active=active, phase="implementing")
         live = self.linear.issue(issue)
         self.verify_issue(live)
+        if active["step"] == "review":
+            self.verify_review_contract(active, live)
         if not contract_matches(live, active):
             raise RuntimeError("Issue scope/dependencies/ownership changed; reconcile intake"
                                + ("" if active["step"] not in ("publish", "done") else
@@ -1771,6 +1813,9 @@ class Runner:
         if active["step"] == "review":
             self.verify_frozen(active)
             self.verify_contract(active)
+            # A repair, validation and delivery can take hours after the launch compared the
+            # issue: read it again so the reviewer never assesses wording edited meanwhile.
+            self.verify_review_contract(active)
             active["review_risk"] = dict(self.review_risk(active), at=now())
             write_json(Path(active["run_dir"]) / "review-risk.json", active["review_risk"])
             self.save(active=active)

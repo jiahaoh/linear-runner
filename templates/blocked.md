@@ -10,11 +10,13 @@ cause.review_blocked: the independent review did not accept it
 cause.checks_failed: checks still fail after the allowed repairs
 cause.delivery_failed: the delivery packet failed its integrity checks
 cause.budget_exceeded: the {phase} phase went over its soft budget
+cause.contract_changed: its acceptance criteria or scope changed in Linear after the runner pinned them
 happened.worker_blocked: The worker ended its {phase} session with status blocked instead of ready.
 happened.review_blocked: The independent review of the committed work was not accepted, so nothing was published.
 happened.checks_failed: The configured checks still fail after the allowed repairs.
 happened.delivery_failed: Delivery stopped before the independent review.
 happened.budget_exceeded: The {phase} phase used more than its soft budget, or reported no usage, so the runner stopped it.
+happened.contract_changed: The live issue no longer matches the contract the runner pinned, so it stopped before the independent review instead of reviewing the pinned wording.
 happened.other: The runner stopped at the {step} step with this message: {error}.
 needed.worker_blocked: Decide whether to clarify the criterion, give the worker a note, or set the issue aside.
 needed.review_blocked: Decide whether the reviewer is right. If it is, send its findings back to the worker as a repair; if it is not, re-run only the review (with a note or a clarified criterion); or set the issue aside.
@@ -22,6 +24,7 @@ needed.repair_blocked: Decide whether the failing checks are right: if their con
 needed.checks_failed: Look at the failing check logs; if their configuration or environment was wrong, fix it and re-run the checks, otherwise set the issue aside.
 needed.delivery_failed: Look at the delivery packet, fix the renderer or its inputs, then re-run delivery and review.
 needed.budget_exceeded: Decide whether the phase may use more; the recovery records the new allowance.
+needed.contract_changed: Check that the edit is intended. If it is, adopt the edited issue and review the frozen commit against it; if it is not, restore the pinned wording in Linear and resume.
 needed.needs-decision: Look at what changed outside the runner and decide how to reconcile it before resuming.
 needed.technical-block: Look at the failure and decide how to recover.
 needed.environment: Fix the host or service problem (for example refresh the Linear login or free disk space), then resume.

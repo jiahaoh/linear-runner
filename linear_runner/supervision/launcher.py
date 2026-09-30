@@ -69,8 +69,9 @@ from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint
 from linear_runner.supervision import backend_start
 from linear_runner.version import pin_problem
 from linear_runner.supervision.recovery import expected_state
-from linear_runner.engine.runner import (PHASES, Runner, contract_matches, fingerprint, git, now, project_lock,
-                                         resolve_profile, run_id)
+from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, fingerprint, git, now,
+                                         project_lock, resolve_profile, run_id)
+from linear_runner.linear import messages
 from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor, pid_alive
 
 PREFLIGHT_NAME = "preflight.json"
@@ -237,10 +238,19 @@ def _check_linear(runner, supervisor, pending=None):
         runner.verify_issue(live)
         runner.verify_live_state(live, active["step"])
         if not contract_matches(live, active):
-            hint = ("use `recover publish --accept-contract-drift` if only fields outside the accepted criteria and "
-                    "scope changed" if active["step"] in ("publish", "done") else
-                    "use --repin-contract in the recovery if the edit is authorized")
-            raise LaunchError(f"{active['issue_id']} scope/dependencies/ownership changed since intake; {hint}")
+            changed = ", ".join(contract_changes(active["issue"], live)) or "contract fields"
+            if active["step"] in ("publish", "done"):
+                hint = ("use `recover publish --accept-contract-drift` if only fields outside the accepted criteria "
+                        "and scope changed")
+            elif pending["kind"] in ("review", "repair"):
+                # The pending review (the implementation is frozen) or repair would use the old wording.
+                hint = (f"if the edit is authorized, withdraw recovery {pending['id']} with "
+                        f"`{messages.command(runner.ctx, 'recover', 'cancel', auth=True)}` and record it again with "
+                        f"`{messages.command(runner.ctx, 'recover', pending['kind'], '--repin-contract', auth=True)}`")
+            else:
+                hint = "use --repin-contract in the recovery if the edit is authorized"
+            raise LaunchError(f"{active['issue_id']} scope/dependencies/ownership changed since intake ({changed}); "
+                              f"{hint}")
         if active["step"] in ("review", "publish", "done"):
             runner.verify_frozen(active)
         for phase in PHASES:

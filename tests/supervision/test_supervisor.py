@@ -1197,6 +1197,55 @@ class ReviewRepairTests(Harness):
         self.assertIn(json.dumps(clarified), self.prompts[3])  # the fresh review assesses the clarified criteria
         self.assertEqual(self.linear.data["description"], "\n".join(f"- [x] {c}" for c in clarified))
 
+    def test_a_criterion_edited_during_the_repair_pauses_before_the_fresh_review(self):
+        """W-263: after `recover repair --repin-contract` the owner edited a criterion while the
+        repair ran; the fresh review assessed the old pinned wording and blocked again. The runner
+        now stops before that review and names `recover review --repin-contract`."""
+        self.pause_at_blocked_review()
+        self.recover("repair", repin=True)
+        clarified = ["Read and write gene IDs losslessly in CSV and Parquet; CSV rejects control characters",
+                     "Record the worker notes"]
+        def edit(result):
+            self.linear.data["description"] = "\n".join(f"- [ ] {c}" for c in clarified)
+        self.hooks[("DEV-1", "repair")] = edit
+        self.assertEqual(self.launch()["started"]["outcome"], "blocked")
+        self.assertEqual(self.calls, [("DEV-1", "implement"), ("DEV-1", "review"), ("DEV-1", "repair")])
+        state = self.state()
+        stop = state["stops"][-1]
+        self.assertEqual((state["phase"], state["active"]["step"], stop["event"], stop["class"]),
+                         ("paused", "review", "contract_changed", "needs-decision"))
+        self.assertIn("DEV-1: the live acceptance criteria or scope changed after the contract was pinned "
+                      "(acceptance criteria)", stop["error"])
+        self.assertIn("runner.py recover review --repin-contract --batch fixture --home ", stop["error"])
+        self.assertEqual(self.linear.writes[:3], ["In Progress", "In Review", "In Progress"])
+        self.assertNotIn("In Review", self.linear.writes[2:])  # the fresh review never started
+        body = self.linear.last("DEV-1", "blocked")
+        commands = [line.split(" --batch")[0].split("runner.py ")[1] for line in body.splitlines() if "runner.py" in line]
+        self.assertEqual(commands[:2], ["recover review --repin-contract", "recover resume"])
+        # The named recovery adopts the edit; the fresh review assesses the edited criteria.
+        record = self.recover("review", repin=True)
+        self.assertEqual(record["details"]["contract"]["new_criteria"], clarified)
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.calls[3], ("DEV-1", "review"))
+        self.assertIn(json.dumps(clarified), self.prompts[3])
+        self.assertEqual(self.linear.data["description"], "\n".join(f"- [x] {c}" for c in clarified))
+
+    def test_a_pending_repair_or_review_names_its_repin_command_when_the_issue_changed(self):
+        self.pause_at_blocked_review()
+        for kind in ("repair", "review"):
+            with self.subTest(kind=kind):
+                self.linear.data["description"] = "\n".join(f"- [ ] {c}" for c in self.CRITERIA)
+                record = self.recover(kind)
+                self.linear.data["description"] += " (clarified)"
+                with self.assertRaisesRegex(LaunchError, rf"DEV-1 scope/dependencies/ownership changed since intake "
+                                                         rf"\(acceptance criteria\); if the edit is authorized, "
+                                                         rf"withdraw recovery {record['id']} with `python3 \S+ "
+                                                         rf"recover cancel --batch fixture .*` and record it again "
+                                                         rf"with `python3 \S+ recover {kind} --repin-contract "
+                                                         rf"--batch fixture "):
+                    self.launch()
+                self.recover("cancel")
+
     def test_command_line_records_the_repair(self):
         self.pause_at_blocked_review()
         args = ["--batch", str(self.batch), "--home", str(self.home), "--reason", "fixture", "--authorized-by", "Owner"]

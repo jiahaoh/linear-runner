@@ -631,8 +631,20 @@ elsewhere stops the batch for reconciliation.
 `assigneeId`, `projectMilestone` and the `blocks`, `blockedBy` and `duplicateOf` relations
 (`issue_contract`; relations by issue ID only, sorted, so renaming or reordering a blocker or
 duplicate is not a change), and keeps the full issue as the intake snapshot (`active.issue`). Every
-resume, the launch preflight, publication and the lifecycle read-back compare the live issue
-with it; a difference stops the batch. `relatedTo` is not part of it: Linear adds related
+resume, the launch preflight, the start of every review, publication and the lifecycle
+read-back compare the live issue with it; a difference stops the batch. The check before a
+review (a first review, the fresh review after a repair, or `recover review`) reads the issue
+again, because a repair, validation and delivery can take hours after the launch compared it:
+an edit made meanwhile (for example a criterion clarified in Linear while the repair of `recover
+repair --repin-contract` ran) would otherwise be reviewed against the old wording and block
+again. It stops the batch before the issue moves to review or a model runs, with a
+`needs-decision` stop (event `contract_changed`) that names what changed (acceptance criteria,
+description, a scope field or a relation) and the command that adopts the edit and reviews
+the frozen commit, `recover review --repin-contract`; restoring the pinned wording in Linear
+and `recover resume` continues without re-pinning. When a recorded `recover review` or
+`recover repair` is pending and the issue changed since, the launch preflight refuses with
+the two commands to use: `recover cancel`, then the same recovery with `--repin-contract`.
+The stop never re-pins by itself. `relatedTo` is not part of it: Linear adds related
 links by itself whenever a description or comment (the runner's own comments included)
 mentions another issue, and re-creates them from description mentions after removal, so they
 say nothing about scope. Title, labels and status are outside the contract too. State pinned
