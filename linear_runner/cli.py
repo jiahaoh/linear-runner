@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 from linear_runner.config import (PHASES, ConfigError, load_config, pin_resolution, pinned_config, read_json,
-                                  write_json, write_resolved)
+                                  variable_overrides, write_json, write_resolved)
 from linear_runner.engine.runner import LockBusy, Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
 
@@ -34,6 +34,7 @@ def summarize(config):
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
             "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
+            "variable_overrides": variable_overrides(config),
             "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "interface": config.get("_interface"), "layers": config["_layers"]}
 

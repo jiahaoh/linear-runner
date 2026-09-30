@@ -86,6 +86,31 @@ def phase_overrides(overrides, issues, phases, where):
     return overrides
 
 
+def batch_variables(values, site, where):
+    """A batch's ``variables``, resolved as site variables are (``~`` expanded): each must name
+    a site ``variables`` entry, never an executable, a built-in or a new name."""
+    resolved = {}
+    for name, value in values.items():
+        label = f"{where}.variables.{name}"
+        if name in BUILTIN_VARIABLES:
+            raise ConfigError(f"{label}: {name} is a built-in variable and cannot be overridden")
+        if name in site.get("executables", {}):
+            raise ConfigError(f"{label}: {name} is a site executable; a batch may override only site variables")
+        if name not in site.get("variables", {}):
+            raise ConfigError(f"{label}: not a site variable; a batch may override only names site.json defines "
+                              f"under variables ({sorted(site.get('variables', {}))})")
+        resolved[name] = os.path.expanduser(value)
+    return resolved
+
+
+def variable_overrides(config):
+    """``{name: value}`` of the site variables this batch's ``variables`` replaced."""
+    batch_label = f"batch {config['batch_id']}"
+    return {key.removeprefix("variables."): config["variables"][key.removeprefix("variables.")]
+            for key, source in config.get("_sources", {}).items()
+            if key.startswith("variables.") and source == batch_label}
+
+
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -511,6 +536,10 @@ def load_config(batch_path, home=None):
             if name in variables or name in BUILTIN_VARIABLES:
                 raise ConfigError(f"site.{group}.{name}: variable is already defined")
             variables[name] = os.path.expanduser(value)
+    # Batch variables replace site variables of the same name for this batch only. Executables,
+    # built-ins and new names are refused: a new name would hide a misspelt override.
+    overridden = batch_variables(batch.get("variables", {}), site, batch_label)
+    variables.update(overridden)
 
     config = {}
 
@@ -695,7 +724,9 @@ def load_config(batch_path, home=None):
     state_root = _path(site["state_root"], site_path.parent, builtins, "site.state_root")
     put("state_dir", str(state_root / batch["id"]), f"{site_label} + {batch_label}")
     put("variables", variables, site_label)
-    launcher = dict(copy.deepcopy(LAUNCHER_DEFAULTS), **copy.deepcopy(site.get("launcher", {})))
+    for name in overridden:
+        sources[f"variables.{name}"] = batch_label
+    launcher =dict(copy.deepcopy(LAUNCHER_DEFAULTS), **copy.deepcopy(site.get("launcher", {})))
     for key in ("python", "cpu_list"):
         if launcher.get(key) is not None:
             launcher[key] = substitute(launcher[key], variables, f"site.launcher.{key}")

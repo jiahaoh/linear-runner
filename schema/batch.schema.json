@@ -47,6 +47,16 @@
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
+    "variables": {
+      "description": "Values for site variables (site.json variables) that apply to this batch only, for example another Python environment. Each name must be a site variable; executables and the built-ins (home, runner_root, batch, worktree) cannot be overridden. Part of the fingerprinted batch configuration.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/variable"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "guidance_files": {
       "type": "array",
       "items": {
@@ -252,6 +262,10 @@
     "issue": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "variable": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
     }
   }
 }

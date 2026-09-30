@@ -211,6 +211,42 @@ class LayeredConfigTests(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaisesRegex(ConfigError, message):
                 self.load(batch={"phase_overrides": overrides})
 
+    def test_batch_variables_override_site_variables_for_that_batch_only(self):
+        site = {"variables": {"env": "/opt/env-a", "scratch": "/tmp/scratch"}}
+        project = {"check_environment": {"VIRTUAL_ENV": "${env}", "TMPDIR": "${scratch}"}}
+        loaded = self.load(site=site, project=project, batch={"variables": {"env": "~/env-b"}})
+        self.assertEqual(loaded["check_environment"]["VIRTUAL_ENV"], str(Path("~/env-b").expanduser()))
+        self.assertEqual(loaded["check_environment"]["TMPDIR"], "/tmp/scratch")
+        self.assertEqual(loaded["_sources"]["variables.env"], "batch fixture")
+        self.assertEqual(loaded["_sources"]["variables.scratch"], "site")
+        self.assertEqual(config.variable_overrides(loaded), {"env": str(Path("~/env-b").expanduser())})
+        # Another batch on the same site keeps the site value.
+        home = self.root / "home"
+        other = write(home / "batches" / "other.json", {"id": "other", "project": "fixture", "issues": ["DEV-2"],
+                                                        "terminal_issue": "DEV-2", "branch": "runner/other"})
+        plain = load_config(other, home)
+        self.assertEqual(plain["check_environment"]["VIRTUAL_ENV"], "/opt/env-a")
+        self.assertEqual(config.variable_overrides(plain), {})
+        # The override is part of the fingerprint; an empty override leaves it unchanged.
+        baseline = self.load(site=site, project=project)
+        self.assertEqual(config_fingerprint(baseline),
+                         config_fingerprint(self.load(site=site, project=project, batch={"variables": {}})))
+        self.assertNotEqual(config_fingerprint(baseline), config_fingerprint(loaded))
+        cases = [({"env": 3}, "expected string"), ({"bad-name": "/x"}, "invalid value"),
+                 ({"python": "/other/python"}, "site executable"), ({"worktree": "/elsewhere"}, "built-in"),
+                 ({"typo": "/x"}, "not a site variable")]
+        for variables, error in cases:
+            with self.subTest(variables=variables), self.assertRaisesRegex(ConfigError, error):
+                self.load(site=site, project=project, batch={"variables": variables})
+
+    def test_validate_config_lists_batch_variable_overrides(self):
+        home, path = make_home(self.root, self.repo, site={"variables": {"env": "/opt/env-a"}},
+                               batch={"variables": {"env": "/opt/env-b"}})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["validate-config", "--batch", str(path), "--home", str(home)])
+        self.assertEqual(json.loads(out.getvalue())["variable_overrides"], {"env": "/opt/env-b"})
+
     def test_checks_gates_and_paths_are_validated(self):
         check = {"name": "x", "kind": "code", "tier": "default", "inputs": ["*.py"], "cwd": ".", "command": ["true"]}
         cases = [({"project": {"checks": [dict(check, cwd="..")]}}, "inside the worktree"),

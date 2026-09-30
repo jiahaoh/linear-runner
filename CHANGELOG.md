@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+The findings of the §2.6 batches (`W-263`).
+
+### Added
+
+* Batch `variables`: values for site `variables` that apply to that batch only, for example
+  another Python environment for one batch's checks; the operator had to edit `site.json`,
+  which switched every batch on the host. Each name must already be a site variable
+  (executables, the built-ins and new names are refused, so a misspelt name fails). The
+  values are in the configuration fingerprint and `validate-config` lists them under
+  `variable_overrides`. Project impact: none; optional. Canary tier: first-issue checkpoint
+  (configuration).
+
 ## v2.2.1 — 2026-09-29
 
 The findings of the 2.2.0 canary batches (canary-w224-20260929 and canary-w253-20260929, both

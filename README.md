@@ -107,7 +107,7 @@ model does not allow) are errors.
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `runner_version` (see "Releases") |
+| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -150,7 +150,13 @@ file that names them. Paths, check arguments, check environment values and crede
 paths may use `${name}`, where `name` is a site `executables` or `variables` entry or a
 built-in: `home` (the private home), `runner_root` (this checkout), `batch` (the batch
 `id`) and `worktree` (the batch worktree; not usable in `repo`/`worktree` themselves). An
-undefined name is an error. Guidance files may also use `${name}` for host paths; there
+undefined name is an error. A batch's `variables` replace site `variables` of the same name for
+that batch only (`~` is expanded as in the site), for example `{"venv": "~/envs/other"}` to run
+one batch's checks in another Python environment without changing `site.json` for every batch.
+Each name must already be a site variable; executables, the built-ins and new names are refused,
+so a misspelt name fails instead of doing nothing. The values are part of the fingerprinted
+configuration (`recover repin-config` adopts a change), and `validate-config` lists them under
+`variable_overrides`. Guidance files may also use `${name}` for host paths; there
 only defined names are replaced and any other `${...}` text stays literal. `{run_dir}` (no
 dollar sign) in a check argument is still replaced by that check's validation directory at
 run time. Commands are argv arrays; no shell is involved.
