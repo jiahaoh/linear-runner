@@ -67,7 +67,7 @@ class LayeredConfigTests(unittest.TestCase):
         phases = policy["phases"]
         budgets = {name: (p["budget"]["input_tokens"], p["budget"]["output_tokens"], p["budget"]["tool_calls"], p["timeout_seconds"])
                    for name, p in phases["phases"].items()}
-        self.assertEqual(budgets, {"implement": (15_000_000, 150_000, 250, 5400), "repair": (5_000_000, 50_000, 100, 5400),
+        self.assertEqual(budgets, {"implement": (15_000_000, 250_000, 250, 5400), "repair": (5_000_000, 50_000, 100, 5400),
                                    "review": (5_000_000, 40_000, 120, 1800)})
         self.assertEqual((phases["max_repairs"], phases["check_timeout_seconds"]), (2, 1800))
         self.assertEqual(sources["policy.phases.phases.review.budget.input_tokens"], "registry/phases.json")

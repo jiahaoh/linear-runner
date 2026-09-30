@@ -35,6 +35,21 @@ The findings of the §2.6 batches (`W-263`).
   will refresh automatically. Project impact: none; optional (with `credentials_file` only).
   Canary tier: canary batch (the Linear client runs a command during the batch).
 
+### Changed
+
+* Soft budgets judge uncached input: the `input_tokens` limit is compared with `input_tokens`
+  minus `cached_input_tokens` whenever the backend reports a cached figure, for a `ready` and a
+  `blocked` phase alike (it was only a `ready` phase whose other figures were all within
+  budget); without a cached figure the total input is judged as before. `phase-usage.json`
+  records a `budget_note` whenever the total input was over the limit and the uncached input
+  was not, and a stop for input names the uncached figure. The implement output budget is
+  250k (was 150k); repair (50k) and review (40k) are unchanged. Three §2.6 implement
+  checkpoints needed `recover budget` only for this: `W-245` (20.2M input, 19.8M cached,
+  166,709 output, ready), `W-255` (15.9M, 15.7M cached, blocked) and `W-256` (31.1M, 30.7M
+  cached, 183,191 output, blocked). The rule is in `registry/phases.json` notes. Project
+  impact: none; the registry change changes configuration fingerprints, so a paused batch
+  adopts it with `recover repin-config`. Canary tier: canary batch (engine and registry).
+
 ## v2.2.1 — 2026-09-29
 
 The findings of the 2.2.0 canary batches (canary-w224-20260929 and canary-w253-20260929, both

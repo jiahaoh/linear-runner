@@ -2,11 +2,11 @@
   "notes": [
     "Settled policy. Budgets are soft: exceeding one checkpoints the issue for explicit reconciliation.",
     "Batch-3 observed maxima: implement 13.3M input / 75k output / 125 tool calls / 2793 s; review 2.3M input / 16k output / 48 tool calls / 575 s.",
-    "implement 15M/150k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement.",
+    "implement 15M/250k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement. The implement output budget was 150k until W-263: legitimate implement phases wrote 166,709 (W-245, ready) and 183,191 (W-256) output tokens. Repair output stays 50k: no repair near it has been observed.",
     "review 5M/40k/120 matches the last working batch-3 budget; 1800 s is about three times the slowest observed review.",
     "max_repairs 2 is the engine's upper bound, shared across resumes and profiles; each check may run 1800 s.",
     "bounded_sessions holds the thresholds; a batch turns the behavior on with context_controls.bounded_sessions (off by default). A worker session whose cumulative input reached 5M tokens, or the first repair after implement, continues in a fresh session seeded with a handoff file (at most 12,000 bytes) instead of resuming the long one. 5M is where batch-3 implement sessions (the W-170 resume, W-171, W-172) approached the model context window.",
-    "Cached input: a phase that finished ready is not stopped when only its input_tokens exceed the budget and its uncached input (input_tokens minus cached_input_tokens) and every other figure are within budget. A resumed long session rereads its context as cached input on each turn; W-249 implement read 22.2M input of which 21.8M was cached, W-233 repair 6.25M of which 6.21M. The phase's phase-usage.json then records a budget_note. A blocked phase, uncached input over budget or a missing figure still stops.",
+    "Cached input: the input_tokens budget judges uncached input (input_tokens minus cached_input_tokens) whenever the backend reports a cached figure, whatever the phase returned (ready or blocked); without a cached figure it judges total input. A resumed long session rereads its context as cached input on each turn; W-249 implement read 22.2M input of which 21.8M was cached, W-233 repair 6.25M of which 6.21M, and W-245 (ready), W-255 and W-256 (both blocked) implement 20.2M, 15.9M and 31.1M with at most 0.41M uncached (W-263). When total input is over the limit but uncached input is not, phase-usage.json records a budget_note. Uncached input, output or tool calls over budget, or a missing figure, still stop; recover budget --input-tokens sets the uncached limit.",
     "max_timeout_seconds 14400 is the largest phase timeout a batch may set for a named issue (batch phase_overrides, for example a repair that takes browser screenshots: W-249 hit 5400 s).",
     "compact_token_limit is unset for every phase. A phase may set it, and a batch may set context_controls.compact_token_limit for all phases; the runner then passes -c model_auto_compact_token_limit=<N> (a Codex CLI 0.154.0 config key) on fresh and resumed calls."
   ],
@@ -14,7 +14,7 @@
     "implement": {
       "budget": {
         "input_tokens": 15000000,
-        "output_tokens": 150000,
+        "output_tokens": 250000,
         "tool_calls": 250
       },
       "timeout_seconds": 5400

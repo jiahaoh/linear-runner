@@ -657,14 +657,17 @@ session failed before any completed turn and recorded no counter, the resumed at
 figure is its cumulative counter minus the last known one: an upper bound that also holds
 the failed attempt's unreported usage. The budget check uses it as is, so an upper bound
 under budget passes and one over budget checkpoints (the stop says "an upper bound").
-Cached input alone does not stop a finished phase: when a phase returned `ready` for its
-issue and only `input_tokens` exceed the budget, while its uncached input (`input_tokens`
-minus `cached_input_tokens`) and every other figure are within budget, the phase is not
-stopped. A resumed long session rereads its whole context as cached input on every turn
-(`W-249` implement read 22.2M input tokens, 21.8M of them cached, against a 15M budget).
-`phase-usage.json` then records a `budget_note` and the supervisor log says so. A blocked
-phase, uncached input over budget, any other figure over budget or a missing cached figure
-still checkpoints.
+The input budget judges uncached input: whenever the backend reports a cached figure, the
+`input_tokens` limit is compared with `input_tokens` minus `cached_input_tokens`, whatever the
+phase returned (`ready` or `blocked`); without a cached figure it is compared with the total
+input. A resumed long session rereads its whole context as cached input on every turn: `W-249`
+implement read 22.2M input tokens, 21.8M of them cached, and the `W-245` (ready), `W-255` and
+`W-256` (both blocked) implement phases read 20.2M, 15.9M and 31.1M with at most 0.41M uncached,
+against a 15M budget (`W-263`). When the total input is over the limit but the uncached input is
+not, `phase-usage.json` records a `budget_note` and the supervisor log says so. Uncached input,
+output or tool calls over budget, or a missing figure, still checkpoint (the stop names the
+uncached figure); `recover budget --input-tokens` then sets the limit on the same basis. A phase
+that returned `blocked` within budget stops for its own block, not for the budget.
 
 **Phase timeouts per issue.** Each model phase has a hard timeout (`phases.json`,
 `timeout_seconds`). A batch can raise it for a named issue and phase when that phase is

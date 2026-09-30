@@ -465,17 +465,15 @@ def published_contract_matches(live, original):
     return issue_contract(normalized(live)) == issue_contract(normalized(published_issue(original)))
 
 
-def cached_only_overrun(usage, budget, result, issue_id):
-    """True when only cached input put a finished phase over its input budget: the phase
-    returned ``ready`` for its issue, and its uncached input (input minus cached input) and
-    every other figure are within budget (registry ``phases.json`` notes)."""
+def budget_figures(usage):
+    """The figures a soft budget judges: ``input_tokens`` is the uncached input (input minus
+    cached input) whenever the backend reports a cached figure, whatever the phase returned;
+    without one it is the total input (registry ``phases.json`` notes)."""
+    judged = dict(usage)
     cached = usage.get("cached_input_tokens")
-    if not isinstance(result, dict) or result.get("status") != "ready" or result.get("issue_id") != issue_id \
-            or cached is None or usage.get("input_tokens") is None:
-        return False
-    if usage["input_tokens"] - cached > budget["input_tokens"]:
-        return False
-    return all(usage.get(k) is not None and usage[k] <= v for k, v in budget.items() if k != "input_tokens")
+    if usage.get("input_tokens") is not None and cached is not None:
+        judged["input_tokens"] = usage["input_tokens"] - cached
+    return judged
 
 
 def review_criteria(issue):
@@ -1246,17 +1244,17 @@ class Runner:
         # for this issue's phase; it is recorded in state and never reset by resume.
         allowance = active.get("budget_allowances", {}).get(phase)
         budget = allowance["limits"] if allowance else self.policy["phases"]["phases"][phase]["budget"]
-        unknown = sorted(k for k in budget if delta.get(k) is None)
-        over = sorted(k for k, v in budget.items() if delta.get(k) is not None and delta[k] > v)
-        if over == ["input_tokens"] and not unknown and cached_only_overrun(delta, budget, result, active["issue_id"]):
-            # A resumed long session rereads its context as cached input on every turn (W-251):
-            # a finished phase within budget on uncached input is not stopped for that.
-            uncached = delta["input_tokens"] - delta["cached_input_tokens"]
-            delta["budget_note"] = (f"input {delta['input_tokens']} > {budget['input_tokens']}, but only {uncached} "
-                                    "was uncached and the phase finished ready; not stopped for cached input")
+        # A resumed long session rereads its context as cached input on every turn (W-251, W-263),
+        # so the input budget judges uncached input whenever the backend reports a cached figure.
+        judged = budget_figures(delta)
+        unknown = sorted(k for k in budget if judged.get(k) is None)
+        over = sorted(k for k, v in budget.items() if judged.get(k) is not None and judged[k] > v)
+        uncached = delta.get("input_tokens") is not None and delta.get("cached_input_tokens") is not None
+        if uncached and "input_tokens" not in over and delta["input_tokens"] > budget["input_tokens"]:
+            delta["budget_note"] = (f"input {delta['input_tokens']} > {budget['input_tokens']}, but only "
+                                    f"{judged['input_tokens']} was uncached; the input budget judges uncached input")
             write_json(attempt / "phase-usage.json", delta)
             self.log(f"{active['issue_id']}: {phase} {delta['budget_note']}")
-            over = []
         if unknown or over:
             active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget, "basis": delta["basis"]}
             if phase in ("implement", "repair") and result.get("status") == "ready" \
@@ -1268,8 +1266,9 @@ class Runner:
             self.save(active=active)
             if over:
                 bound = " (an upper bound)" if delta["basis"] == "cumulative-upper-bound" else ""
-                message = ("Phase soft budget exceeded: " + ", ".join(f"{k} {delta[k]} > {budget[k]}" for k in over)
-                           + bound + "; reconcile before resume")
+                figures = [f"uncached {k} {judged[k]} > {budget[k]}" if k == "input_tokens" and uncached
+                           else f"{k} {judged[k]} > {budget[k]}" for k in over]
+                message = "Phase soft budget exceeded: " + ", ".join(figures) + bound + "; reconcile before resume"
             else:
                 message = ("Phase soft budget telemetry unavailable: the attempt reported no usage for "
                            + ", ".join(unknown) + "; reconcile before resume")

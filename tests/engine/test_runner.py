@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linear_runner.config import load_config, pin_resolution
+from linear_runner.config import load_config, load_registry, pin_resolution
 from tests.fixtures import FakeLinear, make_home
 from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
@@ -984,12 +984,14 @@ class EngineTests(unittest.TestCase):
             "reasoning_output_tokens": 22_663}
 
     def replay_implement(self, steps):
-        """Implement attempts in one session: each step is (usage counter or None, finished)."""
+        """Implement attempts in one session: each step is (usage counter or None, finished), or
+        (counter, finished, {"status", "tool_calls"}) for a finished attempt's status and tool calls."""
         original = self.runner.run_session
         def session(prompt, directory, **kwargs):
             if not Path(directory).name.startswith("implement"):
                 return original(prompt, directory, **kwargs)
-            counter, finished = steps.pop(0)
+            counter, finished, *rest = steps.pop(0)
+            outcome = rest[0] if rest else {}
             self.calls.append("implement")
             Path(directory).mkdir(parents=True)
             (self.repo / "result.txt").write_text("ready")
@@ -1001,9 +1003,12 @@ class EngineTests(unittest.TestCase):
                 self.runner.state["active"]["session_id"] = identity
                 self.runner.save()
                 raise RuntimeError(f"Codex failed or did not finish a turn; see {directory}")
-            result = {"issue_id": "DEV-1", "status": "ready", "commit": "", "summary": "Ready", "limitations": [],
-                      "acceptance": [{"criterion": "Produce validated output", "satisfied": True, "evidence": "ok"}]}
-            return result, [], identity
+            status = outcome.get("status", "ready")
+            result = {"issue_id": "DEV-1", "status": status, "commit": "", "summary": status.capitalize(),
+                      "limitations": [], "acceptance": [{"criterion": "Produce validated output",
+                                                         "satisfied": status == "ready", "evidence": "ok"}]}
+            events = [{"type": "item.completed", "item": {"type": "command_execution"}}] * outcome.get("tool_calls", 0)
+            return result, events, identity
         self.runner.run_session = session
 
     def implement_usage(self):
@@ -1037,7 +1042,8 @@ class EngineTests(unittest.TestCase):
         self.replay_implement([(None, False), (self.W193, True)])
         with self.assertRaisesRegex(RuntimeError, "did not finish a turn"):
             self.runner.execute(limit=1)
-        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: input_tokens 1602748 > 100000 \(an upper bound\)"):
+        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: uncached input_tokens 103356 > 100000 "
+                                                  r"\(an upper bound\)"):
             self.runner.execute(limit=1, resume=True)
         exceeded = self.runner.state["active"]["budget_exceeded"]
         self.assertEqual((exceeded["basis"], exceeded["observed"]["input_tokens"]), ("cumulative-upper-bound", 1_602_748))
@@ -1056,26 +1062,75 @@ class EngineTests(unittest.TestCase):
         [usage] = self.implement_usage()
         self.assertIn("only 400000 was uncached", usage["budget_note"])
 
-    def test_cached_only_overrun_rule(self):
-        from linear_runner.engine.runner import cached_only_overrun
-        implement = {"input_tokens": 15_000_000, "output_tokens": 150_000, "tool_calls": 250}
-        repair = {"input_tokens": 5_000_000, "output_tokens": 50_000, "tool_calls": 100}
-        ready = {"status": "ready", "issue_id": "DEV-1"}
-        w249_repair = {"input_tokens": 16_800_000, "cached_input_tokens": 15_600_000, "output_tokens": 40_000,
-                       "tool_calls": 60}
-        w233_repair = {"input_tokens": 6_250_000, "cached_input_tokens": 6_210_000, "output_tokens": 20_000,
-                       "tool_calls": 30}
-        w249_implement = dict(self.W249_IMPLEMENT, tool_calls=120)
-        for usage, budget in ((w249_implement, implement), (w249_repair, repair), (w233_repair, repair)):
+    # W-263: implement checkpoints that stopped only for cached input or for output within the
+    # raised output budget (registry implement budget: 15M input, 250k output, 250 tool calls).
+    W245 = ({"input_tokens": 20_175_546, "cached_input_tokens": 19_801_428, "output_tokens": 166_709}, 98, "ready")
+    W255 = ({"input_tokens": 15_946_775, "cached_input_tokens": 15_664_806, "output_tokens": 127_677}, 87, "blocked")
+    W256 = ({"input_tokens": 31_131_630, "cached_input_tokens": 30_724_111, "output_tokens": 183_191}, 124, "blocked")
+
+    def registry_budget(self, **changes):
+        policy, _, _ = load_registry(self.root / "no-home")
+        budget = policy["phases"]["phases"]["implement"]["budget"]
+        self.assertEqual(budget, {"input_tokens": 15_000_000, "output_tokens": 250_000, "tool_calls": 250})
+        self.policy["phases"]["phases"]["implement"]["budget"] = dict(budget, **changes)
+
+    def test_the_w263_implement_figures_no_longer_checkpoint_under_the_registry_budget(self):
+        for usage, tool_calls, status in (self.W245, self.W255, self.W256):
             with self.subTest(usage=usage):
-                self.assertTrue(cached_only_overrun(usage, budget, ready, "DEV-1"))
-                self.assertFalse(cached_only_overrun(usage, budget, dict(ready, status="blocked"), "DEV-1"))
-                self.assertFalse(cached_only_overrun(usage, budget, ready, "DEV-2"))
-        # Uncached input over budget, another figure over budget, or no cached figure: stopped.
-        self.assertFalse(cached_only_overrun(dict(w249_repair, cached_input_tokens=11_000_000), repair, ready, "DEV-1"))
-        self.assertFalse(cached_only_overrun(dict(w249_repair, output_tokens=60_000), repair, ready, "DEV-1"))
-        self.assertFalse(cached_only_overrun(dict(w249_repair, tool_calls=None), repair, ready, "DEV-1"))
-        self.assertFalse(cached_only_overrun(dict(w249_repair, cached_input_tokens=None), repair, ready, "DEV-1"))
+                self.setUp()
+                self.registry_budget()
+                self.replay_implement([(usage, True, {"status": status, "tool_calls": tool_calls})])
+                if status == "ready":
+                    self.runner.execute(limit=1)
+                    self.assertEqual(self.runner.state["phase"], "queue_complete")
+                else:  # the phase's own block, not a budget checkpoint
+                    with self.assertRaisesRegex(RuntimeError, "Worker reported blocked"):
+                        self.runner.execute(limit=1)
+                    self.assertNotIn("budget_exceeded", self.runner.state["active"])
+                [recorded] = self.implement_usage()
+                self.assertEqual(recorded["tool_calls"], tool_calls)
+                uncached = usage["input_tokens"] - usage["cached_input_tokens"]
+                self.assertEqual(recorded["budget_note"],
+                                 f"input {usage['input_tokens']} > 15000000, but only {uncached} was uncached; "
+                                 "the input budget judges uncached input")
+
+    def test_uncached_input_or_output_over_budget_still_checkpoints_a_blocked_or_ready_phase(self):
+        usage, tool_calls, _ = self.W256
+        self.registry_budget(input_tokens=400_000)  # below W-256's 407,519 uncached input
+        self.replay_implement([(usage, True, {"status": "blocked", "tool_calls": tool_calls})])
+        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: uncached input_tokens 407519 > 400000; "):
+            self.runner.execute(limit=1)
+        exceeded = self.runner.state["active"]["budget_exceeded"]
+        self.assertEqual(exceeded["observed"]["input_tokens"], 31_131_630)  # the checkpoint keeps the totals
+        self.assertNotIn("ready_result", exceeded)
+        self.setUp()
+        usage, tool_calls, _ = self.W245
+        self.registry_budget(output_tokens=150_000)
+        self.replay_implement([(usage, True, {"status": "ready", "tool_calls": tool_calls})])
+        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: output_tokens 166709 > 150000; "):
+            self.runner.execute(limit=1)
+        self.assertIn("ready_result", self.runner.state["active"]["budget_exceeded"])
+        [recorded] = self.implement_usage()
+        self.assertIn("was uncached", recorded["budget_note"])  # input alone was within budget
+
+    def test_without_a_cached_figure_the_budget_judges_total_input(self):
+        usage, tool_calls, _ = self.W245
+        self.registry_budget()
+        total_only = {k: v for k, v in usage.items() if k != "cached_input_tokens"}
+        self.replay_implement([(total_only, True, {"status": "ready", "tool_calls": tool_calls})])
+        with self.assertRaisesRegex(RuntimeError, r"soft budget exceeded: input_tokens 20175546 > 15000000; "):
+            self.runner.execute(limit=1)
+        [recorded] = self.implement_usage()
+        self.assertNotIn("budget_note", recorded)
+
+    def test_budget_figures_judge_uncached_input_when_it_is_known(self):
+        from linear_runner.engine.runner import budget_figures
+        usage = {"input_tokens": 6_250_000, "cached_input_tokens": 6_210_000, "output_tokens": 20_000}
+        self.assertEqual(budget_figures(usage), dict(usage, input_tokens=40_000))
+        self.assertEqual(usage["input_tokens"], 6_250_000)  # the usage itself is unchanged
+        for missing in ({"cached_input_tokens": None}, {"input_tokens": None}):
+            self.assertEqual(budget_figures(dict(usage, **missing))["input_tokens"],
+                             dict(usage, **missing)["input_tokens"])
 
     def test_current_attempt_without_a_counter_is_unavailable_never_zero(self):
         self.canary_budget()
