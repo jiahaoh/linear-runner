@@ -15,6 +15,67 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+The findings of the §2.7 batches (s27-spec-20260930, s27-impl-20261001, s27-notebook-20261001
+and s27-rename-20261001, all complete; `W-282`). The four batches took about 18 hours: 6 of
+them in 15 validation rounds, and 6 of the 11 unplanned pauses had runner or process causes.
+
+### Added
+
+* Check `timeout_seconds`: a project check may set its own time limit, up to the registry's
+  new `max_check_timeout_seconds` (7200); a check without one keeps `check_timeout_seconds`
+  (1800). A check that exceeds its limit is stopped and fails with exit code 124 and a note.
+  `W-274`'s validation module needed about 2217 s at one thread and had to be split by test
+  selection. `validate-config` lists every check's tier, limit and last-issue rule under
+  `checks`. Project impact: none; optional. The registry gains a key, which changes
+  configuration fingerprints: a paused batch adopts it with `recover repin-config`. Canary
+  tier: canary batch (engine).
+* Check `last_issue`: an extended check with `"last_issue": "when_changed"` runs at the
+  batch's last issue only if a file changed since the batch's base revision matches its
+  `inputs`. Otherwise it is recorded as `status: "skipped"` with its reason, counts as
+  passing, is listed under "Not applicable" in the validation comment and is no evidence for
+  a required check. Before, the last issue ran every extended check whatever its inputs: a
+  notebook (`W-275`) and a rename (`W-277`) each paid for 36 minutes of detector validation
+  per round. Without the option nothing changes. Project impact: none; optional. Canary
+  tier: canary batch (engine).
+* `recover repin-config --append-issues`: a paused, checkpointed or complete batch adopts
+  issues added at the end of its allowlist, with a new `terminal_issue`. An inserted,
+  reordered, removed or replaced issue is still refused, and so is an appended issue without
+  the flag. The record names the appended issues; earlier history, usage and evidence stay,
+  and the earlier completion record is dropped so the batch reports complete again. Before,
+  `W-275` and `W-277` each needed a batch, branch and worktree of their own. Project impact:
+  none. Canary tier: canary batch (recovery and supervisor).
+
+### Changed
+
+* The `blocks` relation is no longer part of the issue contract; `blockedBy` and
+  `duplicateOf` still are. `blocks` mirrors another issue's `blockedBy`, so creating an issue
+  that waits for a running one changed the running issue's contract: `W-270` stopped before
+  its review and needed `recover review --repin-contract`, with its description and criteria
+  unchanged. The check before a review now logs a `blocks` change and continues. State pinned
+  by runner 2.1.0 to 2.3.0 verifies under the earlier formula, so a paused batch continues.
+  Project impact: none. Canary tier: canary batch (engine).
+* Review coverage is judged on the pinned wording after aligning copy marks: a returned
+  criterion that differs from a pinned one only by Markdown code or emphasis markers,
+  backslash escapes, Linear issue-mention markup, typographic quotes or ellipses, or
+  whitespace covers it, gets the pinned wording, and the returned text is logged. The second
+  review of `W-273` returned `ready` with all nine criteria satisfied but had dropped two
+  pairs of backticks, and the batch paused with "Reviewer omitted original checklist criteria
+  (1 missing; 9 returned)". A missing, reworded, repeated or unexpected criterion still
+  fails; pinned criteria that differ only by such marks keep exact matching. Project impact:
+  none. Canary tier: canary batch (engine).
+
+### Fixed
+
+* Check evidence survives a relaunch. The evidence key hashed the supervisor's whole
+  inherited environment, including `INVOCATION_ID` and the other variables systemd sets anew
+  for every unit. Every recovery needs a new launch, so after a recovery every check ran
+  again even when nothing had changed: both `W-266` repairs changed no worktree file and
+  still reran the default checks. The key now leaves those variables out. It is also taken
+  after a round of checks has run, because checks write ignored files that broad `inputs`
+  match (a test cache, generated documentation sources) and the first round's key was stale
+  at once. Project impact: none; saved evidence from an earlier runner is not reused once.
+  Canary tier: canary batch (engine).
+
 ## v2.3.0 — 2026-09-30
 
 The findings of the §2.6 batches (s26-spec-20260929, s26-impl-20260930, s26-notebook-20260930
