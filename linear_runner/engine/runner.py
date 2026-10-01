@@ -348,8 +348,12 @@ def attempt_usage(directory):
 # The issue contract: what the runner was authorized to do and what the reviewer accepted.
 # Linear creates ``relatedTo`` links by itself whenever a description or comment mentions
 # another issue (including the runner's own comments), so related links are not scope.
+# ``blocks`` is not scope either: it is the mirror of another issue's ``blockedBy``, so it
+# changes whenever someone creates an issue that waits for this one (W-282).
 CONTRACT_FIELDS = ("id", "description", "projectId", "assigneeId", "projectMilestone")
-CONTRACT_RELATIONS = ("blocks", "blockedBy", "duplicateOf")
+CONTRACT_RELATIONS = ("blockedBy", "duplicateOf")
+# The relations runner versions up to 2.3.0 pinned; used only to verify hashes they stored.
+EARLIER_CONTRACT_RELATIONS = ("blocks", "blockedBy", "duplicateOf")
 
 
 def _relation_ids(value):
@@ -381,11 +385,20 @@ def legacy_issue_contract(issue):
 
 
 def titled_issue_contract(issue):
-    """The intermediate W-194 form: CONTRACT_RELATIONS as stored (titles and order included).
-    Used only to check a stored hash against its snapshot."""
+    """The intermediate W-194 form: EARLIER_CONTRACT_RELATIONS as stored (titles and order
+    included). Used only to check a stored hash against its snapshot."""
     relations = issue.get("relations") or {}
     return hashlib.sha256(json.dumps(dict({k: issue.get(k) for k in CONTRACT_FIELDS},
-                                          relations={k: relations.get(k) for k in CONTRACT_RELATIONS}),
+                                          relations={k: relations.get(k) for k in EARLIER_CONTRACT_RELATIONS}),
+                                     sort_keys=True).encode()).hexdigest()
+
+
+def blocks_issue_contract(issue):
+    """The form of runner 2.1.0 to 2.3.0: EARLIER_CONTRACT_RELATIONS by issue ID, ``blocks``
+    included. Used only to check a stored hash against its snapshot."""
+    relations = issue.get("relations") or {}
+    return hashlib.sha256(json.dumps(dict({k: issue.get(k) for k in CONTRACT_FIELDS},
+                                          relations={k: _relation_ids(relations.get(k)) for k in EARLIER_CONTRACT_RELATIONS}),
                                      sort_keys=True).encode()).hexdigest()
 
 
@@ -394,13 +407,14 @@ def pinned_contract(active):
 
     It is recomputed from the stored intake snapshot (``active["issue"]``) rather than taken
     from the stored hash, so state pinned by an older runner (whose hash included related
-    links and relation titles) is compared with the same field set as the live issue. The
-    stored hash must still match that snapshot under the current, the titled or the legacy
-    formula; otherwise the snapshot is not the one that was pinned and nothing is compared.
+    links, relation titles or the ``blocks`` relation) is compared with the same field set as
+    the live issue. The stored hash must still match that snapshot under the current formula or
+    an earlier one; otherwise the snapshot is not the one that was pinned and nothing is compared.
     """
     snapshot = active["issue"]
     current = issue_contract(snapshot)
-    if active.get("contract") not in (current, titled_issue_contract(snapshot), legacy_issue_contract(snapshot)):
+    if active.get("contract") not in (current, blocks_issue_contract(snapshot), titled_issue_contract(snapshot),
+                                      legacy_issue_contract(snapshot)):
         raise RuntimeError("The saved intake snapshot does not match its pinned contract hash (the scope record "
                            "changed outside the runner); reconcile intake")
     return current
@@ -426,6 +440,14 @@ def contract_changes(pinned, live):
         changed.append("description")
     changed += [k for k in CONTRACT_FIELDS if k != "description" and old[k] != new[k]]
     return changed + [f"relations.{k}" for k in CONTRACT_RELATIONS if old["relations"][k] != new["relations"][k]]
+
+
+def blocks_changes(pinned, live):
+    """How the ``blocks`` relation differs between the pinned snapshot and the live issue, as
+    ``(added, removed)`` issue IDs. ``blocks`` is outside the contract; this is only logged."""
+    old = set(_relation_ids((pinned.get("relations") or {}).get("blocks") or []))
+    new = set(_relation_ids((live.get("relations") or {}).get("blocks") or []))
+    return sorted(new - old), sorted(old - new)
 
 
 def published_issue(issue):
@@ -1608,6 +1630,13 @@ class Runner:
             live = self.linear.issue(issue)
             self.verify_issue(live)
         if contract_matches(live, active):
+            added, removed = blocks_changes(active["issue"], live)
+            if added or removed:
+                # Another issue started or stopped waiting for this one: not this issue's scope.
+                self.log(f"{issue}: the blocks relation changed after the contract was pinned"
+                         f"{' (added ' + ', '.join(added) + ')' if added else ''}"
+                         f"{' (removed ' + ', '.join(removed) + ')' if removed else ''}; "
+                         "it is not part of the contract, so the review proceeds")
             return
         changed = contract_changes(active["issue"], live) or ["contract fields"]
         repin = messages.command(self.ctx, "recover", "review", "--repin-contract", auth=True)

@@ -433,10 +433,11 @@ nothing and never creates a second template.
   an unrelated issue. Describe future work in words and add the link once the issue exists.
 * Scope batch guidance rules precisely: name the issues, phases or paths a rule applies to, so
   a rule written for one issue does not constrain or block another.
-* Do not add or remove `blocks`, `blockedBy` or `duplicateOf` relations on an issue while a
-  batch runs it: they are part of its pinned contract, so the next launch refuses the changed
-  issue (after acceptance even `--accept-contract-drift` does). Add the relation from the new
-  issue once the running one is Done (the 2.2.0 canary).
+* Do not add or remove `blockedBy` or `duplicateOf` relations on an issue while a batch runs
+  it: they are part of its pinned contract, so the next launch refuses the changed issue
+  (after acceptance even `--accept-contract-drift` does). A new issue may declare itself
+  blocked by a running one: that only changes the running issue's `blocks` relation, which is
+  outside the contract and is logged.
 
 ## Running a batch
 
@@ -628,7 +629,7 @@ elsewhere stops the batch for reconciliation.
    It never closes a human gate or the project.
 
 **Issue contract.** Intake pins a SHA-256 of the issue's `id`, `description`, `projectId`,
-`assigneeId`, `projectMilestone` and the `blocks`, `blockedBy` and `duplicateOf` relations
+`assigneeId`, `projectMilestone` and the `blockedBy` and `duplicateOf` relations
 (`issue_contract`; relations by issue ID only, sorted, so renaming or reordering a blocker or
 duplicate is not a change), and keeps the full issue as the intake snapshot (`active.issue`). Every
 resume, the launch preflight, the start of every review, publication and the lifecycle
@@ -647,10 +648,13 @@ the two commands to use: `recover cancel`, then the same recovery with `--repin-
 The stop never re-pins by itself. `relatedTo` is not part of it: Linear adds related
 links by itself whenever a description or comment (the runner's own comments included)
 mentions another issue, and re-creates them from description mentions after removal, so they
-say nothing about scope. Title, labels and status are outside the contract too. State pinned
-by an earlier runner version stored a hash that included the related links and relation
-titles; the runner checks that stored hash against the intake snapshot (under the current or
-an earlier formula) and then
+say nothing about scope. `blocks` is not part of it either: it is the mirror of another
+issue's `blockedBy`, so it changes whenever someone creates an issue that waits for this one
+(a later human review, for example). The check before a review logs such a change and
+continues. Title, labels and status are outside the contract too. State pinned
+by an earlier runner version stored a hash that included the related links, relation
+titles or the `blocks` relation; the runner checks that stored hash against the intake
+snapshot (under the current or an earlier formula) and then
 compares the snapshot and the live issue with the current field set, so a paused batch
 continues without a new batch.
 
@@ -1187,7 +1191,7 @@ previous intake and issue beside it. After acceptance the one re-pin is `recover
 --accept-contract-drift`: it reads the live issue and re-pins the contract only if the
 acceptance criteria (the checklist items the reviewer accepted) and every scope field
 (`description`, `projectId`, `assigneeId`, `projectMilestone`, and the issue IDs of the
-`blocks`, `blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
+`blockedBy` and `duplicateOf` relations) are byte-identical to the accepted snapshot; the
 description may differ only as publication does (ticks, Linear's emphasis markers and issue-mention markup, as in
 step 9 of "Lifecycle"). Otherwise it refuses and
 names the changed fields: a changed criterion or scope needs a new independent review

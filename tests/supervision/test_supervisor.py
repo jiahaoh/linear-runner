@@ -612,7 +612,6 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
                  ({"projectId": "other"}, "projectId"),
                  ({"assigneeId": "someone"}, "assigneeId"),
                  ({"relations": {"blockedBy": [{"id": "NEW-1"}]}}, "relations.blockedBy"),
-                 ({"relations": {"blockedBy": [], "blocks": [{"id": "DEV-2"}]}}, "relations.blocks"),
                  ({"relations": {"blockedBy": [], "duplicateOf": {"id": "DEV-3"}}}, "relations.duplicateOf")]
         state = self.state()
         for change, named in cases:

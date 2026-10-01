@@ -687,7 +687,10 @@ class EngineTests(unittest.TestCase):
                                  pinned)
         removed = dict(issue, relations={k: v for k, v in issue["relations"].items()})
         self.assertEqual(issue_contract(removed), pinned)
-        changes = {"blocks": [{"id": "NEXT-1"}], "blockedBy": [], "duplicateOf": {"id": "DUP-1"}}
+        # blocks mirrors another issue's blockedBy: outside the contract too (W-282).
+        self.assertEqual(issue_contract(dict(issue, relations=dict(issue["relations"], blocks=[{"id": "NEXT-1"}]))),
+                         pinned)
+        changes = {"blockedBy": [], "duplicateOf": {"id": "DUP-1"}}
         for relation, value in changes.items():
             with self.subTest(relation=relation):
                 self.assertNotEqual(issue_contract(dict(issue, relations=dict(issue["relations"], **{relation: value}))),
@@ -711,7 +714,10 @@ class EngineTests(unittest.TestCase):
         unchanged = {"renamed blocker": variant(blockedBy=[{"id": "PRE-1", "title": "Prerequisite, renamed"}]),
                      "renamed blocked issue": variant(blocks=[{"id": "NEXT-2", "title": "Renamed"},
                                                               {"id": "NEXT-1", "title": "First"}]),
-                     "reordered": variant(blocks=[{"id": "NEXT-1", "title": "First"}, {"id": "NEXT-2", "title": "Second"}])}
+                     "reordered": variant(blocks=[{"id": "NEXT-1", "title": "First"}, {"id": "NEXT-2", "title": "Second"}]),
+                     # W-282: blocks mirrors another issue's blockedBy, so it is not this issue's scope.
+                     "removed blocked issue": variant(blocks=[{"id": "NEXT-1", "title": "First"}]),
+                     "added blocked issue": variant(blocks=[{"id": "NEXT-2"}, {"id": "NEXT-1"}, {"id": "NEXT-3"}])}
         for name, other in unchanged.items():
             with self.subTest(name):
                 self.assertEqual(issue_contract(other), pinned)
@@ -722,21 +728,20 @@ class EngineTests(unittest.TestCase):
                                                        {"id": "PRE-2", "title": "Another"}]),
                    "removed blocker": variant(blockedBy=[]),
                    "replaced blocker": variant(blockedBy=[{"id": "PRE-9", "title": "Prerequisite"}]),
-                   "removed blocked issue": variant(blocks=[{"id": "NEXT-1", "title": "First"}]),
                    "duplicate set": duplicate}
         for name, other in changed.items():
             with self.subTest(name):
                 self.assertNotEqual(issue_contract(other), pinned)
 
     def test_old_pinned_forms_verify_and_a_renamed_blocker_passes(self):
-        from linear_runner.engine.runner import (contract_matches, legacy_issue_contract, pinned_contract,
-                                                 titled_issue_contract)
+        from linear_runner.engine.runner import (blocks_issue_contract, contract_matches, legacy_issue_contract,
+                                                 pinned_contract, titled_issue_contract)
         snapshot = dict(copy.deepcopy(self.linear.data), relations={
             "blocks": [], "blockedBy": [{"id": "PRE-1", "title": "Prerequisite"}], "duplicateOf": None,
             "relatedTo": list(self.RELATED)})
         live = dict(copy.deepcopy(snapshot), relations=dict(copy.deepcopy(snapshot["relations"]),
                                                             blockedBy=[{"id": "PRE-1", "title": "Renamed"}], relatedTo=[]))
-        for form in (issue_contract, titled_issue_contract, legacy_issue_contract):
+        for form in (issue_contract, blocks_issue_contract, titled_issue_contract, legacy_issue_contract):
             with self.subTest(form=form.__name__):
                 active = {"issue": snapshot, "contract": form(snapshot), "step": "review"}
                 self.assertEqual(pinned_contract(active), issue_contract(snapshot))
@@ -830,6 +835,32 @@ class EngineTests(unittest.TestCase):
         self.runner.execute(limit=1, resume=True)
         self.assertEqual(self.calls, ["implement", "review"])
         self.assertEqual(self.linear.data["statusType"], "completed")
+
+    def test_a_new_blocks_relation_after_the_pin_does_not_pause_the_review(self):
+        # W-282 (W-270): an issue created while this one ran declared itself blocked by it.
+        from linear_runner.engine.runner import blocks_issue_contract
+        original = self.runner.run_session
+        def relate_during_implement(prompt, directory, **kwargs):
+            value = original(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("implement"):
+                self.linear.data["relations"]["blocks"] = [{"id": "NEXT-9", "title": "A later human review"}]
+            return value
+        self.runner.run_session = relate_during_implement
+        logged = []
+        self.runner.log = logged.append
+        self.runner.execute(limit=1)
+        self.assertEqual(self.calls, ["implement", "review"])
+        self.assertEqual(self.linear.data["statusType"], "completed")
+        self.assertEqual([line for line in logged if "blocks relation" in line],
+                         ["DEV-1: the blocks relation changed after the contract was pinned (added NEXT-9); "
+                          "it is not part of the contract, so the review proceeds"])
+        # State pinned by runner 2.3.0, whose hash covered blocks, still verifies and still matches.
+        snapshot = dict(copy.deepcopy(self.linear.data), relations={"blocks": [], "blockedBy": [], "duplicateOf": None})
+        active = {"issue": snapshot, "contract": blocks_issue_contract(snapshot), "step": "review"}
+        live = dict(snapshot, relations=dict(snapshot["relations"], blocks=[{"id": "NEXT-9"}]))
+        from linear_runner.engine.runner import contract_changes, contract_matches
+        self.assertTrue(contract_matches(live, active))
+        self.assertEqual(contract_changes(snapshot, live), [])
 
     def test_an_edit_before_a_resumed_review_pauses_before_the_model_call(self):
         original = self.runner.run_session
