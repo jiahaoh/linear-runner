@@ -157,9 +157,12 @@ def build_parser():
                               "scope changed (refused, naming the fields, otherwise)")
     kinds.add_parser("cancel", parents=[common, authority],
                      help="withdraw a pending recovery that was not launched (works even after the configuration changed)")
-    kinds.add_parser("repin-config", parents=[common, authority],
-                     help="adopt a changed configuration and/or runner commit for a paused or stopped batch "
-                          "(applied at once; record the recovery the state needs afterwards)")
+    repin_config = kinds.add_parser("repin-config", parents=[common, authority],
+                                    help="adopt a changed configuration and/or runner commit for a paused or stopped "
+                                         "batch (applied at once; record the recovery the state needs afterwards)")
+    repin_config.add_argument("--append-issues", action="store_true",
+                              help="also adopt issues added at the end of the batch's allowlist (and a new "
+                                   "terminal_issue); earlier issues, their order and their history stay as they are")
     defer_issue = kinds.add_parser("defer", parents=[common, authority], help="defer an issue; the queue continues without it")
     defer_issue.add_argument("--issue", required=True)
     defer_issue.add_argument("--restore-worktree", action="store_true",
@@ -425,7 +428,7 @@ def supervised_command(parser, args, config, linear):
     if args.command == "recover" and args.kind == "repin-config":
         # The one recovery that runs against a configuration that differs from the pinned one.
         return locked_recovery(parser, root, lambda: recovery.recover_repin_config(
-            config, linear, reason=args.reason, authorized_by=args.authorized_by))
+            config, linear, reason=args.reason, authorized_by=args.authorized_by, append_issues=args.append_issues))
     if args.command == "recover" and args.kind == "cancel":
         # Withdrawing a pending record changes no work: it runs against the pinned configuration,
         # so a configuration edited since pinning never blocks it (then `repin-config` adopts it).

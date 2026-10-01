@@ -1163,6 +1163,7 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | Restore a deferred, parked issue | `recover resume --batch $B --issue ISSUE --reason R --authorized-by A` |
 | Withdraw a recovery that was not launched (works even after the configuration changed) | `recover cancel --batch $B --reason R --authorized-by A` |
 | Adopt a changed configuration and/or a newer runner commit (paused or stopped batch; applied at once, then record the recovery the state needs) | `recover repin-config --batch $B --reason R --authorized-by A` |
+| Add issues at the end of a paused, checkpointed or complete batch (see "Adding issues to a batch") | `recover repin-config --append-issues --batch $B --reason R --authorized-by A`, then `launch --clear-stop` |
 | A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A` |
 
 Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
@@ -1249,7 +1250,7 @@ names live and requires them to resolve to the pinned IDs, then:
 * refuses any change to the batch identity, which needs a new batch `id`: the batch id, the
   issue allowlist and its order, the project file, the Linear project, workspace and
   assignee names, the resolved project and assignee IDs, the worktree, the branch and the
-  state directory;
+  state directory (the one exception is `--append-issues`, below);
 * refuses a changed check definition (or check environment) while the active issue is at
   `commit`, `delivery`, `review`, `publish` or `done`, whose evidence was validated by the
   pinned checks (finish or defer it first);
@@ -1274,6 +1275,27 @@ python3 runner.py launch --batch $B
 
 A stopped batch with nothing paused needs only `repin-config` and then `launch --clear-stop`.
 To undo a re-pin, restore the files and re-pin again; every pin stays recorded.
+
+**Adding issues to a batch.** A follow-up issue (a notebook that presents the batch's work,
+a rename found in review) does not need its own batch, branch and worktree. While the batch
+is paused, at a checkpoint or complete, add the issues at the end of `issues` in the batch
+file, set `terminal_issue` if it changes, and adopt the edit:
+
+```bash
+python3 runner.py recover repin-config --append-issues --batch $B --reason R --authorized-by A
+python3 runner.py launch --batch $B --clear-stop
+```
+
+`--append-issues` accepts only the pinned allowlist followed by further, distinct issues.
+An inserted, reordered, removed or replaced issue is refused as before, and so is an
+appended issue without the flag (the message names the flag). The record names the appended
+issues with its reason and authorizer. Earlier issues keep their history, usage, repairs and
+evidence. The added issues run on the same branch, on top of the accepted commits. The new
+last issue takes over the last-issue rule of the extended checks, and the new
+`terminal_issue` gets the batch-finished comment; an earlier completion record is dropped,
+so the batch reports complete again once the added issues are Done. Other configuration
+edits in the same re-pin (guidance, `phase_overrides` for the new issues) are adopted with
+it. Start a new batch instead when the follow-up needs another base revision or branch.
 
 Verify no previous child is alive before recovering (recoveries and launch refuse a live
 recorded PID). Never delete state or reset the worktree to clear a failure. The lock

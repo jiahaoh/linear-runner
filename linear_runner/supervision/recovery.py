@@ -50,7 +50,10 @@ No command accepts work, deletes history or resets usage, repair or escalation c
   evidence whose definition changed. Record it first, then the recovery the paused state
   needs (for example ``revalidate``), then launch. It refuses while a recovery is pending
   and never changes the batch identity (issue allowlist and order, project, workspace,
-  assignee, worktree, branch, state directory, resolved Linear IDs).
+  assignee, worktree, branch, state directory, resolved Linear IDs), with one exception:
+  with ``--append-issues`` it adopts an allowlist that is the pinned one plus further issues
+  at its end. The earlier issues, their order, history, usage and evidence are untouched; the
+  new last issue and ``terminal_issue`` take over the last-issue and reporting rules.
 """
 from __future__ import annotations
 
@@ -593,10 +596,21 @@ def _changed_checks(old, new):
     return sorted(name for name, spec in before.items() if after.get(name) != spec)
 
 
-def recover_repin_config(config, linear, *, reason, authorized_by):
+def appended_issues(old, new):
+    """The issues ``new`` adds at the end of the allowlist ``old``; ``None`` when ``new`` is not
+    ``old`` followed by at least one further, distinct issue."""
+    old, new = list(old or []), list(new or [])
+    extra = new[len(old):]
+    if new[:len(old)] != old or not extra or len(set(new)) != len(new):
+        return None
+    return extra
+
+
+def recover_repin_config(config, linear, *, reason, authorized_by, append_issues=False):
     """Adopt the current configuration (and runner commit) for a paused or stopped batch.
 
     ``config`` is freshly loaded (``load_config``). Applied at once; see the module notes.
+    ``append_issues``: also adopt issues added at the end of the allowlist (W-282).
     """
     from linear_runner.config import (RESOLVED_NAME, _with_ids, config_changes, config_fingerprint, read_json,
                                       resolution_names, write_resolved)
@@ -628,7 +642,17 @@ def recover_repin_config(config, linear, *, reason, authorized_by):
     old = pinned["config"]
     ids = pinned["resolution"]["ids"]
     new = _with_ids(config, ids, f"re-pinned {RESOLVED_NAME}")
-    fixed = [label for key, label in REPIN_FIXED if old.get(key) != new.get(key)]
+    appended = []
+    if old.get("issues") != new.get("issues"):
+        appended = appended_issues(old.get("issues"), new.get("issues")) or []
+        if appended and not append_issues:
+            raise RecoveryError(f"The allowlist gained {', '.join(appended)} at its end; pass --append-issues to "
+                                "adopt the added issues (earlier issues, their order and their history stay as "
+                                "they are)")
+    if append_issues and not appended:
+        raise RecoveryError("--append-issues adopts issues added at the end of the pinned allowlist "
+                            f"({', '.join(old.get('issues') or [])}); the batch file adds none there")
+    fixed = [label for key, label in REPIN_FIXED if old.get(key) != new.get(key) and not (key == "issues" and appended)]
     projects = lambda layers: sorted(k for k in layers if k.startswith("project "))
     if projects(pinned.get("layers", {})) != projects(config["_layers"]):
         fixed.append("the project configuration file")
@@ -651,6 +675,11 @@ def recover_repin_config(config, linear, *, reason, authorized_by):
     if invalidated and active and active["step"] in VALIDATED_STEPS:
         raise RecoveryError(f"{active['issue_id']} is at step {active['step']!r} with evidence validated by the "
                             f"pinned checks, and the definition of {invalidated} changed; finish or defer it first")
+    if appended:
+        # The allowlist is part of the state's identity record. Everything else in it is
+        # unchanged (checked above), so only the issue list is extended.
+        state.setdefault("identity", {})["issues"] = list(new["issues"])
+        write_json(state_path, state)
     runner = Runner(new, linear)  # checks the batch identity against state.json
     identifier = "R-" + run_id()
     archived = root / f"resolved-config-before-{identifier}.json"
@@ -667,13 +696,20 @@ def recover_repin_config(config, linear, *, reason, authorized_by):
     details = {"id": identifier, "old_config_sha256": old_sha, "new_config_sha256": new_sha,
                "runner": {"old": old.get("runner"), "new": new.get("runner")}, "changes": changes,
                "changed_checks": invalidated, "invalidated_check_evidence": dropped,
-               "previous_resolved_config": str(archived),
+               "appended_issues": appended, "previous_resolved_config": str(archived),
                "active": {"issue": active["issue_id"], "step": active["step"]} if active else None}
     runner.state["config_sha256"] = new_sha
+    if appended:
+        # The queue is open again: the earlier completion record would keep the supervisor from
+        # reporting the batch complete once the added issues are Done.
+        previous_completion = runner.state.pop("completion_record", None)
+        if previous_completion:
+            details["previous_completion_record"] = previous_completion
     runner.state.setdefault("config_repins", []).append(
         {"id": identifier, "at": now(), "authorized_by": authorized_by.strip(), "reason": reason.strip(),
          "old_config_sha256": old_sha, "new_config_sha256": new_sha, "runner": details["runner"], "changes": changes,
-         "invalidated_check_evidence": dropped, "previous_resolved_config": str(archived)})
+         "invalidated_check_evidence": dropped, "appended_issues": appended,
+         "previous_resolved_config": str(archived)})
     record = _record(runner, "repin-config", reason=reason, authorized_by=authorized_by, then=None, details=details,
                      pending=False)
     return record

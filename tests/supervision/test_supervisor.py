@@ -1415,6 +1415,57 @@ class RepinConfigTests(Harness):
         self.assertFalse(list(self.state_dir.glob("resolved-config-before-*")))
         self.assertNotIn("config_repins", self.state())
 
+    def test_append_issues_extends_a_finished_batch(self):
+        # W-282: a follow-up issue (a notebook, a rename) needed its own batch, branch and worktree.
+        self.edit_project(self.allow_empty)
+        entry = self.launch()
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-3"]))
+        before = self.state()
+        self.linear.add_issue("DEV-4")
+        self.edit_batch(lambda b: b.update(issues=["DEV-1", "DEV-2", "DEV-3", "DEV-4"], terminal_issue="DEV-4"))
+        with self.assertRaisesRegex(RecoveryError, "The allowlist gained DEV-4 at its end; pass --append-issues"):
+            self.repin(reason="Add the follow-up notebook")
+        self.assertEqual(self.state(), before)
+        record = self.repin(reason="Add the follow-up notebook", append_issues=True)
+        self.assertEqual((record["kind"], record["details"]["appended_issues"]), ("repin-config", ["DEV-4"]))
+        self.assertIn("issues", " ".join(record["details"]["changes"]))
+        state = self.state()
+        self.assertEqual(state["identity"]["issues"], ["DEV-1", "DEV-2", "DEV-3", "DEV-4"])
+        self.assertEqual(state["history"], before["history"])  # history, usage and evidence stay
+        self.assertEqual(state["config_repins"][-1]["appended_issues"], ["DEV-4"])
+        logged = verify_log(self.state_dir)[-1]
+        self.assertEqual((logged["authorized_by"], logged["reason"]), ("Owner", "Add the follow-up notebook"))
+        calls = len(self.calls)
+        entry = self.launch(clear_stop=True)
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-3", "DEV-4"]))
+        self.assertEqual(self.calls[calls:], [("DEV-4", "implement"), ("DEV-4", "review")])
+        # The new terminal issue gets the batch-finished comment.
+        self.assertTrue(self.linear.last("DEV-4", "batch-finished"))
+
+    def test_append_issues_at_a_checkpoint_and_its_refusals(self):
+        self.edit_project(self.allow_empty)
+        self.launch(stop_after=["DEV-1"])
+        self.assertEqual(self.done(), ["DEV-1"])
+        self.linear.add_issue("DEV-4")
+        refused = [(["DEV-1", "DEV-2", "DEV-4", "DEV-3"], "the issue allowlist and its order"),   # inserted
+                   (["DEV-2", "DEV-1", "DEV-3", "DEV-4"], "the issue allowlist and its order"),   # reordered
+                   (["DEV-1", "DEV-2", "DEV-4"], "the issue allowlist and its order")]            # replaced
+        original = self.batch.read_text()
+        for issues, label in refused:
+            with self.subTest(issues=issues):
+                self.edit_batch(lambda b: b.update(issues=issues, terminal_issue=issues[-1]))
+                with self.assertRaisesRegex(RecoveryError, "--append-issues adopts issues added at the end"):
+                    self.repin(append_issues=True)
+                with self.assertRaisesRegex(RecoveryError, f"cannot change .*{label}.*new batch id"):
+                    self.repin()
+            self.batch.write_text(original)
+        with self.assertRaisesRegex(RecoveryError, "--append-issues adopts issues added at the end"):
+            self.repin(append_issues=True)  # the allowlist is unchanged
+        self.edit_batch(lambda b: b.update(issues=["DEV-1", "DEV-2", "DEV-3", "DEV-4"], terminal_issue="DEV-4"))
+        self.assertEqual(self.repin(append_issues=True)["details"]["appended_issues"], ["DEV-4"])
+        entry = self.launch(clear_stop=True)
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-3", "DEV-4"]))
+
     def test_preconditions(self):
         with self.assertRaisesRegex(RecoveryError, "no pinned state"):
             self.repin()
