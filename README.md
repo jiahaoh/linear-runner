@@ -609,6 +609,12 @@ elsewhere stops the batch for reconciliation.
    its nested lines. The intake packet lists the same criteria. The
    controller independently rejects wrong identities and missing, duplicate, unexpected
    or blank-evidence entries; a summary or schema-shaped output alone is never acceptance.
+   Coverage is judged on the pinned wording, and a copy that differs from it only by marks
+   still counts: Markdown code and emphasis markers (backticks and asterisks), backslash
+   escapes before punctuation, Linear's issue-mention markup, typographic quotes and
+   ellipses, and whitespace (`criterion_key`). The controller then stores the pinned wording
+   and logs the text the reviewer returned. A reworded, shortened or invented criterion
+   still fails, and two criteria that differ only by such marks keep exact matching.
    The source must still be frozen at the commit afterwards, and the shared contract must
    still have its pinned hash. Review uses at least the registry review floor for the
    issue's task kind and profile (the opt-in low-risk rule may lower only the default floor).

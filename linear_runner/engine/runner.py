@@ -5,6 +5,7 @@ publication. Only implementation, bounded repair and independent review invoke a
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
 import datetime as dt
@@ -544,13 +545,58 @@ def review_schema(issue, commit):
     return schema
 
 
+_ISSUE_MARKUP = re.compile(r"<issue\b[^>]*>(.*?)</issue>", re.S)
+_TYPOGRAPHY = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'", "\u00a0": " "})
+
+
+def criterion_key(text):
+    """A criterion without the marks a reviewer may drop or change when copying it: Linear's
+    issue-mention markup (the identifier stays), Markdown code and emphasis markers (backticks
+    and asterisks), backslash escapes before punctuation, typographic quotes and ellipses, and
+    runs of whitespace. Words, numbers, identifiers and their order are untouched, so a
+    reworded, shortened or invented criterion still has another key."""
+    text = _ISSUE_MARKUP.sub(r"\1", text).translate(_TYPOGRAPHY).replace("\u2026", "...")
+    text = re.sub(r"\\([^\w\s])", r"\1", text)
+    return " ".join(text.replace("`", "").replace("*", "").split())
+
+
+def align_review_criteria(result, issue):
+    """Give every returned criterion that differs from a pinned one only by copy marks
+    (``criterion_key``) the pinned wording, in place, and return the ``(pinned, returned)`` pairs
+    it changed. A pinned criterion whose key is shared with another pinned criterion keeps
+    exact matching, and so does a returned text that already equals a pinned one."""
+    entries = result.get("acceptance") if isinstance(result, dict) else None
+    if not isinstance(entries, list):
+        return []
+    expected = review_criteria(issue)
+    keys = collections.Counter(criterion_key(text) for text in expected)
+    by_key = {criterion_key(text): text for text in expected if keys[criterion_key(text)] == 1}
+    returned = {e.get("criterion") for e in entries if isinstance(e, dict)}
+    changed = []
+    for entry in entries:
+        text = entry.get("criterion") if isinstance(entry, dict) else None
+        if not isinstance(text, str) or text in expected:
+            continue
+        pinned = by_key.get(criterion_key(text))
+        if pinned is not None and pinned not in returned:
+            changed.append((pinned, text))
+            entry["criterion"] = pinned
+            returned.add(pinned)
+    return changed
+
+
 def validate_review_result(result, issue, commit):
-    """Never turn a summary, malformed output or partial review into acceptance."""
+    """Never turn a summary, malformed output or partial review into acceptance.
+
+    Coverage is exact on the pinned wording after ``align_review_criteria``: a reviewer that
+    dropped a backtick while copying a criterion still covers it (W-282), while a missing,
+    repeated or unexpected criterion fails as before."""
     if not isinstance(result, dict) or result.get("issue_id") != issue["id"] or result.get("commit") != commit:
         raise RuntimeError("Reviewer result identity does not match the issue and committed revision")
     entries = result.get("acceptance")
     if not isinstance(entries, list) or any(not isinstance(e, dict) or not isinstance(e.get("criterion"), str) for e in entries):
         raise RuntimeError("Reviewer returned malformed acceptance entries")
+    align_review_criteria(result, issue)
     expected = review_criteria(issue)
     actual = [e["criterion"] for e in entries]
     missing = set(expected) - set(actual)
@@ -1854,6 +1900,9 @@ class Runner:
                                       result_schema=review_schema(active["issue"], active["commit"]))
             self.verify_frozen(active)
             self.verify_contract(active)
+            for pinned, returned in align_review_criteria(result, active["issue"]):
+                self.log(f"{issue}: the reviewer copied a criterion with different marks; the pinned wording is "
+                         f"kept (returned: {returned[:200]!r})")
             try:
                 validate_review_result(result, active["issue"], active["commit"])
             except RuntimeError as error:
