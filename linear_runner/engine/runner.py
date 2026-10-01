@@ -78,6 +78,19 @@ def inherited_environment(config):
     return {k: v for k, v in os.environ.items() if k != hidden}
 
 
+# Variables the service manager sets anew for every unit it starts. They identify one launch,
+# not the environment a check runs in, so they are left out of the check-evidence key: with
+# them every relaunch (each recovery needs one) made all saved check evidence unusable (W-282).
+LAUNCH_VARIABLES = frozenset({"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID", "MANAGERPID", "NOTIFY_SOCKET",
+                              "LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES", "WATCHDOG_PID", "WATCHDOG_USEC",
+                              "MEMORY_PRESSURE_WATCH", "MEMORY_PRESSURE_WRITE"})
+
+
+def evidence_environment(config):
+    """The inherited environment as it enters the check-evidence key: without LAUNCH_VARIABLES."""
+    return {k: v for k, v in inherited_environment(config).items() if k not in LAUNCH_VARIABLES}
+
+
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
@@ -1558,6 +1571,36 @@ class Runner:
                 f"{Path(active['run_dir']) / 'intake.json'} and the saved evidence are authoritative where they "
                 f"differ.\n\n```json\n{text.strip()}\n```\n\n")
 
+    def check_key(self, spec):
+        """The identity of one check's evidence: its definition, the configured and inherited
+        environment (without the per-launch LAUNCH_VARIABLES), the executable, the
+        ``identity_files`` and the bytes of every file its ``inputs`` match."""
+        digest = hashlib.sha256(json.dumps({"spec": spec, "environment": self.config["check_environment"]}, sort_keys=True).encode())
+        # Explicit external manifests/executables and inherited environment are
+        # part of evidence identity; secrets are hashed, never serialized.
+        digest.update(json.dumps(evidence_environment(self.config), sort_keys=True).encode())
+        executable = shutil.which(spec["command"][0])
+        identities = list(self.config["identity_files"])
+        if executable:
+            identities.append(executable)
+        for filename in identities:
+            path = Path(filename).expanduser()
+            digest.update(str(path.resolve()).encode())
+            digest.update(path.read_bytes())
+        paths = subprocess.check_output(["git", "-C", str(self.repo), "ls-files", "-co", "--exclude-standard", "-z"]).decode().split("\0")
+        # Include ignored fixture bytes when their patterns are declared.
+        matched = set(paths) - {""}
+        for pattern in spec["inputs"]:
+            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+                raise ValueError("Check input patterns must stay inside the worktree")
+            matched.update(str(p.relative_to(self.repo)) for p in self.repo.glob(pattern) if p.is_file())
+        for relative in sorted(matched):
+            if any(fnmatch.fnmatch(relative, pattern) for pattern in spec["inputs"]):
+                path = self.repo / relative
+                digest.update(relative.encode())
+                digest.update(path.read_bytes() if path.is_file() else b"<deleted>")
+        return digest.hexdigest()
+
     def run_checks(self, active):
         directory = Path(active["run_dir"]) / ("validation-" + run_id())
         directory.mkdir()
@@ -1565,37 +1608,14 @@ class Runner:
         changed += git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()
         cache_path = self.root / "check-cache.json"
         cache = read_json(cache_path) if cache_path.exists() else {}
-        paths = subprocess.check_output(["git", "-C", str(self.repo), "ls-files", "-co", "--exclude-standard", "-z"]).decode().split("\0")
         results = []
+        ran = []
         before = fingerprint(self.repo)
         for index, spec in enumerate(self.config["checks"]):
             if spec["tier"] == "extended" and active["issue_id"] != self.config["issues"][-1] and not any(
                     fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
                 continue
-            digest = hashlib.sha256(json.dumps({"spec": spec, "environment": self.config["check_environment"]}, sort_keys=True).encode())
-            # Explicit external manifests/executables and inherited environment are
-            # part of evidence identity; secrets are hashed, never serialized.
-            digest.update(json.dumps(inherited_environment(self.config), sort_keys=True).encode())
-            executable = shutil.which(spec["command"][0])
-            identities = list(self.config["identity_files"])
-            if executable:
-                identities.append(executable)
-            for filename in identities:
-                path = Path(filename).expanduser()
-                digest.update(str(path.resolve()).encode())
-                digest.update(path.read_bytes())
-            # Include ignored fixture bytes when their patterns are declared.
-            matched = set(paths) - {""}
-            for pattern in spec["inputs"]:
-                if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-                    raise ValueError("Check input patterns must stay inside the worktree")
-                matched.update(str(p.relative_to(self.repo)) for p in self.repo.glob(pattern) if p.is_file())
-            for relative in sorted(matched):
-                if any(fnmatch.fnmatch(relative, pattern) for pattern in spec["inputs"]):
-                    path = self.repo / relative
-                    digest.update(relative.encode())
-                    digest.update(path.read_bytes() if path.is_file() else b"<deleted>")
-            key = digest.hexdigest()
+            key = self.check_key(spec)
             previous = cache.get(spec["name"], {})
             # Only intact successful evidence (passed, or an allowed empty selection) is reused;
             # failures always rerun. ``key`` covers the whole check definition, allow_empty included.
@@ -1609,9 +1629,18 @@ class Runner:
             result.update(name=spec["name"], key=key, model=None, reused=False)
             cache[spec["name"]] = result
             results.append(result)
+            ran.append((spec, result))
             write_json(cache_path, cache)
         if fingerprint(self.repo) != before:
             raise RuntimeError("Validation modified source; reconcile before continuing")
+        # The checks themselves write ignored files that their input patterns match (a test
+        # cache, generated documentation sources). Key the evidence on the state they leave,
+        # or the next round would see new inputs and rerun every check once more. Tracked and
+        # unignored files cannot have changed: the fingerprint above is the same.
+        for spec, result in ran:
+            result["key"] = self.check_key(spec)
+        if ran:
+            write_json(cache_path, cache)
         if not results:
             raise RuntimeError("No applicable validation checks")
         write_json(directory / "checks.json", results)

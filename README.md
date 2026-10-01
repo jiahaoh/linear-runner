@@ -565,6 +565,13 @@ elsewhere stops the batch for reconciliation.
    matching input bytes (including ignored fixtures), the inherited and configured
    environment, the executable and `identity_files`. Only successful records with intact
    log hashes are reused; failures are never reused. Validation that changes source stops.
+   Two things are deliberately not part of that key. The variables the service manager sets
+   anew for every unit (`INVOCATION_ID`, `JOURNAL_STREAM`, `SYSTEMD_EXEC_PID` and the like)
+   are left out of the inherited environment: every recovery needs a new launch, and with
+   them no evidence survived one. And the key is taken after a round of checks has run, so
+   ignored files that the checks write and their `inputs` match (a test cache, generated
+   documentation sources) belong to the recorded state. A repair or resume that changes
+   none of the inputs therefore reuses the evidence, shown as `reused` in `checks.json`.
    **Empty checks:** a check may set `"allow_empty": true`. Its exit code 5 (pytest's "no
    tests collected", for example when a marker selects nothing after the tests moved) is then
    recorded as `status: "empty"` with the note "no tests selected; not applicable" and counts

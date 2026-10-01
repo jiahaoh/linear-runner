@@ -1,6 +1,7 @@
 """Engine behavior: real Git and checks, fake boundary for Codex and Linear I/O."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -334,6 +335,47 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(self.runner.run_checks(active))
         (self.repo / "result.txt").write_text("ready")
         self.assertTrue(self.runner.run_checks(active))
+
+    def test_evidence_survives_a_relaunch_and_the_ignored_files_a_check_writes(self):
+        # W-282: each recovery needs a new launch, and each launch is a new unit with its own
+        # INVOCATION_ID; the W-266 repairs changed no worktree file, yet every check ran again.
+        from unittest import mock
+        from linear_runner.engine.runner import LAUNCH_VARIABLES, evidence_environment
+        (self.repo / ".gitignore").write_text("cache/\n")
+        git(self.repo, "add", ".gitignore"); git(self.repo, "commit", "-qm", "ignore the cache")
+        # A check that passes and, like pytest or Sphinx, leaves an ignored file its inputs match.
+        writes_cache = [sys.executable, "-c", "import pathlib; pathlib.Path('cache').mkdir(exist_ok=True); "
+                                              "pathlib.Path('cache/nodeids').write_text('ids')"]
+        self.config["checks"] = [{"name": "tests", "kind": "code", "tier": "default", "inputs": ["*", "**/*"],
+                                  "cwd": ".", "command": writes_cache}]
+        active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        Path(active["run_dir"]).mkdir(parents=True)
+        def record():
+            return json.loads((Path(active["validation_dir"]) / "checks.json").read_text())[0]
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": "first-launch", "JOURNAL_STREAM": "8:1"}):
+            self.assertTrue(self.runner.run_checks(active))
+            first = record()
+            self.assertFalse(first["reused"])
+            self.assertTrue((self.repo / "cache" / "nodeids").is_file())
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": "second-launch", "JOURNAL_STREAM": "8:2"}):
+            self.assertNotIn("INVOCATION_ID", evidence_environment(self.config))
+            self.assertTrue(self.runner.run_checks(active))
+            second = record()
+        self.assertTrue(second["reused"])
+        self.assertEqual(second["key"], first["key"])
+        self.assertTrue({"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID"} <= LAUNCH_VARIABLES)
+        # Everything else still invalidates: another environment value, or a changed input.
+        with mock.patch.dict(os.environ, {"SOME_TOOL_HOME": "/elsewhere"}):
+            self.assertTrue(self.runner.run_checks(active))
+            self.assertFalse(record()["reused"])
+        self.assertTrue(self.runner.run_checks(active))
+        self.assertFalse(record()["reused"])  # the previous round ran under the other environment
+        self.assertTrue(self.runner.run_checks(active))
+        self.assertTrue(record()["reused"])
+        (self.repo / "cache" / "nodeids").write_text("other ids")
+        self.assertTrue(self.runner.run_checks(active))
+        self.assertFalse(record()["reused"])
 
     def test_failed_checks_are_never_reused(self):
         active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1", "starting_commit": git(self.repo, "rev-parse", "HEAD")}
