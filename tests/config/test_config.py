@@ -217,6 +217,34 @@ class LayeredConfigTests(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaisesRegex(ConfigError, message):
                 self.load(batch={"phase_overrides": overrides})
 
+    def test_a_check_may_set_its_timeout_and_its_last_issue_rule(self):
+        # W-282: a legitimate check needed more than the registry's 1800 s, and two long checks
+        # should not run at the last issue of batches that never touch their inputs.
+        from linear_runner import cli
+        base = {"kind": "code", "inputs": ["src/*"], "cwd": ".", "command": ["${python}", "-c", "pass"]}
+        def project(**check):
+            return {"checks": [dict(base, name="fast", tier="default"), dict(base, name="slow", tier="extended", **check)]}
+        loaded = self.load(project=project(timeout_seconds=3600, last_issue="when_changed"))
+        self.assertEqual({k: loaded["checks"][1][k] for k in ("timeout_seconds", "last_issue")},
+                         {"timeout_seconds": 3600, "last_issue": "when_changed"})
+        self.assertEqual(cli.summarize(loaded)["checks"],
+                         [{"name": "fast", "tier": "default", "timeout_seconds": 1800},
+                          {"name": "slow", "tier": "extended", "timeout_seconds": 3600, "last_issue": "when_changed"}])
+        plain = self.load(project=project())
+        self.assertNotIn("timeout_seconds", plain["checks"][1])
+        self.assertNotIn("last_issue", plain["checks"][1])
+        # The options are part of the check definition, so of the configuration fingerprint.
+        self.assertNotEqual(config.config_fingerprint(loaded), config.config_fingerprint(plain))
+        self.assertEqual(self.load(project=project(last_issue="always"))["checks"][1]["last_issue"], "always")
+        with self.assertRaisesRegex(ConfigError, r"checks\[1\]\.timeout_seconds: 9000 exceeds the registry maximum 7200 "
+                                                 r"\(phases\.max_check_timeout_seconds\)"):
+            self.load(project=project(timeout_seconds=9000))
+        for bad in ({"timeout_seconds": 0}, {"timeout_seconds": "long"}, {"last_issue": "sometimes"}):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                self.load(project=project(**bad))
+        with self.assertRaisesRegex(ConfigError, r"checks\[0\]\.last_issue: only an extended check has a last-issue rule"):
+            self.load(project={"checks": [dict(base, name="fast", tier="default", last_issue="when_changed")]})
+
     def test_batch_variables_override_site_variables_for_that_batch_only(self):
         site = {"variables": {"env": "/opt/env-a", "scratch": "/tmp/scratch"}}
         project = {"check_environment": {"VIRTUAL_ENV": "${env}", "TMPDIR": "${scratch}"}}

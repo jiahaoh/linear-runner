@@ -35,6 +35,11 @@ def summarize(config):
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
             "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
             "variable_overrides": variable_overrides(config),
+            "checks": [dict({"name": c["name"], "tier": c["tier"],
+                             "timeout_seconds": c.get("timeout_seconds",
+                                                      config["policy"]["phases"]["check_timeout_seconds"])},
+                            **({"last_issue": c["last_issue"]} if "last_issue" in c else {}))
+                       for c in config["checks"]],
             "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "interface": config.get("_interface"), "layers": config["_layers"]}
 

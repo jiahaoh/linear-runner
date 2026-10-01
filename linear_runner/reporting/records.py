@@ -184,9 +184,10 @@ def _resolve_log(record_log, checks_path, run_dir):
 
 
 def check_status(record):
-    """``passed``, ``failed`` or ``empty`` (an allowed empty selection); older records have no
-    ``status`` field and are derived from the exit code."""
-    if record.get("status") in ("passed", "failed", "empty"):
+    """``passed``, ``failed``, ``empty`` (an allowed empty selection) or ``skipped`` (by the
+    check's own ``last_issue`` rule); older records have no ``status`` field and are derived
+    from the exit code."""
+    if record.get("status") in ("passed", "failed", "empty", "skipped"):
         return record["status"]
     code = record.get("exit_code")
     return None if code is None else "passed" if code == 0 else "failed"
@@ -194,7 +195,8 @@ def check_status(record):
 
 def outcome_text(status):
     """A check outcome for people: an allowed empty selection is named as such."""
-    return "empty (no tests selected; allowed)" if status == "empty" else status
+    return {"empty": "empty (no tests selected; allowed)",
+            "skipped": "skipped (no change in the batch matches its inputs)"}.get(status, status)
 
 
 def find_checks(roots):

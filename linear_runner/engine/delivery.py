@@ -41,13 +41,25 @@ def check_outcome(exit_code, allow_empty=False):
     return "failed"
 
 
+# An extended check with ``"last_issue": "when_changed"`` that no change of the batch matched:
+# it did not run at the last issue. The record carries the reason and counts as not applicable.
+SKIPPED_NOTE = "no file changed in this batch matches its inputs; not applicable"
+
+
+def check_skipped(record):
+    """Whether a saved record is a check that was skipped by its own ``last_issue`` rule."""
+    return (record.get("status") == "skipped" and record.get("last_issue") == "when_changed"
+            and record.get("exit_code") is None)
+
+
 def check_passed(record):
-    """Whether a saved check record counts as passing: exit 0, or an allowed empty selection.
+    """Whether a saved check record counts as passing: exit 0, an allowed empty selection, or
+    a check skipped by its own ``last_issue`` rule.
 
     An ``empty`` outcome is accepted only with its own evidence: exit code 5 and the
     ``allow_empty`` flag recorded from the check definition.
     """
-    if record.get("exit_code") == 0:
+    if record.get("exit_code") == 0 or check_skipped(record):
         return True
     return (record.get("status") == "empty" and record.get("exit_code") == EMPTY_EXIT_CODE
             and record.get("allow_empty") is True)
@@ -67,6 +79,8 @@ def _inside(base, relative, where):
 
 def _intact(records, where):
     for record in records:
+        if check_skipped(record):  # it did not run: there is no log to verify
+            continue
         name = record.get("name") or " ".join(record.get("command", [])[:3])
         if not check_passed(record):
             raise DeliveryError(f"{where} {name!r} did not pass")
@@ -88,7 +102,7 @@ def verify_delivery(spec, delivery_dir, commit, validation_records):
     """Return an evidence record, or raise DeliveryError naming the first failure."""
     delivery_dir = Path(delivery_dir)
     _intact(validation_records, "validation check")
-    names = {r.get("name") for r in validation_records}
+    names = {r.get("name") for r in validation_records if not check_skipped(r)}  # a skipped check is no evidence
     missing = sorted(set(spec.get("required_checks", [])) - names)
     if missing:
         raise DeliveryError(f"required check(s) {missing} are not in the validated evidence")

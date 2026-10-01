@@ -190,7 +190,7 @@ Template `validation.md`, written by the runner, posted after each validation ru
 1 of 3 checks failed for TEAM-12; the runner is starting repair 1 of 2, so no action is needed yet.
 
 **Not applicable**
-pytest-extended selected no tests (allowed).
+pytest-extended selected no tests (allowed). pytest-validation was skipped: no file changed in this batch matches its inputs.
 
 **Failing checks**
 regression exited with code 1.

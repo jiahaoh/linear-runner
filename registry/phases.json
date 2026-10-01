@@ -8,6 +8,7 @@
     "bounded_sessions holds the thresholds; a batch turns the behavior on with context_controls.bounded_sessions (off by default). A worker session whose cumulative input reached 5M tokens, or the first repair after implement, continues in a fresh session seeded with a handoff file (at most 12,000 bytes) instead of resuming the long one. 5M is where batch-3 implement sessions (the W-170 resume, W-171, W-172) approached the model context window.",
     "Cached input: the input_tokens budget judges uncached input (input_tokens minus cached_input_tokens) whenever the backend reports a cached figure, whatever the phase returned (ready or blocked); without a cached figure it judges total input. A resumed long session rereads its context as cached input on each turn; W-249 implement read 22.2M input of which 21.8M was cached, W-233 repair 6.25M of which 6.21M, and W-245 (ready), W-255 and W-256 (both blocked) implement 20.2M, 15.9M and 31.1M with at most 0.41M uncached (W-263). When total input is over the limit but uncached input is not, phase-usage.json records a budget_note. Uncached input, output or tool calls over budget, or a missing figure, still stop; recover budget --input-tokens sets the uncached limit.",
     "max_timeout_seconds 14400 is the largest phase timeout a batch may set for a named issue (batch phase_overrides, for example a repair that takes browser screenshots: W-249 hit 5400 s).",
+    "max_check_timeout_seconds 7200 is the largest timeout a project may give one check (check timeout_seconds); a check without one keeps check_timeout_seconds. W-274's validation module needed about 2217 s at one thread and had to be split by test selection under the fixed 1800 s (W-282).",
     "compact_token_limit is unset for every phase. A phase may set it, and a batch may set context_controls.compact_token_limit for all phases; the runner then passes -c model_auto_compact_token_limit=<N> (a Codex CLI 0.154.0 config key) on fresh and resumed calls."
   ],
   "phases": {
@@ -38,6 +39,7 @@
   },
   "max_repairs": 2,
   "check_timeout_seconds": 1800,
+  "max_check_timeout_seconds": 7200,
   "max_timeout_seconds": 14400,
   "bounded_sessions": {
     "input_threshold_tokens": 5000000,

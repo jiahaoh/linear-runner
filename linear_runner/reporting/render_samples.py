@@ -124,7 +124,8 @@ def samples():
     claude_plan = {"implement": opus["implement"], "repair": opus["repair"], "review": astra}
     team15 = "/absolute/path/to/runs/TEAM-15/20260924T091500Z-3c4d5e6f"
     records = [{"name": "regression", "exit_code": 1}, {"name": "docs", "exit_code": 0, "reused": True},
-               {"name": "pytest-extended", "exit_code": 5, "status": "empty", "allow_empty": True}]
+               {"name": "pytest-extended", "exit_code": 5, "status": "empty", "allow_empty": True},
+               {"name": "pytest-validation", "exit_code": None, "status": "skipped", "last_issue": "when_changed"}]
     recovery = {"id": "R-20260923T120000Z-9c8d7e6f", "kind": "resume", "authorized_by": "Owner", "then": "continue",
                 "reason": "The calibration table is at data/calibration.csv; the note tells the worker",
                 "details": {"issue": "TEAM-12", "step": "implement"}}

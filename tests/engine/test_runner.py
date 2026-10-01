@@ -18,6 +18,8 @@ from linear_runner.engine import runner as runner_module
 from linear_runner.cli import main
 from linear_runner.backends.codex import execution_evidence
 from linear_runner.linear import attention
+from linear_runner.linear import messages
+from linear_runner.reporting import records as records_module
 from linear_runner.engine.runner import (RESULT_SCHEMA, ContractChanged, Runner, fingerprint, git, issue_contract, project_lock,
                                          publication_form, published_contract_matches, published_issue, resolve_profile, review_criteria,
                                          review_schema, usage_totals, write_json)
@@ -376,6 +378,94 @@ class EngineTests(unittest.TestCase):
         (self.repo / "cache" / "nodeids").write_text("other ids")
         self.assertTrue(self.runner.run_checks(active))
         self.assertFalse(record()["reused"])
+
+    def test_a_check_runs_under_its_own_timeout(self):
+        # W-282: the registry's check_timeout_seconds was the only limit.
+        sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]
+        quick = [sys.executable, "-c", "pass"]
+        self.config["checks"] = [
+            {"name": "quick", "kind": "code", "tier": "default", "inputs": ["*"], "cwd": ".", "command": quick},
+            {"name": "slow", "kind": "code", "tier": "default", "inputs": ["*"], "cwd": ".", "command": sleeper,
+             "timeout_seconds": 1}]
+        active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        Path(active["run_dir"]).mkdir(parents=True)
+        logged = []
+        self.runner.log = logged.append
+        self.assertFalse(self.runner.run_checks(active))
+        quick_record, slow_record = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+        self.assertEqual((quick_record["status"], quick_record["timeout_seconds"]),
+                         ("passed", self.policy["phases"]["check_timeout_seconds"]))
+        self.assertEqual((slow_record["status"], slow_record["exit_code"], slow_record["timeout_seconds"], slow_record["note"]),
+                         ("failed", 124, 1, "stopped after 1 seconds (the check's time limit)"))
+        self.assertIn("Validation: stopped after 1 seconds (the check's time limit)", logged)
+
+    def test_last_issue_when_changed_skips_a_check_the_batch_never_touched(self):
+        # W-282: at the last issue every extended check ran, whatever its inputs.
+        from linear_runner.engine.delivery import SKIPPED_NOTE, check_passed, check_skipped
+        marker = self.root / "slow-runs.txt"
+        slow = [sys.executable, "-c", f"open({str(marker)!r}, 'a').write('run\\n')"]
+        def checks(**option):
+            return [self.config["checks"][0],
+                    dict({"name": "slow", "kind": "code", "tier": "extended", "inputs": ["slow/*"], "cwd": ".",
+                          "command": slow}, **option)]
+        self.config["issues"] = ["DEV-1", "DEV-2"]
+        (self.repo / "result.txt").write_text("ready")
+        base = git(self.repo, "rev-parse", "HEAD")
+        def run(issue, starting_commit=base):
+            active = {"run_dir": str(self.root / "runs" / f"manual-{issue}-{len(list((self.root / 'runs').glob('*')))}"),
+                      "issue_id": issue, "starting_commit": starting_commit}
+            Path(active["run_dir"]).mkdir(parents=True)
+            passed = self.runner.run_checks(active)
+            return passed, json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+        def runs():
+            return marker.read_text().count("run") if marker.exists() else 0
+        (self.root / "runs").mkdir(exist_ok=True)
+
+        # Not the last issue and no matching change: skipped silently, as before.
+        self.config["checks"] = checks(last_issue="when_changed")
+        passed, records = run("DEV-1")
+        self.assertEqual((passed, [r["name"] for r in records], runs()), (True, ["output"], 0))
+        # The last issue, nothing in the batch matches: recorded as skipped, with the reason.
+        passed, records = run("DEV-2")
+        self.assertTrue(passed)
+        skipped = records[1]
+        self.assertEqual({k: skipped[k] for k in ("name", "status", "exit_code", "last_issue", "note", "reused")},
+                         {"name": "slow", "status": "skipped", "exit_code": None, "last_issue": "when_changed",
+                          "note": SKIPPED_NOTE, "reused": False})
+        self.assertTrue(check_skipped(skipped) and check_passed(skipped))
+        self.assertEqual(runs(), 0)
+        comment = messages.validation(self.runner.ctx, issue="DEV-2", records=records, passed=True,
+                                      directory=str(self.root / "runs"))
+        self.assertTrue(comment.startswith("Checks passed for DEV-2 (1 check"), comment)
+        self.assertIn("**Not applicable**\nslow was skipped: no file changed in this batch matches its inputs.", comment)
+        self.assertEqual(records_module.outcome_text(records_module.check_status(skipped)),
+                         "skipped (no change in the batch matches its inputs)")
+        # Without the option (or with "always") the last issue runs it: today's behavior.
+        for option in ({}, {"last_issue": "always"}):
+            self.config["checks"] = checks(**option)
+            before = runs()
+            passed, records = run("DEV-2")
+            self.assertEqual((passed, records[1]["status"], runs()), (True, "passed", before + 1))
+        # An earlier issue of the batch changed a matching file: the last issue runs the check,
+        # although its own changes do not match.
+        self.config["checks"] = checks(last_issue="when_changed")
+        (self.repo / "slow").mkdir(); (self.repo / "slow" / "data.txt").write_text("changed by DEV-1")
+        git(self.repo, "add", "slow"); git(self.repo, "commit", "-qm", "DEV-1 changes a slow input")
+        self.runner.state["history"] = [{"issue_id": "DEV-1", "starting_commit": base}]
+        before = runs()
+        passed, records = run("DEV-2", starting_commit=git(self.repo, "rev-parse", "HEAD"))
+        self.assertEqual((passed, records[1]["status"], runs()), (True, "passed", before + 1))
+        # A round in which every check is skipped is not a validation.
+        self.runner.state["history"] = []
+        self.config["checks"] = [dict(checks(last_issue="when_changed")[1], inputs=["never/*"])]
+        with self.assertRaisesRegex(RuntimeError, "No applicable validation checks"):
+            run("DEV-2", starting_commit=git(self.repo, "rev-parse", "HEAD"))
+        # A skipped check is no evidence for a required check.
+        from linear_runner.engine.delivery import DeliveryError, verify_delivery
+        with self.assertRaisesRegex(DeliveryError, r"required check\(s\) \['slow'\] are not in the validated evidence"):
+            verify_delivery({"required_checks": ["slow"], "manifest": "m.json", "revision_field": "revision"},
+                            self.root, "0" * 40, [skipped])
 
     def test_failed_checks_are_never_reused(self):
         active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1", "starting_commit": git(self.repo, "rev-parse", "HEAD")}

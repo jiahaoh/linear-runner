@@ -41,7 +41,9 @@
         "inputs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
         "cwd": {"$ref": "#/$defs/text"},
         "command": {"$ref": "#/$defs/argv"},
-        "allow_empty": {"type": "boolean", "description": "true: exit code 5 (pytest: no tests collected or selected) is recorded as the outcome 'empty' and counts as passing. Part of the check definition and its reuse identity."}
+        "allow_empty": {"type": "boolean", "description": "true: exit code 5 (pytest: no tests collected or selected) is recorded as the outcome 'empty' and counts as passing. Part of the check definition and its reuse identity."},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "description": "How long this check may run; default registry phases.check_timeout_seconds, at most phases.max_check_timeout_seconds. Part of the check definition and its reuse identity."},
+        "last_issue": {"enum": ["always", "when_changed"], "description": "Extended checks only. 'always' (default): the check runs at the batch's last issue whatever changed. 'when_changed': at the last issue it runs only if a file changed since the batch's base revision matches its inputs; otherwise it is recorded as skipped."}
       }
     },
     "relpath": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+$"},

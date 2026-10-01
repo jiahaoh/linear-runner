@@ -44,6 +44,10 @@
     "check_timeout_seconds": {
       "$ref": "#/$defs/positive"
     },
+    "max_check_timeout_seconds": {
+      "description": "The largest timeout_seconds a project check may set; absent: check_timeout_seconds.",
+      "$ref": "#/$defs/positive"
+    },
     "max_timeout_seconds": {
       "description": "The largest phase timeout a batch may set for a named issue (batch phase_overrides).",
       "$ref": "#/$defs/positive"

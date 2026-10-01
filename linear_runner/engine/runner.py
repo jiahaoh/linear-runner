@@ -29,7 +29,7 @@ from linear_runner import backends
 from linear_runner.linear import attention
 from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
                                   match_entry, pool_for, read_json, write_json)
-from linear_runner.engine.delivery import EMPTY_NOTE, check_outcome, check_passed
+from linear_runner.engine.delivery import EMPTY_NOTE, SKIPPED_NOTE, check_outcome, check_passed, check_skipped
 from linear_runner.engine import intake
 from linear_runner.linear.client import LinearClient, read_back
 from linear_runner.linear import messages
@@ -872,12 +872,15 @@ class Runner:
 
         Each record has ``status``: ``passed`` (exit 0), ``failed``, or ``empty`` when the
         check sets ``allow_empty`` and exited 5 (no tests selected), which counts as passing.
+        A check may set ``timeout_seconds``; otherwise the registry's ``check_timeout_seconds``
+        applies. A check that exceeds it is stopped and recorded with exit code 124.
         """
         records = []
         for index, check in enumerate(checks):
             command = [s.replace("{run_dir}", str(directory)) for s in check["command"]]
             cwd = self.repo / check["cwd"]
             log = directory / f"check-{index}.log"
+            timeout = check.get("timeout_seconds") or self.policy["phases"]["check_timeout_seconds"]
             self.log(f"Validation: {' '.join(command)}")
             started = now()
             with log.open("wb") as output:
@@ -885,10 +888,11 @@ class Runner:
                                               stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
                 self.save(child_pid=self.child.pid)
                 try:
-                    returncode = self.child.wait(timeout=self.policy["phases"]["check_timeout_seconds"])
+                    returncode = self.child.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     self.stop_child()
                     returncode = 124
+                    self.log(f"Validation: stopped after {timeout} seconds (the check's time limit)")
                 finally:
                     self.stop_child()
                     self.child = None
@@ -896,10 +900,12 @@ class Runner:
             allow_empty = bool(check.get("allow_empty"))
             record = {"command": command, "cwd": str(cwd), "environment_overrides": environment, "started_at": started,
                       "finished_at": now(), "exit_code": returncode, "status": check_outcome(returncode, allow_empty),
-                      "allow_empty": allow_empty, "log": str(log),
+                      "allow_empty": allow_empty, "timeout_seconds": timeout, "log": str(log),
                       "sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
             if record["status"] == "empty":
                 record["note"] = EMPTY_NOTE
+            elif returncode == 124:
+                record["note"] = f"stopped after {timeout} seconds (the check's time limit)"
             records.append(record)
         write_json(directory / "checks.json", records)
         return all(check_passed(c) for c in records)
@@ -1542,8 +1548,9 @@ class Runner:
         validation = []
         if active.get("validation_dir") and (Path(active["validation_dir"]) / "checks.json").is_file():
             validation = [{"command": c.get("name", " ".join(c.get("command", []))),
-                           "outcome": (f"exit {c.get('exit_code')}"
+                           "outcome": (("skipped" if check_skipped(c) else f"exit {c.get('exit_code')}")
                                        + (f" ({EMPTY_NOTE})" if c.get("status") == "empty" else "")
+                                       + (f" ({SKIPPED_NOTE})" if check_skipped(c) else "")
                                        + (" (reused)" if c.get("reused") else ""))}
                           for c in read_json(Path(active["validation_dir"]) / "checks.json")]
         status = result.get("status") if result.get("status") in ("ready", "blocked") else "in_progress"
@@ -1570,6 +1577,15 @@ class Runner:
                 f"{record['path']}, sha256 {record['sha256'][:16]}) is below; the repository, the intake packet "
                 f"{Path(active['run_dir']) / 'intake.json'} and the saved evidence are authoritative where they "
                 f"differ.\n\n```json\n{text.strip()}\n```\n\n")
+
+    def batch_changed_files(self, active):
+        """Files changed since the batch's base revision (the first issue's starting commit),
+        the active issue's uncommitted and untracked files included."""
+        history = self.state.get("history") or []
+        base = next((entry["starting_commit"] for entry in history if entry.get("starting_commit")),
+                    active["starting_commit"])
+        return sorted(set(git(self.repo, "diff", "--name-only", base).splitlines()
+                          + git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()))
 
     def check_key(self, spec):
         """The identity of one check's evidence: its definition, the configured and inherited
@@ -1611,10 +1627,23 @@ class Runner:
         results = []
         ran = []
         before = fingerprint(self.repo)
+        last = active["issue_id"] == self.config["issues"][-1]
+        batch_changed = None
         for index, spec in enumerate(self.config["checks"]):
-            if spec["tier"] == "extended" and active["issue_id"] != self.config["issues"][-1] and not any(
+            if spec["tier"] == "extended" and not any(
                     fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
-                continue
+                if not last:
+                    continue
+                if spec.get("last_issue") == "when_changed":
+                    # The last issue runs every extended check as the batch's final word. A check
+                    # that opted out runs only if the batch as a whole touched its inputs.
+                    if batch_changed is None:
+                        batch_changed = self.batch_changed_files(active)
+                    if not any(fnmatch.fnmatch(p, pattern) for p in batch_changed for pattern in spec["inputs"]):
+                        results.append({"name": spec["name"], "status": "skipped", "exit_code": None,
+                                        "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
+                                        "model": None})
+                        continue
             key = self.check_key(spec)
             previous = cache.get(spec["name"], {})
             # Only intact successful evidence (passed, or an allowed empty selection) is reused;
@@ -1623,7 +1652,7 @@ class Runner:
                 results.append(dict(previous, reused=True))
                 continue
             subdir = directory / str(index); subdir.mkdir()
-            self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty") if k in spec}],
+            self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}],
                           self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
             result.update(name=spec["name"], key=key, model=None, reused=False)
@@ -1641,7 +1670,7 @@ class Runner:
             result["key"] = self.check_key(spec)
         if ran:
             write_json(cache_path, cache)
-        if not results:
+        if not [r for r in results if not check_skipped(r)]:
             raise RuntimeError("No applicable validation checks")
         write_json(directory / "checks.json", results)
         active["validation_dir"] = str(directory)

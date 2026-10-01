@@ -638,6 +638,13 @@ def load_config(batch_path, home=None):
         for pattern in spec["inputs"]:
             if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
                 raise ConfigError(f"{where}.inputs: patterns must stay inside the worktree")
+        ceiling = policy["phases"].get("max_check_timeout_seconds", policy["phases"]["check_timeout_seconds"])
+        if spec.get("timeout_seconds", 0) > ceiling:
+            raise ConfigError(f"{where}.timeout_seconds: {spec['timeout_seconds']} exceeds the registry maximum "
+                              f"{ceiling} (phases.max_check_timeout_seconds)")
+        if "last_issue" in spec and spec["tier"] != "extended":
+            raise ConfigError(f"{where}.last_issue: only an extended check has a last-issue rule; a default check "
+                              "always runs or reuses its evidence")
         checks.append(dict(spec, cwd=inside(substitute(spec["cwd"], variables, where), where),
                            command=[substitute(arg, variables, where) for arg in spec["command"]]))
     if len({c["name"] for c in checks}) != len(checks):

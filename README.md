@@ -98,7 +98,7 @@ model does not allow) are errors.
 | `labels.json` | Task-kind labels and profile labels (exactly one of each per issue) |
 | `profiles.json` | Profile order, review floors, phase overrides, escalation target, routing version, the `review_routing` low-risk rule |
 | `pools.json` | Ordered `{backend, model, effort}` pools per task kind (or `*`), profile and phase (see "Model backends and pools") |
-| `phases.json` | Per-phase soft budgets and timeouts, the largest per-issue timeout a batch may set (`max_timeout_seconds`), the shared repair limit (≤ 2), per-check timeout, `bounded_sessions` thresholds |
+| `phases.json` | Per-phase soft budgets and timeouts, the largest per-issue timeout a batch may set (`max_timeout_seconds`), the shared repair limit (≤ 2), the default and the largest per-check timeout (`check_timeout_seconds`, `max_check_timeout_seconds`), `bounded_sessions` thresholds |
 | `linear.json` | Default workflow state names and whether a milestone is required |
 | `interface.json` | The runner-project interface version (see "Interface version"); not a policy layer, so a private registry cannot override it |
 
@@ -106,7 +106,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`), optional `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -561,7 +561,18 @@ elsewhere stops the batch for reconciliation.
    leaves changes uncommitted and makes no Linear or Git mutations.
 4. **Checks.** Checks declare `name`, `kind`, `tier`, `inputs`, `cwd` and `command`.
    Default checks always run or reuse evidence; extended checks run for matching changed
-   inputs and at the last allowlisted issue. Reuse is keyed on the check definition,
+   inputs and at the last allowlisted issue. An extended check may set
+   `"last_issue": "when_changed"`: at the last issue it then runs only if a file changed
+   since the batch's base revision (the first issue's starting commit) matches its `inputs`.
+   Otherwise it is recorded in `checks.json` as `status: "skipped"` with its reason, counts
+   as passing, and the validation comment lists it under "Not applicable". Use it for a long
+   check that concerns one module, so that batches which never touch that module do not pay
+   for it; a skipped check is no evidence for `delivery_integrity.required_checks`. Without
+   the option (or with `"always"`) the last issue runs the check as before. A check may also
+   set `timeout_seconds`, up to the registry's `max_check_timeout_seconds` (7200); without
+   it the registry's `check_timeout_seconds` (1800) applies. A check that exceeds its limit
+   is stopped and fails with exit code 124. `validate-config` lists each check's tier, time
+   limit and last-issue rule under `checks`. Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured
    environment, the executable and `identity_files`. Only successful records with intact
    log hashes are reused; failures are never reused. Validation that changes source stops.
