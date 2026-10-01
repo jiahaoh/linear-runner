@@ -15,9 +15,20 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.4.0 — 2026-10-01
+
 The findings of the §2.7 batches (s27-spec-20260930, s27-impl-20261001, s27-notebook-20261001
 and s27-rename-20261001, all complete; `W-282`). The four batches took about 18 hours: 6 of
 them in 15 validation rounds, and 6 of the 11 unplanned pauses had runner or process causes.
+
+**Project impact:** none; the new check fields `timeout_seconds` and `last_issue` and the
+recovery option `--append-issues` are optional. The registry gains `max_check_timeout_seconds`,
+which changes configuration fingerprints: a paused batch adopts the release with `recover
+repin-config`. Check evidence saved by an earlier runner is not reused once, because its key
+changed.
+
+**Canary tier:** canary batch; the engine (contract fields, review coverage, check selection,
+evidence reuse and time limits) and the recoveries (`repin-config --append-issues`) changed.
 
 ### Added
 
