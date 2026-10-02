@@ -297,7 +297,7 @@ site changes the configuration fingerprint of its batches, so a paused batch the
 | --- | --- | --- |
 | Auth | Codex login | claude.ai subscription login (never `--bare`), or a long-lived token (see "Claude authentication"); preflight records only the auth mode and `loggedIn`/`authMethod` |
 | Read-only review | OS sandbox (`--sandbox read-only`) | Permission rules: `dontAsk`, tools Read/Grep/Glob/Bash, Bash limited to read-only Git commands |
-| Worker | `--approve-for-me` | `acceptEdits` in the worktree and the issue run directory; Bash allowed except Git history/branch commands and nested agents |
+| Worker | `--approve-for-me`, with `-c sandbox_workspace_write.network_access=false` so the sandbox has no network even when the host's Codex config enables it | `acceptEdits` in the worktree and the issue run directory; Bash allowed except Git history/branch commands and nested agents |
 | Isolation | Linear MCP disabled | no settings files, a per-session `--settings` (hooks and auto-memory off), `--strict-mcp-config` with no servers, a fixed appended system prompt, `CLAUDE*`/`ANTHROPIC*` variables removed |
 | Resume | `resume <id>` | `--resume <id>`; fresh sessions get `--session-id` |
 | Result | `--output-schema`, `-o` file | `--json-schema`, `structured_output` of the result event |

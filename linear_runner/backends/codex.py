@@ -119,6 +119,8 @@ class CodexBackend:
         # Parent options precede the subcommand so resumed turns keep the same approvals.
         if request.writable or request.resume:
             command += ["--approve-for-me", "--add-dir", self.config["artifact_root"]]
+            # Workers stay offline whatever the host's Codex config says; -c overrides the file.
+            command += ["-c", "sandbox_workspace_write.network_access=false"]
         else:
             command += ["--sandbox", "read-only", "-c", 'approval_policy="on-request"',
                         "-c", 'approvals_reviewer="auto_review"']
@@ -139,7 +141,7 @@ class CodexBackend:
         return dict(base)
 
     def describe(self, request):
-        return {"isolation": "workspace write with --approve-for-me" if request.writable or request.resume
+        return {"isolation": "workspace write with --approve-for-me, network off" if request.writable or request.resume
                 else "OS sandbox: --sandbox read-only"}
 
     # --- Reading the JSONL events and the result ---------------------------------------

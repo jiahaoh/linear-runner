@@ -52,6 +52,9 @@ class CodexCommandTests(unittest.TestCase):
                     self.assertGreater(command.index("--model"), command.index("resume"))
                 if kwargs["writable"]:
                     self.assertIn("--approve-for-me", command)
+                    self.assertIn("sandbox_workspace_write.network_access=false", command)
+                    self.assertLess(command.index("sandbox_workspace_write.network_access=false"),
+                                    command.index("resume" if kwargs.get("resume") else "-C"))
                 else:
                     self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
                 self.assertEqual(meta["execution_evidence"]["usage_events"][0]["usage"]["input_tokens"], 10)

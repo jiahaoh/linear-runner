@@ -15,6 +15,15 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* Codex workers run with `-c sandbox_workspace_write.network_access=false`. The worker sandbox
+  (`--approve-for-me`, workspace write) reads the host's Codex configuration, so a host that
+  enables network access there for interactive use also gave it to every worker; the runner
+  now sets it off on fresh and resumed worker calls. Read-only review calls are unchanged.
+  Project impact: none, unless a project's worker relied on network access inside the sandbox.
+  Canary tier: canary batch (backend argv).
+
 ## v2.4.0 — 2026-10-01
 
 The findings of the §2.7 batches (s27-spec-20260930, s27-impl-20261001, s27-notebook-20261001
