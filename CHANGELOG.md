@@ -15,6 +15,15 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.4.1 — 2026-10-02
+
+Codex workers no longer inherit network access from the host's Codex configuration.
+
+**Project impact:** none, unless a project's worker relied on network access inside the Codex
+sandbox. A paused batch adopts the release with `recover repin-config`.
+
+**Canary tier:** canary batch; the Codex backend's worker argv changed.
+
 ### Changed
 
 * Codex workers run with `-c sandbox_workspace_write.network_access=false`. The worker sandbox
