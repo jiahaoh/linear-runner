@@ -34,6 +34,13 @@ its tier. The release procedure is in the README ("Releases").
   cost s28-impl-20261002 a second edit and a second re-pin. Project impact: a batch that
   pins `runner_version` must name the new release in its batch file before `repin-config`
   adopts that release. Canary tier: first-issue checkpoint (recovery preflight) (`W-303`).
+* The repair prompt that carries review findings (`recover repair`) tells the worker that
+  the reviewer's evidence may name examples, not every instance: the worker checks each
+  unmet criterion as a whole, fixes every instance it finds and lists in its notes what it
+  checked. The first repair of `W-296` fixed the tests its review named; the second review
+  found more of the same kind, which used the last repair slot and about 33 more minutes.
+  The review prompt, the review result format and the number of repair slots are unchanged.
+  Project impact: none. Canary tier: canary batch (prompt) (`W-303`).
 
 ### Fixed
 

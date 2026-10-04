@@ -1211,7 +1211,12 @@ rules start a fresh one from a handoff, the next slot of `max_repairs`, the sing
 after an earlier repair, the repair budget and timeout). The repair prompt gives every unmet
 criterion with the reviewer's evidence, the reviewer's summary and limitations, and the
 owner's note, as problems the independent reviewer found in the committed work, to fix
-within the issue's scope on top of the clean committed source. Then the full checks run
+within the issue's scope on top of the clean committed source. It also says that the
+reviewer's evidence may name examples: the worker checks each unmet criterion as a whole,
+fixes every instance it finds and lists in its notes what it checked. The review prompt
+and the review result stay as they are; the reviewer is not asked for an exhaustive list.
+When you write a `--note-file`, state the criterion, not only the reviewer's examples. Then
+the full checks run
 (failures enter the normal repair loop), the repair is committed as a new controller commit
 on top of the earlier one (`fix(<issue>): address review findings (<issue title>)`; the earlier
 commit is never amended), delivery runs again (the earlier packet is kept as

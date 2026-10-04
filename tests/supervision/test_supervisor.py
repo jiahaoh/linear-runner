@@ -1084,6 +1084,15 @@ class ReviewRepairTests(Harness):
         self.assertIn("- Parquet was checked by reading code", prompt)
         self.assertIn("Keep <NA> as a literal gene ID in both formats; do not change the Parquet path.", prompt)
         self.assertIn("leave them uncommitted", prompt)
+        # W-303: the first W-296 repair fixed the tests the review named, and the second review
+        # found more of the same kind. The reviewer is not asked for an exhaustive list.
+        self.assertIn("The reviewer's evidence may name examples, not every instance of a problem. For each unmet "
+                      "criterion, check the whole criterion across the issue's work, not only the files, tests or "
+                      "lines the reviewer names; fix every instance you find, and list in your notes what you checked "
+                      "and what you changed. Change only what the unmet criteria need; do not expand scope", prompt)
+        review_prompt = self.prompts[1]
+        self.assertNotIn("examples", review_prompt)
+        self.assertNotIn("every instance", review_prompt)
 
     def test_a_changed_review_result_stops_before_the_repair(self):
         self.pause_at_blocked_review()
