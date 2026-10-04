@@ -69,8 +69,8 @@ from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint
 from linear_runner.supervision import backend_start
 from linear_runner.version import pin_problem
 from linear_runner.supervision.recovery import expected_state
-from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, fingerprint, git, now,
-                                         project_lock, resolve_profile, run_id)
+from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, evidence_intact,
+                                         fingerprint, git, now, project_lock, resolve_profile, run_id)
 from linear_runner.linear import messages
 from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor, pid_alive
 
@@ -149,20 +149,33 @@ def _check_claude_auth(config):
 
 
 def _baseline_checks(runner, directory):
+    """Run each default check, or reuse its passing evidence from the check cache: a validation
+    or an earlier baseline with the same launch key (``Runner.check_keys``). After a finished
+    issue the commit is new but the bytes its validation passed on are not (W-303)."""
     if git(runner.repo, "status", "--porcelain"):
         raise LaunchError("Baseline checks need a clean worktree")
+    cache_path = runner.root / "check-cache.json"
+    cache = read_json(cache_path) if cache_path.exists() else {}
     records = {}
     for spec in runner.config["checks"]:
         if spec["tier"] != "default":
             continue
+        previous = cache.get(spec["name"], {})
+        if previous.get("launch_key") == runner.check_keys(spec)[1] and evidence_intact(previous):
+            records[spec["name"]] = dict({k: previous[k] for k in ("exit_code", "status", "log", "sha256")}, reused=True)
+            continue
         target = directory / spec["name"]
         target.mkdir(parents=True)
-        passed = runner.validate(target, [{k: spec[k] for k in ("cwd", "command", "allow_empty") if k in spec}],
-                                 runner.config["check_environment"])
+        passed = runner.validate(target, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds")
+                                           if k in spec}], runner.config["check_environment"])
         record = read_json(target / "checks.json")[0]
-        records[spec["name"]] = {k: record[k] for k in ("exit_code", "status", "log", "sha256")}
+        records[spec["name"]] = dict({k: record[k] for k in ("exit_code", "status", "log", "sha256")}, reused=False)
         if not passed:
             raise LaunchError(f"Baseline check {spec['name']!r} failed; see {record['log']}")
+        # Keyed after the run, on the ignored files the check leaves (as ``Runner.run_checks``).
+        key, launch_key = runner.check_keys(spec)
+        cache[spec["name"]] = dict(record, name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False)
+        write_json(cache_path, cache)
     return records
 
 
@@ -336,6 +349,10 @@ def preflight(config, runner, *, launch_id, force=False):
         else:
             step("baseline_checks", ["source", "config", "environment", "fixtures"],
                  lambda: _baseline_checks(runner, directory / "baseline"))
+            entry = record["steps"]["baseline_checks"]
+            evidence = sorted(name for name, check in entry["result"].items() if check.get("reused"))
+            if evidence and not entry.get("reused"):
+                entry["reason"] += "; reused the passing check evidence of " + ", ".join(evidence)
     step("linear_credential", [], lambda: _check_linear_credential(config, runner.linear), live=True)
     pending = []
     step("linear", [], lambda: _check_linear(runner, supervisor, pending), live=True)

@@ -489,7 +489,7 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 | `config` | Every layer and the registry validate; resolved fingerprint | configuration |
 | `worktree` | Expected branch, not moved outside the controller, clean unless an active issue owns the changes | source (branch, HEAD, clean flag, content hash) + configuration |
 | `model_catalog` | Host catalog readable; which registry profiles it offers | catalog bytes + configuration |
-| `baseline_checks` (optional) | Default-tier checks pass on the clean baseline; never run over a resumed active issue's own uncommitted work (the last passing result is reused while configuration, environment and fixtures are unchanged; otherwise the step is recorded `skipped` with the reason) | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
+| `baseline_checks` (optional) | Default-tier checks pass on the clean baseline, each run or covered by passing check evidence (below); never run over a resumed active issue's own uncommitted work (the last passing result is reused while configuration, environment and fixtures are unchanged; otherwise the step is recorded `skipped` with the reason) | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
 | `claude_auth` (with `site.claude.auth`) | The Claude token file or variable is usable and the CLI uses it (see "Claude authentication") | never: always re-read |
 | `linear_credential` | The Linear OAuth credential's remaining lifetime, when its file records an expiry (below) | never: always re-read |
 | `linear` | Authenticated live read of every allowlisted issue, gates, ownership, decision-rule blocks, model/effort per phase, dependency-aware dry-run selection, or the resume checks for a saved active issue | never: live state is always re-read |
@@ -498,6 +498,19 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 Each step records `reused` and a reason (`reused: source, config unchanged since L-...`,
 `changed: source`, `no previous preflight result`, `previous result did not pass`,
 `live state: always re-read`). `--rerun-preflight` disables reuse.
+
+**Baseline evidence.** When `baseline_checks` has to run, for example on the commit a finished
+issue left, each default check first looks in `<state dir>/check-cache.json`. It reuses a
+recorded passing run, a validation or an earlier baseline, whose check definition, check
+environment, launcher environment, executable, identity files and matching input bytes are
+the same, and runs only otherwise, also when the record failed, is missing or its log is no
+longer the hashed file. The step's reason then ends with `reused the passing check evidence
+of <names>`, and each check under the step's `result` has `reused` and the `log` of its
+evidence. The inherited process environment is not compared here, unlike between two
+validations: `launch` inherits the operator's shell and the supervisor inherits its unit's
+environment, so the two are never the same. A check whose command is found through `PATH`
+is reused only if both resolve it to the same file. A baseline check runs under its own
+`timeout_seconds`.
 
 **Linear credential lifetime.** A workspace that uses a Codex-owned `credentials_file`
 depends on an OAuth access token that expires; a batch that outlives it stops with "Linear

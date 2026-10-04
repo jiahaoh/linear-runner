@@ -15,6 +15,20 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* The launch preflight's `baseline_checks` step reuses passing check evidence. A default
+  check is not run again when `check-cache.json` holds a passing validation or baseline of
+  it with the same definition, check environment, launcher environment, executable, identity
+  files and matching input bytes; the step's reason names the checks it covered that way. A
+  failed, missing or damaged record still runs the check. Four of the six launches of
+  s28-impl-20261002 reran the default checks on bytes whose validation had just passed, about
+  27 minutes in total. The inherited process environment is left out of this comparison,
+  because `launch` and the supervisor's unit never share it; validations compare it as
+  before. A baseline check now also runs under its own `timeout_seconds`. Check records gain
+  `launch_key`, so evidence saved by an earlier runner is not reused by the first baseline.
+  Project impact: none. Canary tier: first-issue checkpoint (preflight) (`W-303`).
+
 ### Fixed
 
 * The `"last_issue": "when_changed"` rule (2.4.0) compares against the whole batch. The

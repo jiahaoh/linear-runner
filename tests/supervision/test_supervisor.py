@@ -1905,6 +1905,96 @@ class ResumeBaselineTests(Harness):
                                      "worktree"))
 
 
+class BaselineEvidenceTests(Harness):
+    """The launch baseline reuses passing check evidence (W-303): four launches of
+    s28-impl-20261002 reran the default checks on bytes whose validation had just passed."""
+    BATCH = {"supervision": {"baseline_checks": True}}
+    # Counts its runs outside the worktree; every issue's own file is among its inputs.
+    PROJECT = {"checks": [{"name": "output", "kind": "code", "tier": "default", "inputs": ["result.txt", "DEV-*.txt"],
+                           "cwd": ".", "command": ["${python}", "-c",
+                                                   "from pathlib import Path; open('../output-runs.txt', 'a').write('run\\n'); "
+                                                   "assert Path('result.txt').read_text() == 'ready'"]}]}
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / "result.txt").write_text("ready"); git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "ready")
+
+    def runs(self):
+        return (self.root / "output-runs.txt").read_text().count("run")
+
+    def baseline(self, launch_id=None):
+        path = self.state_dir / (f"preflight/{launch_id}.json" if launch_id else "preflight.json")
+        return json.loads(path.read_text())["steps"]["baseline_checks"]
+
+    def test_a_relaunch_after_a_finished_issue_reuses_its_validation(self):
+        # The supervisor's unit and the operator's shell never have the same environment.
+        with patch.dict(os.environ, {"SET_IN_THE_UNIT": "1"}):
+            self.assertEqual(self.launch(stop_after=["DEV-1"])["started"]["outcome"], "checkpoint")
+        first = self.baseline()
+        self.assertEqual((first["reason"], first["result"]["output"]["reused"]), ("no previous preflight result", False))
+        self.assertEqual(self.runs(), 2)  # the first baseline, then DEV-1's validation with DEV-1.txt
+        cache = json.loads((self.state_dir / "check-cache.json").read_text())["output"]
+        validated = json.loads((Path(self.state()["history"][0]["validation_dir"]) / "checks.json").read_text())[0]
+        self.assertEqual((cache["log"], validated["reused"]), (validated["log"], False))
+        key, launch_key = self.make_runner().check_keys(self.make_runner().config["checks"][0])
+        self.assertNotEqual(key, cache["key"])
+        self.assertEqual(launch_key, cache["launch_key"])
+
+        self.assertEqual(self.launch(stop_after=["DEV-2"], clear_stop=True)["started"]["outcome"], "checkpoint")
+        second = self.baseline()
+        self.assertEqual((second["status"], second["reused"]), ("passed", False))
+        self.assertEqual(second["reason"], "changed: source; reused the passing check evidence of output")
+        self.assertEqual(second["result"]["output"], {"exit_code": 0, "status": "passed", "log": validated["log"],
+                                                      "sha256": validated["sha256"], "reused": True})
+        self.assertFalse((self.state_dir / "preflight" / self.state()["checkpoints_reached"][-1]["launch_id"] / "baseline").exists())
+        self.assertEqual(self.runs(), 3)  # only DEV-2's validation
+        self.assertIn('"baseline_checks": "ran (changed: source; reused the passing check evidence of output)"',
+                      self.output[-1])
+
+    def test_an_earlier_baseline_is_reused_and_a_changed_failed_or_damaged_record_is_not(self):
+        def step(launch_id):
+            runner = self.make_runner()
+            return preflight(runner.config, runner, launch_id=launch_id)["steps"]["baseline_checks"]
+        def commit(name, text):
+            (self.repo / name).write_text(text); git(self.repo, "add", "."); git(self.repo, "commit", "-qm", name)
+        first = step("L-one")
+        self.assertEqual((first["result"]["output"]["reused"], self.runs()), (False, 1))
+        # Another commit that touches none of the check's inputs: the earlier baseline counts.
+        commit("notes.txt", "unrelated")
+        second = step("L-two")
+        self.assertEqual(second["reason"], "changed: source; reused the passing check evidence of output")
+        self.assertEqual((second["result"]["output"]["log"], self.runs()), (first["result"]["output"]["log"], 1))
+        # A changed input runs the check.
+        commit("DEV-9.txt", "an input")
+        third = step("L-three")
+        self.assertEqual((third["reason"], third["result"]["output"]["reused"], self.runs()), ("changed: source", False, 2))
+        # A log that is no longer the hashed file is no evidence.
+        Path(third["result"]["output"]["log"]).write_text("edited")
+        commit("notes.txt", "unrelated again")
+        self.assertEqual((step("L-four")["result"]["output"]["reused"], self.runs()), (False, 3))
+        # Neither is a failed record, nor a missing one.
+        cache_path = self.state_dir / "check-cache.json"
+        cache = json.loads(cache_path.read_text())
+        cache["output"].update(status="failed", exit_code=1)
+        cache_path.write_text(json.dumps(cache))
+        commit("notes.txt", "unrelated, third time")
+        self.assertEqual((step("L-five")["result"]["output"]["reused"], self.runs()), (False, 4))
+        cache_path.unlink()
+        commit("notes.txt", "unrelated, fourth time")
+        self.assertEqual((step("L-six")["result"]["output"]["reused"], self.runs()), (False, 5))
+        # A failing baseline still fails the launch and leaves no evidence behind.
+        commit("result.txt", "broken")
+        with self.assertRaisesRegex(LaunchError, "Baseline check 'output' failed"):
+            step("L-seven")
+        self.assertEqual(json.loads(cache_path.read_text())["output"]["status"], "passed")
+
+    def test_a_baseline_check_runs_under_its_own_time_limit(self):
+        runner = self.make_runner()
+        runner.config["checks"][0].update(command=[sys.executable, "-c", "import time; time.sleep(30)"], timeout_seconds=1)
+        with self.assertRaisesRegex(LaunchError, "Baseline check 'output' failed"):
+            preflight(runner.config, runner, launch_id="L-slow")
+
+
 class WhenChangedBatchBaseTests(Harness):
     """The last issue's ``when_changed`` rule compares against the whole batch (W-302): in
     s28-impl-20261002 it compared against the last issue's own starting commit."""

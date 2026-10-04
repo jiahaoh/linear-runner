@@ -95,6 +95,14 @@ def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
+def evidence_intact(record):
+    """A saved check record is passing evidence (passed, or an allowed empty selection) and its
+    log is still the file that was hashed."""
+    log = Path(record["log"]) if record.get("log") else None
+    return bool(check_passed(record) and log and log.is_file()
+                and hashlib.sha256(log.read_bytes()).hexdigest() == record["sha256"])
+
+
 def fingerprint(repo):
     """Hash nonignored tracked/untracked file content; committing does not change it."""
     paths = subprocess.check_output(["git", "-C", str(repo), "ls-files", "-co", "--exclude-standard", "-z"])
@@ -1601,22 +1609,33 @@ class Runner:
         return sorted(set(git(self.repo, "diff", "--name-only", base).splitlines()
                           + git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()))
 
-    def check_key(self, spec):
-        """The identity of one check's evidence: its definition, the configured and inherited
-        environment (without the per-launch LAUNCH_VARIABLES), the executable, the
-        ``identity_files`` and the bytes of every file its ``inputs`` match."""
-        digest = hashlib.sha256(json.dumps({"spec": spec, "environment": self.config["check_environment"]}, sort_keys=True).encode())
+    def check_keys(self, spec):
+        """``(key, launch_key)``, the identity of one check's evidence.
+
+        ``key``: the check's definition, the configured and inherited environment (without the
+        per-launch LAUNCH_VARIABLES), the executable, the ``identity_files`` and the bytes of
+        every file its ``inputs`` match. Validations reuse evidence on this key.
+
+        ``launch_key``: the same without the inherited environment, with the launcher's
+        configured ``environment`` in its place. The launch process inherits the operator's
+        shell and the supervisor inherits its unit's environment, so the two never share
+        ``key``; the launch baseline reuses evidence on this key (W-303)."""
+        definition = json.dumps({"spec": spec, "environment": self.config["check_environment"]}, sort_keys=True).encode()
+        full, launch = hashlib.sha256(definition), hashlib.sha256(definition)
         # Explicit external manifests/executables and inherited environment are
         # part of evidence identity; secrets are hashed, never serialized.
-        digest.update(json.dumps(evidence_environment(self.config), sort_keys=True).encode())
+        full.update(json.dumps(evidence_environment(self.config), sort_keys=True).encode())
+        launch.update(json.dumps(self.config["launcher"]["environment"], sort_keys=True).encode())
+        def update(data):
+            full.update(data); launch.update(data)
         executable = shutil.which(spec["command"][0])
         identities = list(self.config["identity_files"])
         if executable:
             identities.append(executable)
         for filename in identities:
             path = Path(filename).expanduser()
-            digest.update(str(path.resolve()).encode())
-            digest.update(path.read_bytes())
+            update(str(path.resolve()).encode())
+            update(path.read_bytes())
         paths = subprocess.check_output(["git", "-C", str(self.repo), "ls-files", "-co", "--exclude-standard", "-z"]).decode().split("\0")
         # Include ignored fixture bytes when their patterns are declared.
         matched = set(paths) - {""}
@@ -1627,9 +1646,12 @@ class Runner:
         for relative in sorted(matched):
             if any(fnmatch.fnmatch(relative, pattern) for pattern in spec["inputs"]):
                 path = self.repo / relative
-                digest.update(relative.encode())
-                digest.update(path.read_bytes() if path.is_file() else b"<deleted>")
-        return digest.hexdigest()
+                update(relative.encode())
+                update(path.read_bytes() if path.is_file() else b"<deleted>")
+        return full.hexdigest(), launch.hexdigest()
+
+    def check_key(self, spec):
+        return self.check_keys(spec)[0]
 
     def run_checks(self, active):
         directory = Path(active["run_dir"]) / ("validation-" + run_id())
@@ -1658,18 +1680,18 @@ class Runner:
                                         "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
                                         "model": None})
                         continue
-            key = self.check_key(spec)
+            key, launch_key = self.check_keys(spec)
             previous = cache.get(spec["name"], {})
             # Only intact successful evidence (passed, or an allowed empty selection) is reused;
             # failures always rerun. ``key`` covers the whole check definition, allow_empty included.
-            if previous.get("key") == key and check_passed(previous) and Path(previous["log"]).is_file() and hashlib.sha256(Path(previous["log"]).read_bytes()).hexdigest() == previous["sha256"]:
+            if previous.get("key") == key and evidence_intact(previous):
                 results.append(dict(previous, reused=True))
                 continue
             subdir = directory / str(index); subdir.mkdir()
             self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}],
                           self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
-            result.update(name=spec["name"], key=key, model=None, reused=False)
+            result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False)
             cache[spec["name"]] = result
             results.append(result)
             ran.append((spec, result))
@@ -1681,7 +1703,7 @@ class Runner:
         # or the next round would see new inputs and rerun every check once more. Tracked and
         # unignored files cannot have changed: the fingerprint above is the same.
         for spec, result in ran:
-            result["key"] = self.check_key(spec)
+            result["key"], result["launch_key"] = self.check_keys(spec)
         if ran:
             write_json(cache_path, cache)
         if not [r for r in results if not check_skipped(r)]:
