@@ -232,8 +232,8 @@ every batch state names the runner it ran with. A batch may pin a release with
 `"runner_version": "2.0.0"`: the launch preflight's `config` step then refuses unless the
 runner checkout is exactly the clean, tagged release (`The batch pins runner_version 2.1.0,
 but this checkout is release 2.0.0 at commit ...`). `validate-config` reports the same
-problem under `runner_version` without failing. Without `runner_version` any checkout runs,
-as before.
+problem under `runner_version` without failing, and `recover repin-config` refuses with it.
+Without `runner_version` any checkout runs, as before.
 
 Every CHANGELOG entry states its **project impact** (`none`, or the exact configuration change
 and the `validate-config` message that asks for it) and its **canary tier**: `first-issue
@@ -1269,6 +1269,12 @@ names live and requires them to resolve to the pinned IDs, then:
 * refuses a changed check definition (or check environment) while the active issue is at
   `commit`, `delivery`, `review`, `publish` or `done`, whose evidence was validated by the
   pinned checks (finish or defer it first);
+* refuses, before it changes anything, when the batch pins a `runner_version` that this
+  checkout is not (another release, an untagged commit or uncommitted changes). The message
+  names both values and the two ways out, as the launch preflight's does: `The batch pins
+  runner_version 2.4.0, but this checkout is release 2.4.1 at commit ...; check out the tag
+  v2.4.0 or change the batch's runner_version`. To adopt a new release, edit the batch
+  file's `runner_version` first, then re-pin once;
 * keeps the previous pin as `resolved-config-before-<R-id>.json`, writes the new
   `resolved-config.json` and the new fingerprint into `state.json`, and removes the reuse
   cache entries of checks whose definition changed (the old cache is kept as

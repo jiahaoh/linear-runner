@@ -104,6 +104,34 @@ class PinTests(unittest.TestCase):
         record = json.loads((Path(runner.config["state_dir"]) / "preflight.json").read_text())
         self.assertFalse(record["passed"])
 
+    def test_repin_config_refuses_a_checkout_that_is_not_the_pinned_release(self):
+        # s28-impl-20261002 (W-303): the re-pin to 2.4.1 succeeded while the batch file still
+        # pinned 2.4.0, and only the next launch refused.
+        from linear_runner.supervision.recovery import RecoveryError, recover_repin_config
+        runner = self.runner(runner_version=RELEASE)
+        runner.verify_config()
+        runner.save(phase="paused")
+        root = Path(runner.config["state_dir"])
+        before = {name: (root / name).read_bytes() for name in ("state.json", "resolved-config.json")}
+        home, path = self.root / "home", self.root / "home" / "batches" / "fixture.json"
+        def repin():
+            return recover_repin_config(load_config(path, home), self.linear, reason="adopt the new runner",
+                                        authorized_by="Owner")
+        self.identity = {"release": "9.9.9", "commit": "b" * 40, "dirty": False}
+        with patch("linear_runner.version.tagged", return_value=True):
+            with self.assertRaisesRegex(RecoveryError, rf"The batch pins runner_version {re.escape(RELEASE)}, but this "
+                                                       r"checkout is release 9\.9\.9 at commit b{40}; check out the tag "
+                                                       rf"v{re.escape(RELEASE)} or change the batch's runner_version\. "
+                                                       "Nothing was re-pinned"):
+                repin()
+            self.assertEqual({name: (root / name).read_bytes() for name in before}, before)
+            self.assertFalse(list(root.glob("resolved-config-before-*.json")))
+            # The batch file names the new release: the same command adopts it.
+            batch = json.loads(path.read_text()); batch["runner_version"] = "9.9.9"; path.write_text(json.dumps(batch))
+            record = repin()
+        self.assertEqual(record["details"]["runner"]["new"]["release"], "9.9.9")
+        self.assertIn(f'runner_version: "{RELEASE}" → "9.9.9"', record["details"]["changes"])
+
     def test_the_pin_needs_the_clean_tagged_release(self):
         runner = self.runner(runner_version=RELEASE)
         with patch("linear_runner.version.tagged", return_value=False):

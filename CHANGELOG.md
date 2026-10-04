@@ -28,6 +28,12 @@ its tier. The release procedure is in the README ("Releases").
   before. A baseline check now also runs under its own `timeout_seconds`. Check records gain
   `launch_key`, so evidence saved by an earlier runner is not reused by the first baseline.
   Project impact: none. Canary tier: first-issue checkpoint (preflight) (`W-303`).
+* `recover repin-config` refuses when the batch pins a `runner_version` that the checkout is
+  not, with the launch preflight's message (both values, and the two ways to resolve it),
+  and changes nothing. Before, the re-pin succeeded and only the next launch refused, which
+  cost s28-impl-20261002 a second edit and a second re-pin. Project impact: a batch that
+  pins `runner_version` must name the new release in its batch file before `repin-config`
+  adopts that release. Canary tier: first-issue checkpoint (recovery preflight) (`W-303`).
 
 ### Fixed
 

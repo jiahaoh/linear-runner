@@ -612,8 +612,9 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     ``config`` is freshly loaded (``load_config``). Applied at once; see the module notes.
     ``append_issues``: also adopt issues added at the end of the allowlist (W-282).
     """
-    from linear_runner.config import (RESOLVED_NAME, _with_ids, config_changes, config_fingerprint, read_json,
-                                      resolution_names, write_resolved)
+    from linear_runner.config import (RESOLVED_NAME, RUNNER_ROOT, _with_ids, config_changes, config_fingerprint,
+                                      read_json, resolution_names, write_resolved)
+    from linear_runner.version import pin_problem
     from linear_runner.engine.runner import Runner
     for name, value in (("--reason", reason), ("--authorized-by", authorized_by)):
         if not isinstance(value, str) or not value.strip():
@@ -625,6 +626,11 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     pinned, state = read_json(pinned_path), read_json(state_path)
     if state.get("config_sha256") != pinned.get("config_sha256"):
         raise RecoveryError(f"state.json and {RESOLVED_NAME} name different configurations; reconcile them first")
+    # The launch preflight refuses a checkout that is not the batch's pinned release; adopting
+    # it here would only move that refusal to the next launch (s28-impl-20261002, W-303).
+    problem = pin_problem(config, RUNNER_ROOT)
+    if problem:
+        raise RecoveryError(f"{problem}. Nothing was re-pinned; the launch preflight would refuse this checkout too")
     if state.get("pending_recovery"):
         raise RecoveryError(f"Recovery {state['pending_recovery']['id']} is pending and was recorded against the "
                             "pinned configuration; cancel it (recover cancel), re-pin, then record it again")
