@@ -2033,24 +2033,29 @@ class BaselineEvidenceTests(Harness):
         second = step("L-two")
         self.assertEqual(second["reason"], "changed: source; reused the passing check evidence of output")
         self.assertEqual((second["result"]["output"]["log"], self.runs()), (first["result"]["output"]["log"], 1))
+        # --rerun-preflight reuses nothing.
+        runner = self.make_runner()
+        forced = preflight(runner.config, runner, launch_id="L-forced", force=True)["steps"]["baseline_checks"]
+        self.assertEqual((forced["reason"], forced["result"]["output"]["reused"], self.runs()),
+                         ("rerun requested (--rerun-preflight)", False, 2))
         # A changed input runs the check.
         commit("DEV-9.txt", "an input")
         third = step("L-three")
-        self.assertEqual((third["reason"], third["result"]["output"]["reused"], self.runs()), ("changed: source", False, 2))
+        self.assertEqual((third["reason"], third["result"]["output"]["reused"], self.runs()), ("changed: source", False, 3))
         # A log that is no longer the hashed file is no evidence.
         Path(third["result"]["output"]["log"]).write_text("edited")
         commit("notes.txt", "unrelated again")
-        self.assertEqual((step("L-four")["result"]["output"]["reused"], self.runs()), (False, 3))
+        self.assertEqual((step("L-four")["result"]["output"]["reused"], self.runs()), (False, 4))
         # Neither is a failed record, nor a missing one.
         cache_path = self.state_dir / "check-cache.json"
         cache = json.loads(cache_path.read_text())
         cache["output"].update(status="failed", exit_code=1)
         cache_path.write_text(json.dumps(cache))
         commit("notes.txt", "unrelated, third time")
-        self.assertEqual((step("L-five")["result"]["output"]["reused"], self.runs()), (False, 4))
+        self.assertEqual((step("L-five")["result"]["output"]["reused"], self.runs()), (False, 5))
         cache_path.unlink()
         commit("notes.txt", "unrelated, fourth time")
-        self.assertEqual((step("L-six")["result"]["output"]["reused"], self.runs()), (False, 5))
+        self.assertEqual((step("L-six")["result"]["output"]["reused"], self.runs()), (False, 6))
         # A failing baseline still fails the launch and leaves no evidence behind.
         commit("result.txt", "broken")
         with self.assertRaisesRegex(LaunchError, "Baseline check 'output' failed"):

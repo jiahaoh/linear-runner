@@ -545,7 +545,7 @@ evidence. The inherited process environment is not compared here, unlike between
 validations: `launch` inherits the operator's shell and the supervisor inherits its unit's
 environment, so the two are never the same. A check whose command is found through `PATH`
 is reused only if both resolve it to the same file. A baseline check runs under its own
-`timeout_seconds`.
+`timeout_seconds`. `--rerun-preflight` runs every default check, whatever evidence exists.
 
 **Linear credential lifetime.** A workspace that uses a Codex-owned `credentials_file`
 depends on an OAuth access token that expires; a batch that outlives it stops with "Linear

@@ -8,7 +8,7 @@ step                      identity it depends on                 reused when unc
 config                    resolved configuration fingerprint     yes
                           (and the pinned runner_version, if any)
 worktree                  source (branch, HEAD, clean, content)  yes
-model_catalog             catalog content (without the CLI's    yes
+model_catalog             catalog content (without the CLI's     yes
                           fetch bookkeeping) + configuration
 claude_auth (opt.)        the configured Claude token            never (always re-read)
 linear_credential         the Linear OAuth credential's expiry   never (always re-read)
@@ -150,10 +150,11 @@ def _check_claude_auth(config):
     return dict(record, token="readable (value not recorded)")
 
 
-def _baseline_checks(runner, directory):
+def _baseline_checks(runner, directory, *, reuse=True):
     """Run each default check, or reuse its passing evidence from the check cache: a validation
     or an earlier baseline with the same launch key (``Runner.check_keys``). After a finished
-    issue the commit is new but the bytes its validation passed on are not (W-303)."""
+    issue the commit is new but the bytes its validation passed on are not (W-303).
+    ``reuse=False`` (``--rerun-preflight``) runs every check."""
     if git(runner.repo, "status", "--porcelain"):
         raise LaunchError("Baseline checks need a clean worktree")
     cache_path = runner.root / "check-cache.json"
@@ -163,7 +164,7 @@ def _baseline_checks(runner, directory):
         if spec["tier"] != "default":
             continue
         previous = cache.get(spec["name"], {})
-        if previous.get("launch_key") == runner.check_keys(spec)[1] and evidence_intact(previous):
+        if reuse and previous.get("launch_key") == runner.check_keys(spec)[1] and evidence_intact(previous):
             records[spec["name"]] = dict({k: previous[k] for k in ("exit_code", "status", "log", "sha256")}, reused=True)
             continue
         target = directory / spec["name"]
@@ -350,7 +351,7 @@ def preflight(config, runner, *, launch_id, force=False):
                                                       "reason": f"{why}, and {since}"}
         else:
             step("baseline_checks", ["source", "config", "environment", "fixtures"],
-                 lambda: _baseline_checks(runner, directory / "baseline"))
+                 lambda: _baseline_checks(runner, directory / "baseline", reuse=not force))
             entry = record["steps"]["baseline_checks"]
             evidence = sorted(name for name, check in entry["result"].items() if check.get("reused"))
             if evidence and not entry.get("reused"):
