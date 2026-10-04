@@ -1578,12 +1578,26 @@ class Runner:
                 f"{Path(active['run_dir']) / 'intake.json'} and the saved evidence are authoritative where they "
                 f"differ.\n\n```json\n{text.strip()}\n```\n\n")
 
-    def batch_changed_files(self, active):
-        """Files changed since the batch's base revision (the first issue's starting commit),
-        the active issue's uncommitted and untracked files included."""
+    def batch_base(self, active):
+        """The batch's base revision: the starting commit of its first finished issue, or of the
+        active issue when none has finished. Releases 2.4.0 and 2.4.1 wrote history entries
+        without ``starting_commit`` (W-302); for those the issue's run manifest names it, and
+        without a readable manifest it is the parent of the issue's first controller commit."""
         history = self.state.get("history") or []
-        base = next((entry["starting_commit"] for entry in history if entry.get("starting_commit")),
-                    active["starting_commit"])
+        if not history:
+            return active["starting_commit"]
+        first = history[0]
+        if first.get("starting_commit"):
+            return first["starting_commit"]
+        try:
+            return read_json(Path(first["run_dir"]) / "manifest.json")["starting_commit"]
+        except (OSError, ValueError, KeyError):
+            return git(self.repo, "rev-parse", first["commits"][0] + "^")
+
+    def batch_changed_files(self, active):
+        """Files changed since the batch's base revision (``batch_base``), the active issue's
+        uncommitted and untracked files included."""
+        base = self.batch_base(active)
         return sorted(set(git(self.repo, "diff", "--name-only", base).splitlines()
                           + git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()))
 
@@ -2002,7 +2016,8 @@ class Runner:
             if not any(h["issue_id"] == issue for h in self.state["history"]):
                 # ``validation_dir`` names the validation the issue was accepted on. Directory names
                 # (``validation-<UTC second>-<random>``) do not order validations within a second.
-                self.state["history"].append({"issue_id": issue, "commit": active["commit"], "run_dir": active["run_dir"],
+                self.state["history"].append({"issue_id": issue, "starting_commit": active["starting_commit"],
+                                              "commit": active["commit"], "run_dir": active["run_dir"],
                                               "validation_dir": active.get("validation_dir"), "completed_at": now(),
                                               "commits": active.get("controller_commits") or [active["commit"]]})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)

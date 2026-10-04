@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Fixed
+
+* The `"last_issue": "when_changed"` rule (2.4.0) compares against the whole batch. The
+  history of finished issues did not record their starting commits, so the batch's base
+  revision was always the last issue's own starting commit, and a check was skipped at the
+  last issue although an earlier issue had changed its inputs. In s28-impl-20261002 two
+  extended checks were skipped that way and the review of `W-297` blocked on the missing
+  evidence. History entries now record `starting_commit`. A batch state written by 2.4.0 or
+  2.4.1 needs no edit: the base is read from the first finished issue's run manifest, or,
+  without it, is the parent of that issue's first controller commit. Project impact: none.
+  Canary tier: canary batch (engine) (`W-302`).
+
 ## v2.4.1 — 2026-10-02
 
 Codex workers no longer inherit network access from the host's Codex configuration.

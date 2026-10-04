@@ -1905,6 +1905,64 @@ class ResumeBaselineTests(Harness):
                                      "worktree"))
 
 
+class WhenChangedBatchBaseTests(Harness):
+    """The last issue's ``when_changed`` rule compares against the whole batch (W-302): in
+    s28-impl-20261002 it compared against the last issue's own starting commit."""
+    COUNT = "open('../{}-runs.txt', 'a').write('run\\n')"
+    EXTENDED = {"kind": "code", "tier": "extended", "last_issue": "when_changed", "cwd": "."}
+    PROJECT = {"checks": [
+        {"name": "output", "kind": "code", "tier": "default", "inputs": ["result.txt"], "cwd": ".",
+         "command": ["${python}", "-c", "from pathlib import Path; assert Path('result.txt').read_text() == 'ready'"]},
+        # Only DEV-1 writes DEV-1.txt, and no issue writes under untouched/.
+        dict(EXTENDED, name="first-only", inputs=["DEV-1.txt"], command=["${python}", "-c", COUNT.format("first-only")]),
+        dict(EXTENDED, name="untouched", inputs=["untouched/*"], command=["${python}", "-c", COUNT.format("untouched")])]}
+
+    def records(self, issue):
+        entry = next(h for h in self.state()["history"] if h["issue_id"] == issue)
+        return {r["name"]: r for r in json.loads((Path(entry["validation_dir"]) / "checks.json").read_text())}
+
+    def assert_last_issue_covers_the_batch(self):
+        from linear_runner.engine.delivery import SKIPPED_NOTE
+        self.assertEqual(self.done(), ["DEV-1", "DEV-2", "DEV-3"])
+        self.assertEqual(sorted(self.records("DEV-2")), ["output"])
+        last = self.records("DEV-3")
+        # DEV-3 changed no matching file, but DEV-1 did: the check counts, here as reused evidence.
+        self.assertEqual((last["first-only"]["status"], last["first-only"]["reused"]), ("passed", True))
+        self.assertEqual((self.root / "first-only-runs.txt").read_text(), "run\n")
+        self.assertEqual({k: last["untouched"][k] for k in ("status", "exit_code", "last_issue", "note", "reused")},
+                         {"status": "skipped", "exit_code": None, "last_issue": "when_changed", "note": SKIPPED_NOTE,
+                          "reused": False})
+        self.assertFalse((self.root / "untouched-runs.txt").exists())
+
+    def test_the_last_issue_counts_a_file_an_earlier_issue_changed(self):
+        base = git(self.repo, "rev-parse", "HEAD")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        history = self.state()["history"]
+        self.assertEqual(history[0]["starting_commit"], base)
+        self.assertEqual([h["starting_commit"] for h in history[1:]], [h["commit"] for h in history[:2]])
+        self.assert_last_issue_covers_the_batch()
+
+    def finish_a_batch_paused_by_an_earlier_release(self, *, manifest):
+        base = git(self.repo, "rev-parse", "HEAD")
+        self.launch(stop_after=["DEV-2"])
+        # Releases 2.4.0 and 2.4.1 wrote history entries without ``starting_commit``.
+        state = self.state()
+        for entry in state["history"]:
+            del entry["starting_commit"]
+        write_json(self.state_dir / "state.json", state)
+        if not manifest:
+            (Path(state["history"][0]["run_dir"]) / "manifest.json").unlink()
+        self.assertEqual(self.make_runner().batch_base({"starting_commit": git(self.repo, "rev-parse", "HEAD")}), base)
+        self.assertEqual(self.launch(clear_stop=True)["started"]["outcome"], "complete")
+        self.assert_last_issue_covers_the_batch()
+
+    def test_a_state_without_starting_commits_takes_the_base_from_the_first_run_manifest(self):
+        self.finish_a_batch_paused_by_an_earlier_release(manifest=True)
+
+    def test_without_that_manifest_the_base_is_the_parent_of_the_first_controller_commit(self):
+        self.finish_a_batch_paused_by_an_earlier_release(manifest=False)
+
+
 class CommandLineTests(Harness):
     def test_recover_requires_reason_and_authorizer(self):
         args = ["--batch", str(self.batch), "--home", str(self.home)]

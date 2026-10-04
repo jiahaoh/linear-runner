@@ -562,12 +562,14 @@ elsewhere stops the batch for reconciliation.
 4. **Checks.** Checks declare `name`, `kind`, `tier`, `inputs`, `cwd` and `command`.
    Default checks always run or reuse evidence; extended checks run for matching changed
    inputs and at the last allowlisted issue. An extended check may set
-   `"last_issue": "when_changed"`: at the last issue it then runs only if a file changed
-   since the batch's base revision (the first issue's starting commit) matches its `inputs`.
-   Otherwise it is recorded in `checks.json` as `status: "skipped"` with its reason, counts
-   as passing, and the validation comment lists it under "Not applicable". Use it for a long
-   check that concerns one module, so that batches which never touch that module do not pay
-   for it; a skipped check is no evidence for `delivery_integrity.required_checks`. Without
+   `"last_issue": "when_changed"`: at the last issue it then runs (or reuses passing
+   evidence) only if a file changed since the batch's base revision matches its `inputs`,
+   whichever issue of the batch changed it. The base revision is the starting commit of the
+   batch's first finished issue, which `state.json` records as `history[].starting_commit`.
+   Otherwise the check is recorded in `checks.json` as `status: "skipped"` with its reason,
+   counts as passing, and the validation comment lists it under "Not applicable". Use it for
+   a long check that concerns one module, so that batches which never touch that module do
+   not pay for it; a skipped check is no evidence for `delivery_integrity.required_checks`. Without
    the option (or with `"always"`) the last issue runs the check as before. A check may also
    set `timeout_seconds`, up to the registry's `max_check_timeout_seconds` (7200); without
    it the registry's `check_timeout_seconds` (1800) applies. A check that exceeds its limit
