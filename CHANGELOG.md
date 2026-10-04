@@ -15,6 +15,25 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.5.0 — 2026-10-04
+
+The findings of the §2.8 implementation batch (s28-impl-20261002, complete; `W-302` and
+`W-303`). The batch took 6 hours 48 minutes for six issues and stopped five times. About 27
+minutes went into launch baseline checks on bytes that had just been validated, one review
+blocked on two checks that the `when_changed` rule had wrongly skipped, and one pause lasted
+19 minutes because nothing told the operator that the batch had stopped.
+
+**Project impact:** none for site, workspace and project files. A batch that pins
+`runner_version` must name 2.5.0 in its batch file before `recover repin-config` adopts the
+release; the recovery now refuses otherwise, with the launch preflight's message. At the
+first launch on 2.5.0 the baseline runs every default check once (saved check evidence has
+no `launch_key` yet) and the `model_catalog` step reports a change once. A workspace that
+keeps a pasted Linear issue template pastes the new rendering (`sync-linear-template` reports
+`differs`).
+
+**Canary tier:** canary batch; the engine (the `when_changed` batch base, the check evidence
+keys, the supervisor log) and the repair prompt changed.
+
 ### Added
 
 * `runner.py wait --batch B`: blocks until the launched batch's supervisor has stopped and
