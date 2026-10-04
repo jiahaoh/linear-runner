@@ -427,6 +427,13 @@ nothing and never creates a second template.
   kept whole (its sub-items joined into it with `; `, see step 8 of "Lifecycle"), but the
   reviewer then assesses one long sentence; separate criteria are clearer and get separate
   evidence.
+* A criterion that asks for existing tests to pass unchanged names the edits it allows, or
+  says that a test which pins a layout the issue changes (a column list, a file list, a
+  schema) may get a named edit that the worker proposes and the reviewer assesses. `W-294`
+  required one test file to pass unchanged while its accepted design added columns to a table
+  whose exact column list that file pins; the worker stopped and the owner approved one named
+  edit. It was the fifth pause of this kind (`W-282` recorded four). The rule is part of
+  `templates/issue-contract.md`.
 * Never write the identifier of an issue that does not exist yet (for example "the amendment
   will be W-242"). Once it exists, Linear links the plain text in the description the runner
   writes. The publication read-back tolerates that link, but a wrong identifier ends up linking

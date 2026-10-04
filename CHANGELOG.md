@@ -41,6 +41,13 @@ its tier. The release procedure is in the README ("Releases").
   found more of the same kind, which used the last repair slot and about 33 more minutes.
   The review prompt, the review result format and the number of repair slots are unchanged.
   Project impact: none. Canary tier: canary batch (prompt) (`W-303`).
+* `templates/issue-contract.md` gains a writing rule for "existing tests pass unchanged"
+  criteria: the criterion names the edits it allows, or says that a test which pins a layout
+  the issue changes may get a named edit that the worker proposes and the reviewer assesses.
+  `W-294` stopped on such a criterion, the fifth pause of this kind. Project impact: none for
+  configuration; a workspace that keeps a pasted Linear issue template sees `differs` from
+  `sync-linear-template` until the new rendering is pasted in. Canary tier: first-issue
+  checkpoint (documentation) (`W-303`).
 
 ### Fixed
 

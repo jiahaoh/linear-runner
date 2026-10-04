@@ -26,6 +26,12 @@ Write about 5 to 10. Every criterion names where its evidence comes from: a chec
 diff, a saved file or a measurement the owner supplies. A criterion that compares against a
 baseline also says how that baseline is produced.
 
+A criterion that asks for existing tests to pass unchanged names the edits it allows. If
+you cannot name them yet, the criterion says that a test which pins a layout this issue
+changes (a column list, a file list, a schema) may get a named edit that the worker proposes
+and the reviewer assesses. Without either, a deliverable that changes such a layout
+contradicts the criterion, and the worker has to stop.
+
 - [ ] <Observable result 1, with the command or file that shows it.>
 - [ ] <Observable result 2.>
 - [ ] <Observable result 3.>
