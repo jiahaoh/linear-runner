@@ -699,6 +699,12 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
             (root / f"check-cache-before-{identifier}.json").write_bytes(cache_path.read_bytes())
             write_json(cache_path, {k: v for k, v in cache.items() if k not in dropped})
     write_resolved(new)
+    marker = root / "STOP"
+    if marker.exists() and not marker.read_text().strip():
+        # An empty marker (the unit's ExecStopPost, or `runner.py stop` before 2.5.0) would make
+        # the next launch refuse without a reason (s28-impl-20261002, W-303).
+        marker.write_text(f"The batch was stopped when recovery {identifier} (repin-config) re-pinned its "
+                          f"configuration at {now()}.\n")
     details = {"id": identifier, "old_config_sha256": old_sha, "new_config_sha256": new_sha,
                "runner": {"old": old.get("runner"), "new": new.get("runner")}, "changes": changes,
                "changed_checks": invalidated, "invalidated_check_evidence": dropped,

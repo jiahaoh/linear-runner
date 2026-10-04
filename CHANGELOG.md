@@ -63,6 +63,18 @@ its tier. The release procedure is in the README ("Releases").
   configuration; a workspace that keeps a pasted Linear issue template sees `differs` from
   `sync-linear-template` until the new rendering is pasted in. Canary tier: first-issue
   checkpoint (documentation) (`W-303`).
+* The supervisor log no longer has the line "input N > limit, but only M was uncached; the
+  input budget judges uncached input". Every long phase is in that case, and its nine
+  occurrences in s28-impl-20261002 led to no action. `phase-usage.json` still records the
+  `budget_note`, and uncached input over the budget still stops the phase with its own
+  message. Project impact: none. Canary tier: canary batch (engine, log output only)
+  (`W-303`).
+* A STOP marker names its reason. `runner.py stop` writes "Stop requested with `runner.py
+  stop` at <time>" where it used to leave an empty file, `recover repin-config` writes itself
+  into an empty marker, and a launch refusal for a marker that is still empty (the unit's
+  `ExecStopPost`) says that it names no reason. Before, a re-pin before a first launch ended
+  in "STOP marker present ('')". An existing marker with text is never changed. Project
+  impact: none. Canary tier: first-issue checkpoint (launch and recovery messages) (`W-303`).
 
 ### Fixed
 
@@ -75,6 +87,13 @@ its tier. The release procedure is in the README ("Releases").
   2.4.1 needs no edit: the base is read from the first finished issue's run manifest, or,
   without it, is the parent of that issue's first controller commit. Project impact: none.
   Canary tier: canary batch (engine) (`W-302`).
+* The `model_catalog` preflight step is reused while the catalog offers the same. Its
+  identity was the hash of the catalog file's bytes, and the Codex CLI rewrites `fetched_at`
+  and `etag` in `models_cache.json` whenever it refreshes the file, so every launch of
+  s28-impl-20261002 reported "ran (changed: model_catalog)". The identity is now the hash of
+  the catalog's content without those two keys. The first launch after the upgrade reports
+  the step as changed once. Project impact: none. Canary tier: first-issue checkpoint
+  (preflight) (`W-303`).
 
 ## v2.4.1 — 2026-10-02
 

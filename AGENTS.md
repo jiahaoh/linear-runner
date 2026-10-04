@@ -25,7 +25,7 @@ workers continue their dispatched issue.
 - `linear_runner/engine/`: the per-issue state machine (`runner.py`), check outcomes and delivery integrity (`delivery.py`), intake packets (`intake.py`).
 - `linear_runner/backends/`: the model-backend interface and registry (`__init__.py`), all Codex-specific code (`codex.py`: argv, JSONL events, evidence, model catalog) and all Claude Code-specific code (`claude.py`: argv and isolation flags, stream-json events, evidence, known models). The engine reaches a model CLI only through this interface; keep CLI flags and event names out of the engine.
 - `linear_runner/linear/`: the Linear client, comment templates and ledger (`updates.py`), comment builders (`messages.py`), stops and notifier (`attention.py`).
-- `linear_runner/supervision/`: launch and preflight, supervisor, recoveries, watchdog, decision rules.
+- `linear_runner/supervision/`: launch and preflight, supervisor, recoveries, watchdog, wait, decision rules.
 - `linear_runner/reporting/`: offline records, trajectory, measurement, terminal report, template samples.
 - `registry/`, `schema/`, `templates/`, `prompts/`, `examples/`, `testdata/`: data at the checkout root; code finds them through `linear_runner.config.RUNNER_ROOT`. Editing `registry/` or guidance changes configuration fingerprints.
 - `tests/`: mirrors the package; shared fixtures (fake Linear, temporary private home, `CHECKOUT`) in `tests/fixtures.py`.

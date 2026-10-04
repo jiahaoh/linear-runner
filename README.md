@@ -53,6 +53,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/supervision/supervisor.py` | The generic supervisor a launched unit runs: scheduling, lifecycle read-back, checkpoints, reporting |
 | `linear_runner/supervision/recovery.py` | Named, recorded recovery commands and the hash-chained recovery log |
 | `linear_runner/supervision/watchdog.py` | Model-free check for a vanished or stalled supervisor (`runner.py watchdog`, run by a launch-started timer) |
+| `linear_runner/supervision/wait.py` | Model-free, read-only wait for a launched batch to stop (`runner.py wait`) |
 | `linear_runner/supervision/rules.py` | One-line decision rules written in issue descriptions |
 | `linear_runner/reporting/records.py` | Reads saved session, check and intake records from evidence roots and deduplicates copies |
 | `linear_runner/reporting/trajectory.py` | Deterministic trajectory/usage/attempts/validation-audit/batch-comparison report (`runner.py report`, and `terminal-trajectory.*` at the terminal step) |
@@ -522,7 +523,7 @@ Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.j
 | --- | --- | --- |
 | `config` | Every layer and the registry validate; resolved fingerprint | configuration |
 | `worktree` | Expected branch, not moved outside the controller, clean unless an active issue owns the changes | source (branch, HEAD, clean flag, content hash) + configuration |
-| `model_catalog` | Host catalog readable; which registry profiles it offers | catalog bytes + configuration |
+| `model_catalog` | Host catalog readable; which registry profiles it offers | catalog content (without the `fetched_at` and `etag` the Codex CLI rewrites on every refresh) + configuration |
 | `baseline_checks` (optional) | Default-tier checks pass on the clean baseline, each run or covered by passing check evidence (below); never run over a resumed active issue's own uncommitted work (the last passing result is reused while configuration, environment and fixtures are unchanged; otherwise the step is recorded `skipped` with the reason) | source, configuration, environment (executables, check environment, launcher), fixtures (identity files) |
 | `claude_auth` (with `site.claude.auth`) | The Claude token file or variable is usable and the CLI uses it (see "Claude authentication") | never: always re-read |
 | `linear_credential` | The Linear OAuth credential's remaining lifetime, when its file records an expiry (below) | never: always re-read |
@@ -753,7 +754,8 @@ input. A resumed long session rereads its whole context as cached input on every
 implement read 22.2M input tokens, 21.8M of them cached, and the `W-245` (ready), `W-255` and
 `W-256` (both blocked) implement phases read 20.2M, 15.9M and 31.1M with at most 0.41M uncached,
 against a 15M budget (`W-263`). When the total input is over the limit but the uncached input is
-not, `phase-usage.json` records a `budget_note` and the supervisor log says so. Uncached input,
+not, `phase-usage.json` records a `budget_note`; the supervisor log has no line for it, because
+every long phase is in this case and the line never led to an action. Uncached input,
 output or tool calls over budget, or a missing figure, still checkpoint (the stop names the
 uncached figure); `recover budget --input-tokens` then sets the limit on the same basis. A phase
 that returned `blocked` within budget stops for its own block, not for the budget.
@@ -1160,8 +1162,12 @@ systemctl --user stop <unit>             # immediate: child process group termin
 ```
 
 The supervisor writes a STOP marker whenever it exits (and systemd's `ExecStopPost`
-writes one if the unit is killed), so nothing restarts by itself. What the next launch
-needs depends on whether a recovery is pending:
+writes one if the unit is killed), so nothing restarts by itself. The marker holds one line
+that says where it came from (the supervisor's exit, a planned checkpoint, a failed launch,
+`runner.py stop`), and a launch refusal quotes it. Only the marker that `ExecStopPost`
+leaves after a killed unit is empty; the refusal says so, and `recover repin-config` writes
+itself into an empty marker as the reason. What the next launch needs depends on whether a
+recovery is pending:
 
 * **Bare continuation** (after a planned checkpoint, `stop`, a `partial` outcome or a
   completed queue; nothing is paused and no recovery is pending): inspect `status`, then

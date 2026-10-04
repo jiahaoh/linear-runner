@@ -1367,10 +1367,12 @@ class Runner:
         over = sorted(k for k, v in budget.items() if judged.get(k) is not None and judged[k] > v)
         uncached = delta.get("input_tokens") is not None and delta.get("cached_input_tokens") is not None
         if uncached and "input_tokens" not in over and delta["input_tokens"] > budget["input_tokens"]:
+            # Recorded with the usage, not logged: every long phase is in this case, and the nine
+            # such lines of s28-impl-20261002 led to no action (W-303). Uncached input over the
+            # budget is the stop below, which the log does show.
             delta["budget_note"] = (f"input {delta['input_tokens']} > {budget['input_tokens']}, but only "
                                     f"{judged['input_tokens']} was uncached; the input budget judges uncached input")
             write_json(attempt / "phase-usage.json", delta)
-            self.log(f"{active['issue_id']}: {phase} {delta['budget_note']}")
         if unknown or over:
             active["budget_exceeded"] = {"phase": phase, "observed": delta, "budget": budget, "basis": delta["basis"]}
             if phase in ("implement", "repair") and result.get("status") == "ready" \

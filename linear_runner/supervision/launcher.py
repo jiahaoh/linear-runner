@@ -8,7 +8,8 @@ step                      identity it depends on                 reused when unc
 config                    resolved configuration fingerprint     yes
                           (and the pinned runner_version, if any)
 worktree                  source (branch, HEAD, clean, content)  yes
-model_catalog             catalog bytes + configuration          yes
+model_catalog             catalog content (without the CLI's    yes
+                          fetch bookkeeping) + configuration
 claude_auth (opt.)        the configured Claude token            never (always re-read)
 linear_credential         the Linear OAuth credential's expiry   never (always re-read)
 baseline_checks (opt.)    source, configuration, environment,    yes
@@ -65,6 +66,7 @@ import sys
 import time
 
 from linear_runner import backends
+from linear_runner.backends.codex import catalog_sha256
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
 from linear_runner.supervision import backend_start
 from linear_runner.version import pin_problem
@@ -108,7 +110,7 @@ def identities(config):
         "environment": {"python": sys.version, "executables": executables,
                         "check_environment": config["check_environment"], "launcher": config["launcher"]},
         "fixtures": {path: _file_sha(path) for path in config["identity_files"]},
-        "model_catalog": {"path": config["model_catalog"], "sha256": _file_sha(config["model_catalog"])},
+        "model_catalog": {"path": config["model_catalog"], "sha256": catalog_sha256(config["model_catalog"])},
     }
 
 
@@ -515,6 +517,14 @@ def stop_earlier_timers(root, backend, current):
     return stopped
 
 
+def _marker_reason(stop):
+    """The STOP marker's text for a refusal. An empty marker gives no reason: the unit's
+    ExecStopPost and runners before 2.5.0 (``runner.py stop``) only touched the file."""
+    text = stop.read_text().strip()
+    return repr(text) if text else ("it is empty and names no reason: it was written by the unit's ExecStopPost "
+                                    "or by `runner.py stop` of a runner before 2.5.0")
+
+
 def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=False, force_preflight=False,
            runner=None, out=print):
     root = Path(config["state_dir"])
@@ -546,9 +556,9 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
                 cleared = {"text": stop.read_text(), "sha256": digest, "by": "--clear-stop"}
             elif pending:
                 raise LaunchError(f"STOP marker changed after recovery {pending['id']} was recorded "
-                                  f"({stop.read_text().strip()!r}); inspect `status`, then relaunch with --clear-stop")
+                                  f"({_marker_reason(stop)}); inspect `status`, then relaunch with --clear-stop")
             else:
-                raise LaunchError(f"STOP marker present ({stop.read_text().strip()!r}); inspect `status`, then "
+                raise LaunchError(f"STOP marker present ({_marker_reason(stop)}); inspect `status`, then "
                                   "relaunch with --clear-stop")
         record = preflight(config, runner, launch_id=launch_id, force=force_preflight)
         if cleared:

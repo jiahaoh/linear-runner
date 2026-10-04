@@ -1291,10 +1291,16 @@ class EngineTests(unittest.TestCase):
     def test_a_ready_phase_over_budget_only_on_cached_input_is_not_stopped(self):
         self.canary_budget()  # 15M input, 150k output
         self.replay_implement([(self.W249_IMPLEMENT, True)])
+        logged = []
+        log = self.runner.log
+        self.runner.log = lambda message: (logged.append(message), log(message))
         self.runner.execute(limit=1)
         self.assertEqual(self.runner.state["phase"], "queue_complete")
         [usage] = self.implement_usage()
         self.assertIn("only 400000 was uncached", usage["budget_note"])
+        # W-303: the note stays with the usage record; the log has no line for it.
+        self.assertTrue(logged)
+        self.assertFalse([line for line in logged if "uncached" in line])
 
     # W-263: implement checkpoints that stopped only for cached input or for output within the
     # raised output budget (registry implement budget: 15M input, 250k output, 250 tool calls).
@@ -1543,7 +1549,12 @@ class ControllerTests(unittest.TestCase):
     def test_stop_and_status_need_no_linear(self):
         with patch.object(LinearClient, "call", side_effect=AssertionError("no Linear access")), patch("sys.stdout"):
             main(["stop", *self.args])
-            self.assertTrue((self.root / "state" / "fixture" / "STOP").exists())
+            marker = self.root / "state" / "fixture" / "STOP"
+            # W-303: the marker says where it came from; a second stop leaves it as it is.
+            self.assertRegex(marker.read_text(), r"^Stop requested with `runner\.py stop` at 20\d\d-.*\.\n$")
+            marker.write_text("Held by the owner.\n")
+            main(["stop", *self.args])
+            self.assertEqual(marker.read_text(), "Held by the owner.\n")
             main(["status", *self.args])
             main(["clear-stop", *self.args])
         self.assertFalse((self.root / "state" / "fixture" / "STOP").exists())

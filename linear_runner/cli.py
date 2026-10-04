@@ -373,7 +373,11 @@ def main(argv=None):
     if args.command in ("stop", "clear-stop"):
         root.mkdir(parents=True, exist_ok=True)
         marker = root / "STOP"
-        marker.touch() if args.command == "stop" else marker.unlink(missing_ok=True)
+        if args.command == "clear-stop":
+            marker.unlink(missing_ok=True)
+        elif not marker.exists():
+            # A reason for the launch refusal to show; an existing marker keeps its own.
+            marker.write_text(f"Stop requested with `runner.py stop` at {now()}.\n")
         if args.command == "stop":
             print(json.dumps({"stop_marker": str(marker), "watchdog_timer": stop_watchdog_timer(root)}, indent=2))
         return

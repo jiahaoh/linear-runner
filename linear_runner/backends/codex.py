@@ -10,6 +10,7 @@ identifies the installed CLI for the launch start check (``--version``, ``login 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,27 @@ import subprocess
 from linear_runner.config import read_json
 
 TOOL_ITEMS = {"mcp_tool_call", "command_execution"}
+# The CLI rewrites these keys of its model cache whenever it refreshes the file. They say when
+# the catalog was fetched, not what it offers.
+CATALOG_BOOKKEEPING = ("fetched_at", "etag")
+
+
+def catalog_sha256(path):
+    """SHA-256 of what the host model catalog offers: its JSON content without
+    ``CATALOG_BOOKKEEPING``. Hashing the file's bytes made every launch see a changed catalog
+    (s28-impl-20261002, W-303). ``None`` without the file; the bytes' hash when the file is
+    not a JSON object."""
+    path = Path(path).expanduser()
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    try:
+        catalog = json.loads(data)
+    except ValueError:
+        catalog = None
+    if isinstance(catalog, dict):
+        data = json.dumps({k: v for k, v in catalog.items() if k not in CATALOG_BOOKKEEPING}, sort_keys=True).encode()
+    return hashlib.sha256(data).hexdigest()
 
 
 def execution_evidence(events):

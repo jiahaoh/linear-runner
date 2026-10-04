@@ -197,7 +197,9 @@ class LaunchAndSupervisorTests(Harness):
         self.assertEqual(second["worktree"]["reason"], "changed: source")
         self.assertFalse(second["linear"]["reused"])
         catalog = self.root / "models.json"
-        catalog.write_text(catalog.read_text() + "\n")
+        offered = json.loads(catalog.read_text())
+        offered["models"].append({"slug": "nova", "supported_reasoning_levels": [{"effort": "high"}]})
+        catalog.write_text(json.dumps(offered))
         self.launch(stop_after=["DEV-3"], clear_stop=True)
         third = json.loads((self.state_dir / "preflight.json").read_text())["steps"]
         self.assertEqual(third["model_catalog"]["reason"], "changed: model_catalog")
@@ -1298,6 +1300,29 @@ class RepinConfigTests(Harness):
         with project_lock(self.state_dir / "controller.lock"):
             return recovery.recover_repin_config(config, self.linear, **kwargs)
 
+    def test_an_empty_stop_marker_gets_the_repin_as_its_reason(self):
+        # s28-impl-20261002 (W-303): the refusal after a re-pin read "STOP marker present ('')".
+        self.launch()  # pauses: the fixture's extended check selects nothing
+        marker = self.state_dir / "STOP"
+        marker.write_text("")  # as the unit's ExecStopPost or an earlier `runner.py stop` leaves it
+        with self.assertRaisesRegex(LaunchError, r"STOP marker present \(it is empty and names no reason: it was "
+                                                 r"written by the unit's ExecStopPost or by `runner.py stop` of a "
+                                                 r"runner before 2\.5\.0\); inspect `status`"):
+            self.launch()
+        self.edit_project(self.allow_empty)
+        record = self.repin()
+        self.assertRegex(marker.read_text(), rf"^The batch was stopped when recovery {record['id']} \(repin-config\) "
+                                             r"re-pinned its configuration at 20\d\d-.*\.\n$")
+        self.assertEqual(record["stop_marker_sha256"], hashlib.sha256(marker.read_bytes()).hexdigest())
+        with self.assertRaisesRegex(LaunchError, rf"STOP marker present \('The batch was stopped when recovery "
+                                                 rf"{record['id']} \(repin-config\) re-pinned its configuration at "):
+            self.launch()
+        # A marker that names its reason is left alone.
+        marker.write_text("Held by the owner.\n")
+        self.identity = {"commit": "c" * 40, "dirty": False}
+        self.repin()
+        self.assertEqual(marker.read_text(), "Held by the owner.\n")
+
     def test_canary_sequence_repin_then_revalidate_then_launch(self):
         self.hooks[("DEV-1", "repair")] = self.blocked(times=1)
         self.assertEqual(self.launch()["started"]["outcome"], "blocked")
@@ -1862,6 +1887,41 @@ class PreflightBaselineTests(Harness):
         record = json.loads((self.state_dir / "preflight.json").read_text())
         self.assertEqual(record["steps"]["baseline_checks"]["reason"], "changed: source")
         self.assertFalse(record["passed"])
+
+
+class CatalogIdentityTests(Harness):
+    """The model catalog step is reused while the catalog offers the same (W-303): the Codex
+    CLI rewrites ``fetched_at`` and ``etag`` in its cache, and every launch of
+    s28-impl-20261002 reported ``changed: model_catalog``."""
+
+    def test_a_refreshed_catalog_with_the_same_models_is_not_a_change(self):
+        path = self.root / "models.json"
+        catalog = json.loads(path.read_text())
+        def step(launch_id, **changes):
+            path.write_text(json.dumps(dict(catalog, **changes)))
+            runner = self.make_runner()
+            return preflight(runner.config, runner, launch_id=launch_id)["steps"]["model_catalog"]
+        first = step("L-one", fetched_at="2026-10-02T22:03:31Z", etag='W/"one"', client_version="0.160.0")
+        self.assertEqual(first["reason"], "no previous preflight result")
+        second = step("L-two", fetched_at="2026-10-02T23:03:55Z", etag='W/"two"', client_version="0.160.0")
+        self.assertEqual((second["reused"], second["reason"]),
+                         (True, "reused: model_catalog, config unchanged since L-one"))
+        third = step("L-three", fetched_at="2026-10-03T00:38:57Z", etag='W/"two"', client_version="0.160.0",
+                     models=catalog["models"] + [{"slug": "nova", "supported_reasoning_levels": [{"effort": "high"}]}])
+        self.assertEqual((third["reused"], third["reason"]), (False, "changed: model_catalog"))
+
+    def test_the_catalog_hash_covers_everything_but_the_fetch_bookkeeping(self):
+        from linear_runner.backends.codex import catalog_sha256
+        path = self.root / "catalog.json"
+        self.assertIsNone(catalog_sha256(path))
+        def sha(text):
+            path.write_text(text)
+            return catalog_sha256(path)
+        base = sha('{"models": [{"slug": "astra"}], "client_version": "1", "fetched_at": "a", "etag": "b"}')
+        self.assertEqual(base, sha('{"etag": "c", "fetched_at": "d", "client_version": "1", "models": [{"slug": "astra"}]}'))
+        self.assertNotEqual(base, sha('{"models": [{"slug": "luna"}], "client_version": "1"}'))
+        self.assertNotEqual(base, sha('{"models": [{"slug": "astra"}], "client_version": "2"}'))
+        self.assertEqual(sha("not json"), hashlib.sha256(b"not json").hexdigest())
 
 
 class ResumeBaselineTests(Harness):
