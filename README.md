@@ -30,7 +30,7 @@ the checkout root, which is also `${runner_root}`.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `stop`, `clear-stop`, `watchdog`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
+| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `wait`, `stop`, `clear-stop`, `watchdog`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
 | `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |
@@ -475,6 +475,7 @@ python3 -m unittest -v
 python3 runner.py launch --batch $B                          # preflight, start unit, confirm, exit
 python3 runner.py launch --batch $B --stop-after TEAM-123    # same, with a planned checkpoint
 python3 runner.py status --batch $B                          # state, supervisor.json, STOP marker
+python3 runner.py wait --batch $B                            # block until the batch stops, then say how
 ```
 
 `launch` resolves and pins Linear names, runs the preflight below, starts the supervisor
@@ -488,6 +489,32 @@ never by value. Before the
 supervisor it starts the watchdog timer (see "Watchdog"); if the timer cannot start, nothing
 is launched. `--backend foreground` runs the supervisor in the launching process instead and
 starts no timer.
+
+**Waiting for a batch.** `launch` exits once the supervisor runs. `wait` blocks until that
+supervisor has stopped and prints how, so an operator or an operator session does not need a
+polling loop of its own (s28-impl-20261002 sat paused for 19 minutes after such a loop had
+expired). It is model-free and read-only: it reads `supervisor.json`, `state.json`,
+`terminal-report.json` and the STOP marker and looks whether the supervisor's process still
+exists; it takes no lock, writes nothing and does not read Linear. On a batch that has
+already stopped it returns at once, and after a relaunch you start it again.
+
+| Outcome | Exit code | Meaning |
+| --- | --- | --- |
+| `complete` | 0 | Every allowlisted issue is Done |
+| `checkpoint` | 3 | A planned checkpoint (`--stop-after`) or a requested stop, between issues |
+| `paused` | 4 | A recorded stop that needs a recovery; the report has `issue`, `step`, `stop_class` and `reason` |
+| `partial` | 5 | No further issue is ready: some are deferred or wait on prerequisites |
+| `failed` | 1 | The supervisor refused to start, or its process is gone without a recorded outcome |
+
+The report also names the launch, the issues that are Done and the STOP marker's text. A
+batch that was never launched is a usage error (exit code 2). The supervisor counts as
+stopped when `supervisor.json` no longer says `running` or its process is gone. A STOP
+marker next to a live supervisor is a requested stop (`runner.py stop`): the supervisor
+finishes the current issue first, and `wait` waits for that. On another host than the
+supervisor's the process cannot be seen, so there the STOP marker counts as the stop.
+
+`launch` prints a warning when `attention.notifier.backend` is `none`: stops are then visible
+only in Linear and through `wait` (see "Stops" for the notifier).
 
 Preflight (`<state dir>/preflight/<launch id>.json`, latest also in `preflight.json`):
 
@@ -1080,7 +1107,8 @@ that reaches you away from the host, for example a mail command
 `watchdog.paused_minutes` on. The stop then notifies once when it happens, and the watchdog
 reminds once more if no recovery is recorded within `paused_minutes` (a §2.5 batch sat paused
 for about 10.5 h unnoticed with the default `none`). Test the command once by hand before
-relying on it.
+relying on it. With `none`, `launch` prints a warning, and `runner.py wait --batch B` is the
+only way besides Linear to learn of a stop (see "Running a batch").
 
 ## Watchdog
 

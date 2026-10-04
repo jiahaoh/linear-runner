@@ -602,6 +602,13 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
             stop.write_text(f"Launch {launch_id} failed: {error}\n")
         raise
     write_json(path, entry)
+    warnings = [s["result"]["warning"] for s in record["steps"].values()
+                if isinstance(s.get("result"), dict) and s["result"].get("warning")]
+    if config["attention"]["notifier"]["backend"] == "none":
+        # s28-impl-20261002 (W-303): four unplanned stops, and none left the runner.
+        warnings.append("No notification backend is configured (attention.notifier.backend is \"none\"): a stop "
+                        "will be visible only in Linear and through "
+                        f"`{config['attention']['command_prefix']} wait --batch {batch_argument(config)}`")
     supervisor = entry["confirmation"]["supervisor"]
     out(json.dumps({"launch_id": launch_id, "backend": backend.name, "unit": spec["unit"]
                     if backend.name == "systemd-user" else None, "pid": supervisor.get("pid"),
@@ -612,6 +619,5 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
                     "preflight": {n: ("reused" if s.get("reused") else "skipped" if s.get("status") == "skipped"
                                       else "ran") + f" ({s['reason']})"
                                   for n, s in record["steps"].items()},
-                    "warnings": [s["result"]["warning"] for s in record["steps"].values()
-                                 if isinstance(s.get("result"), dict) and s["result"].get("warning")]}, indent=2))
+                    "warnings": warnings}, indent=2))
     return entry

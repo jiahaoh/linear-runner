@@ -15,6 +15,21 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Added
+
+* `runner.py wait --batch B`: blocks until the launched batch's supervisor has stopped and
+  prints how. The exit code tells the outcomes apart: `complete` 0, `checkpoint` 3, `paused`
+  4 (with the issue, the step, the stop class and the reason), `partial` 5 and `failed` 1. It
+  is model-free, reads only the state directory and whether the supervisor's process exists,
+  writes nothing and can be started again after every relaunch. s28-impl-20261002 sat paused
+  for 19 minutes after the operator session's own polling loop had expired. Project impact:
+  none. Canary tier: first-issue checkpoint (a new read-only command) (`W-303`).
+* `launch` lists a warning when `attention.notifier.backend` is `none`: stops are then
+  visible only in Linear and through `wait`. None of the four unplanned stops of
+  s28-impl-20261002 left the runner. Project impact: none; to be notified, configure a
+  notifier in the private site or workspace file. Canary tier: first-issue checkpoint
+  (launch output) (`W-303`).
+
 ### Changed
 
 * The launch preflight's `baseline_checks` step reuses passing check evidence. A default

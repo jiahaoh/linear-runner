@@ -2062,6 +2062,127 @@ class WhenChangedBatchBaseTests(Harness):
         self.finish_a_batch_paused_by_an_earlier_release(manifest=False)
 
 
+class WaitTests(Harness):
+    """``runner.py wait`` (W-303): s28-impl-20261002 sat paused for 19 minutes after the
+    operator's own polling loop had expired."""
+
+    def wait(self):
+        """Run the command; return (exit code, printed report)."""
+        out = io.StringIO()
+        code = 0
+        try:
+            with contextlib.redirect_stdout(out):
+                main(["wait", "--batch", str(self.batch), "--home", str(self.home)])
+        except SystemExit as stop:
+            code = stop.code
+        return code, json.loads(out.getvalue())
+
+    def snapshot(self):
+        return {str(p): (p.stat().st_mtime_ns, p.read_bytes()) for p in sorted(self.state_dir.rglob("*")) if p.is_file()}
+
+    def test_a_batch_that_was_never_launched_is_an_error(self):
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as stop:
+            main(["wait", "--batch", str(self.batch), "--home", str(self.home)])
+        self.assertEqual(stop.exception.code, 2)
+        self.assertIn("This batch has not been launched", errors.getvalue())
+
+    def test_checkpoint_then_complete_and_nothing_is_written(self):
+        self.launch(stop_after=["DEV-1"])
+        before = self.snapshot()
+        code, report = self.wait()
+        self.assertEqual((code, report["outcome"], report["done"], report["reason"]),
+                         (3, "checkpoint", ["DEV-1"], "Planned checkpoint after DEV-1"))
+        self.assertEqual(report["launch_id"], self.state()["checkpoints_reached"][0]["launch_id"])
+        self.assertTrue(report["stop_marker"].startswith("Planned checkpoint after DEV-1"))
+        self.assertEqual(self.snapshot(), before)
+        # Started again after the relaunch, it reports that launch.
+        self.launch(clear_stop=True)
+        code, report = self.wait()
+        self.assertEqual((code, report["outcome"], report["done"]), (0, "complete", ["DEV-1", "DEV-2", "DEV-3"]))
+        self.assertNotEqual(report["launch_id"], self.state()["checkpoints_reached"][0]["launch_id"])
+
+    def test_a_pause_names_the_issue_the_step_the_class_and_the_reason(self):
+        self.hooks[("DEV-2", "review")] = self.blocked(times=1)
+        self.launch()
+        before = self.snapshot()
+        code, report = self.wait()
+        stop = self.state()["stops"][-1]
+        self.assertEqual((stop["issue"], stop["step"], stop["class"]), ("DEV-2", "review", "needs-decision"))
+        self.assertEqual((code, report["outcome"], report["supervisor"]["outcome"]), (4, "paused", "blocked"))
+        self.assertEqual({k: report[k] for k in ("issue", "step", "stop_class", "reason", "stop", "done")},
+                         {"issue": "DEV-2", "step": "review", "stop_class": "needs-decision", "reason": stop["error"],
+                          "stop": stop["id"], "done": ["DEV-1"]})
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_partial_queue_has_its_own_outcome(self):
+        self.linear.others["DEV-3"]["relations"] = {"blockedBy": [{"id": "DEV-9"}]}
+        self.linear.others["DEV-9"] = {"id": "DEV-9", "statusType": "started"}
+        self.launch()
+        code, report = self.wait()
+        self.assertEqual((code, report["outcome"], report["done"]), (5, "partial", ["DEV-1", "DEV-2"]))
+        self.assertIn("waiting on prerequisites", report["reason"])
+
+    def test_it_waits_while_the_supervisor_runs_also_after_a_requested_stop(self):
+        from linear_runner.supervision import wait
+        status_path = self.state_dir / "supervisor.json"
+        running = {"launch_id": "L-live", "pid": os.getpid(), "host": os.uname().nodename, "status": "running"}
+        write_json(status_path, running)
+        naps = []
+        def sleep(seconds):
+            naps.append(seconds)
+            if len(naps) == 1:
+                (self.state_dir / "STOP").write_text("requested\n")  # `runner.py stop`: it stops between issues
+            elif len(naps) == 3:
+                write_json(status_path, dict(running, status="exited", outcome="stopped"))
+        report = wait.wait(self.state_dir, sleep=sleep)
+        self.assertEqual((naps, report["outcome"], report["stop_marker"]),
+                         ([wait.POLL_SECONDS] * 3, "checkpoint", "requested"))
+        self.assertEqual(wait.EXIT_CODES, {"complete": 0, "failed": 1, "checkpoint": 3, "paused": 4, "partial": 5})
+
+    def test_a_vanished_or_refused_supervisor_is_a_failure(self):
+        from linear_runner.supervision import wait
+        status_path = self.state_dir / "supervisor.json"
+        process = subprocess.Popen([sys.executable, "-c", "pass"]); process.wait()
+        gone = {"launch_id": "L-gone", "pid": process.pid, "host": os.uname().nodename, "status": "running"}
+        write_json(status_path, gone)
+        report = wait.wait(self.state_dir, sleep=self.fail)
+        self.assertEqual(report["outcome"], "failed")
+        self.assertIn("process is gone and it recorded no outcome", report["reason"])
+        write_json(status_path, dict(gone, status="refused", error="STOP marker present"))
+        self.assertEqual({k: wait.wait(self.state_dir, sleep=self.fail)[k] for k in ("outcome", "reason")},
+                         {"outcome": "failed", "reason": "STOP marker present"})
+        # On another host the process cannot be seen: the STOP marker is the sign that it ended.
+        write_json(status_path, dict(gone, host="another-host"))
+        self.assertIsNone(wait.stopped(self.state_dir))
+        (self.state_dir / "STOP").write_text("")
+        self.assertEqual(wait.stopped(self.state_dir)["launch_id"], "L-gone")
+
+
+class NotificationWarningTests(Harness):
+    """``launch`` says so when no stop notification can leave the runner (W-303)."""
+
+    def warnings(self):
+        self.launch(stop_after=["DEV-1"])
+        return json.loads(self.output[-1])["warnings"]
+
+    def test_launch_warns_without_a_notification_backend(self):
+        self.assertEqual(self.warnings(), [
+            'No notification backend is configured (attention.notifier.backend is "none"): a stop will be visible '
+            f"only in Linear and through `python3 {CHECKOUT}/runner.py wait --batch fixture`"])
+
+
+class ConfiguredNotifierTests(NotificationWarningTests):
+    SITE = {"attention": {"notifier": {"backend": "command", "command": ["/usr/bin/true", "{subject}"]}}}
+
+    def test_launch_warns_without_a_notification_backend(self):
+        self.assertEqual(self.warnings(), [])
+
+
+class MentionOnlyNotifierTests(ConfiguredNotifierTests):
+    SITE = {"attention": {"notifier": {"backend": "linear-mention-only"}}}
+
+
 class CommandLineTests(Harness):
     def test_recover_requires_reason_and_authorizer(self):
         args = ["--batch", str(self.batch), "--home", str(self.home)]

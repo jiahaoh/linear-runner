@@ -66,6 +66,8 @@ def build_parser():
     for name, text in (("validate-config", "offline validation; no state, Linear or model CLI"),
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
                        ("status", "print saved state, supervisor status and pending recovery"),
+                       ("wait", "block until the launched batch stops, then print how (complete, checkpoint, "
+                                "paused); reads the state directory only, no model, no Linear"),
                        ("stop", "write the STOP marker (stops between issues)"),
 
                        ("clear-stop", "remove the STOP marker")):
@@ -345,6 +347,16 @@ def main(argv=None):
     root = Path(config["state_dir"])
     if args.command == "status":
         print(json.dumps(status_report(config), indent=2))
+        return
+    if args.command == "wait":
+        from linear_runner.supervision import wait
+        try:
+            report = wait.wait(root)
+        except wait.NotLaunched as error:
+            parser.error(str(error))
+        print(json.dumps(report, indent=2))
+        if wait.EXIT_CODES[report["outcome"]]:
+            raise SystemExit(wait.EXIT_CODES[report["outcome"]])
         return
     if args.command == "watchdog":
         from linear_runner.supervision import watchdog
