@@ -117,6 +117,17 @@ def build_parser():
     measure.add_argument("--replay-compact", action="store_true",
                          help="also rebuild each saved intake with the compact builder and report its size")
     measure.add_argument("--json", metavar="PATH", help="also write the full measurement as JSON")
+    insert = commands.add_parser("insert-issues",
+                                 help="edit the batch file: insert issues into its allowlist (before an issue, or at "
+                                      "the end), with their implement timeout and a new terminal_issue; adopt the "
+                                      "edit with `recover repin-config`")
+    insert.add_argument("--batch", required=True, help="batch file, or the id of one in <home>/batches")
+    insert.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
+    insert.add_argument("--issues", nargs="+", required=True, metavar="ISSUE", help="the issues to insert, in order")
+    insert.add_argument("--before", metavar="ISSUE", help="insert before this issue (default: at the end)")
+    insert.add_argument("--implement-timeout", type=int, metavar="SECONDS",
+                        help="phase_overrides.<issue>.implement.timeout_seconds for each inserted issue")
+    insert.add_argument("--terminal-issue", metavar="ISSUE", help="the new terminal_issue")
     template = commands.add_parser("sync-linear-template",
                                    help="render templates/issue-contract.md as the Linear issue template \"Runner "
                                         "issue contract\", check the workspace's copy and record its ID")
@@ -165,6 +176,9 @@ def build_parser():
     repin_config.add_argument("--append-issues", action="store_true",
                               help="also adopt issues added at the end of the batch's allowlist (and a new "
                                    "terminal_issue); earlier issues, their order and their history stay as they are")
+    repin_config.add_argument("--reorder-unclaimed", action="store_true",
+                              help="also adopt issues inserted among, and a new order of, the issues the batch has "
+                                   "not claimed; the allowlist up to its last done, active or deferred issue stays")
     defer_issue = kinds.add_parser("defer", parents=[common, authority], help="defer an issue; the queue continues without it")
     defer_issue.add_argument("--issue", required=True)
     defer_issue.add_argument("--restore-worktree", action="store_true",
@@ -247,6 +261,45 @@ def recover(args, runner):
         return recovery.recover_cancel(runner, **common)
     return recovery.recover_defer(runner, issue=args.issue, restore_worktree=args.restore_worktree,
                                   keep_commit=args.keep_commit, **common)
+
+
+def insert_issues(parser, args):
+    """``insert-issues`` (W-343): edit the batch file only. The edited file must still load;
+    otherwise the original is restored. Adopting it is `recover repin-config`."""
+    from linear_runner.config import find_home, resolve_batch
+    home = find_home(args.home)
+    try:
+        path = resolve_batch(args.batch, home)
+    except ConfigError as error:
+        parser.error(str(error))
+    original = path.read_text()
+    batch = json.loads(original)
+    issues = list(batch.get("issues", []))
+    present = [issue for issue in args.issues if issue in issues]
+    if present or len(set(args.issues)) != len(args.issues):
+        parser.error(f"insert-issues: {', '.join(present) or 'an issue'} is already in the allowlist or named twice")
+    if args.before and args.before not in issues:
+        parser.error(f"insert-issues: --before {args.before} is not in the allowlist")
+    at = issues.index(args.before) if args.before else len(issues)
+    batch["issues"] = issues[:at] + list(args.issues) + issues[at:]
+    if args.terminal_issue and args.terminal_issue not in batch["issues"]:
+        parser.error(f"insert-issues: --terminal-issue {args.terminal_issue} is not in the allowlist")
+    if args.implement_timeout is not None:
+        overrides = batch.setdefault("phase_overrides", {})
+        for issue in args.issues:
+            overrides.setdefault(issue, {}).setdefault("implement", {})["timeout_seconds"] = args.implement_timeout
+    if args.terminal_issue:
+        batch["terminal_issue"] = args.terminal_issue
+    path.write_text(json.dumps(batch, indent=2, ensure_ascii=False) + "\n")
+    try:
+        load_config(path, home)
+    except (ConfigError, OSError) as error:
+        path.write_text(original)
+        parser.error(f"insert-issues: the edited batch file does not load ({error}); it was left unchanged")
+    flag = "--append-issues" if at == len(issues) else "--reorder-unclaimed"
+    print(json.dumps({"batch_file": str(path), "issues": batch["issues"], "terminal_issue": batch.get("terminal_issue"),
+                      "next": f"python3 runner.py recover repin-config {flag} --batch {args.batch} --reason R "
+                              "--authorized-by A"}, indent=2, ensure_ascii=False))
 
 
 def offline_report(args):
@@ -333,6 +386,8 @@ def main(argv=None):
         return offline_measure(args)
     if args.command == "sync-linear-template":
         return sync_linear_template(parser, args)
+    if args.command == "insert-issues":
+        return insert_issues(parser, args)
     try:
         config = load_config(args.batch, args.home)
     except (ConfigError, OSError) as error:
@@ -444,7 +499,8 @@ def supervised_command(parser, args, config, linear):
     if args.command == "recover" and args.kind == "repin-config":
         # The one recovery that runs against a configuration that differs from the pinned one.
         return locked_recovery(parser, root, lambda: recovery.recover_repin_config(
-            config, linear, reason=args.reason, authorized_by=args.authorized_by, append_issues=args.append_issues))
+            config, linear, reason=args.reason, authorized_by=args.authorized_by, append_issues=args.append_issues,
+            reorder_unclaimed=args.reorder_unclaimed))
     if args.command == "recover" and args.kind == "cancel":
         # Withdrawing a pending record changes no work: it runs against the pinned configuration,
         # so a configuration edited since pinning never blocks it (then `repin-config` adopts it).

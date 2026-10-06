@@ -606,11 +606,44 @@ def appended_issues(old, new):
     return extra
 
 
-def recover_repin_config(config, linear, *, reason, authorized_by, append_issues=False):
+def claimed_issues(state):
+    """Issues the batch has claimed: done (history), active or deferred."""
+    claimed = {entry["issue_id"] for entry in state.get("history", [])} | set(state.get("deferred", {}))
+    if state.get("active"):
+        claimed.add(state["active"]["issue_id"])
+    return claimed
+
+
+def reordered_issues(old, new, claimed):
+    """``(inserted, moved)`` for ``--reorder-unclaimed`` (W-343): ``new`` keeps every issue of
+    ``old``, and the allowlist up to its last claimed issue stays as it is; after that, issues
+    may be inserted and the unclaimed issues reordered. ``moved`` are the earlier issues whose
+    order changed. Raises RecoveryError naming the issue and the reason otherwise."""
+    old, new = list(old or []), list(new or [])
+    if len(set(new)) != len(new):
+        raise RecoveryError("--reorder-unclaimed: the allowlist names an issue twice")
+    removed = [issue for issue in old if issue not in new]
+    if removed:
+        raise RecoveryError(f"--reorder-unclaimed never removes an issue; the batch file drops {', '.join(removed)}")
+    keep = max((index + 1 for index, issue in enumerate(old) if issue in claimed), default=0)
+    if new[:keep] != old[:keep]:
+        first = next(index for index in range(keep) if new[index] != old[index])
+        raise RecoveryError(f"--reorder-unclaimed keeps the allowlist up to its last claimed issue "
+                            f"({old[keep - 1]}) as it is; position {first + 1} holds {new[first]} instead of "
+                            f"{old[first]}. Only issues after the last claimed one may be inserted or reordered")
+    inserted = [issue for issue in new if issue not in old]
+    tail = [issue for issue in new[keep:] if issue in old]
+    moved = [issue for issue, before in zip(tail, old[keep:]) if issue != before]
+    return inserted, moved
+
+
+def recover_repin_config(config, linear, *, reason, authorized_by, append_issues=False, reorder_unclaimed=False):
     """Adopt the current configuration (and runner commit) for a paused or stopped batch.
 
     ``config`` is freshly loaded (``load_config``). Applied at once; see the module notes.
     ``append_issues``: also adopt issues added at the end of the allowlist (W-282).
+    ``reorder_unclaimed``: also adopt issues inserted among, and a new order of, the issues the
+    batch has not claimed (W-343).
     """
     from linear_runner.config import (RESOLVED_NAME, RUNNER_ROOT, _with_ids, config_changes, config_fingerprint,
                                       read_json, resolution_names, write_resolved)
@@ -648,17 +681,28 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     old = pinned["config"]
     ids = pinned["resolution"]["ids"]
     new = _with_ids(config, ids, f"re-pinned {RESOLVED_NAME}")
-    appended = []
+    appended, moved = [], []
     if old.get("issues") != new.get("issues"):
-        appended = appended_issues(old.get("issues"), new.get("issues")) or []
-        if appended and not append_issues:
-            raise RecoveryError(f"The allowlist gained {', '.join(appended)} at its end; pass --append-issues to "
-                                "adopt the added issues (earlier issues, their order and their history stay as "
-                                "they are)")
-    if append_issues and not appended:
+        if reorder_unclaimed:
+            appended, moved = reordered_issues(old.get("issues"), new.get("issues"), claimed_issues(state))
+            for issue in moved:
+                if linear.issue(issue).get("statusType") == "started":
+                    raise RecoveryError(f"--reorder-unclaimed moves only unclaimed issues; {issue} is started in "
+                                        "Linear")
+        else:
+            appended = appended_issues(old.get("issues"), new.get("issues")) or []
+            if appended and not append_issues:
+                raise RecoveryError(f"The allowlist gained {', '.join(appended)} at its end; pass --append-issues to "
+                                    "adopt the added issues (earlier issues, their order and their history stay as "
+                                    "they are)")
+    if reorder_unclaimed and not (appended or moved):
+        raise RecoveryError("--reorder-unclaimed adopts issues inserted among, or a new order of, the issues this "
+                            "batch has not claimed; the batch file changes neither")
+    if append_issues and not reorder_unclaimed and not appended:
         raise RecoveryError("--append-issues adopts issues added at the end of the pinned allowlist "
                             f"({', '.join(old.get('issues') or [])}); the batch file adds none there")
-    fixed = [label for key, label in REPIN_FIXED if old.get(key) != new.get(key) and not (key == "issues" and appended)]
+    fixed = [label for key, label in REPIN_FIXED
+             if old.get(key) != new.get(key) and not (key == "issues" and (appended or moved))]
     projects = lambda layers: sorted(k for k in layers if k.startswith("project "))
     if projects(pinned.get("layers", {})) != projects(config["_layers"]):
         fixed.append("the project configuration file")
@@ -681,9 +725,9 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     if invalidated and active and active["step"] in VALIDATED_STEPS:
         raise RecoveryError(f"{active['issue_id']} is at step {active['step']!r} with evidence validated by the "
                             f"pinned checks, and the definition of {invalidated} changed; finish or defer it first")
-    if appended:
+    if appended or moved:
         # The allowlist is part of the state's identity record. Everything else in it is
-        # unchanged (checked above), so only the issue list is extended.
+        # unchanged (checked above), so only the issue list is extended or reordered.
         state.setdefault("identity", {})["issues"] = list(new["issues"])
         write_json(state_path, state)
     runner = Runner(new, linear)  # checks the batch identity against state.json
@@ -708,7 +752,7 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     details = {"id": identifier, "old_config_sha256": old_sha, "new_config_sha256": new_sha,
                "runner": {"old": old.get("runner"), "new": new.get("runner")}, "changes": changes,
                "changed_checks": invalidated, "invalidated_check_evidence": dropped,
-               "appended_issues": appended, "previous_resolved_config": str(archived),
+               "appended_issues": appended, "moved_issues": moved, "previous_resolved_config": str(archived),
                "active": {"issue": active["issue_id"], "step": active["step"]} if active else None}
     runner.state["config_sha256"] = new_sha
     if appended:
@@ -720,7 +764,7 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     runner.state.setdefault("config_repins", []).append(
         {"id": identifier, "at": now(), "authorized_by": authorized_by.strip(), "reason": reason.strip(),
          "old_config_sha256": old_sha, "new_config_sha256": new_sha, "runner": details["runner"], "changes": changes,
-         "invalidated_check_evidence": dropped, "appended_issues": appended,
+         "invalidated_check_evidence": dropped, "appended_issues": appended, "moved_issues": moved,
          "previous_resolved_config": str(archived)})
     record = _record(runner, "repin-config", reason=reason, authorized_by=authorized_by, then=None, details=details,
                      pending=False)

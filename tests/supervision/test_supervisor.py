@@ -1500,6 +1500,88 @@ class RepinConfigTests(Harness):
         entry = self.launch(clear_stop=True)
         self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-3", "DEV-4"]))
 
+    def test_reorder_unclaimed_inserts_an_issue_before_an_unclaimed_one(self):
+        # W-343: in s29-amend-20261005 W-340 had to run before the unclaimed W-333, and only
+        # --append-issues existed, so W-333 was made to wait for W-340 in Linear.
+        self.linear.add_issue("DEV-4")
+        self.edit_project(self.allow_empty)
+        self.launch(stop_after=["DEV-1"])
+        self.assertEqual(self.done(), ["DEV-1"])
+        before = self.state()
+        self.edit_batch(lambda b: b.update(issues=["DEV-1", "DEV-2", "DEV-4", "DEV-3"]))
+        with self.assertRaisesRegex(RecoveryError, "cannot change .*the issue allowlist and its order"):
+            self.repin()
+        record = self.repin(reason="DEV-4 must land before DEV-3", reorder_unclaimed=True)
+        self.assertEqual((record["details"]["appended_issues"], record["details"]["moved_issues"]), (["DEV-4"], []))
+        state = self.state()
+        self.assertEqual(state["identity"]["issues"], ["DEV-1", "DEV-2", "DEV-4", "DEV-3"])
+        self.assertEqual(state["history"], before["history"])
+        self.assertEqual(state["config_repins"][-1]["appended_issues"], ["DEV-4"])
+        entry = self.launch(clear_stop=True)
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-4", "DEV-3"]))
+
+    def test_reorder_unclaimed_moves_unclaimed_issues_and_its_refusals(self):
+        self.linear.add_issue("DEV-4")
+        self.edit_project(self.allow_empty)
+        self.launch(stop_after=["DEV-1"])
+        original = self.batch.read_text()
+        refused = [(["DEV-2", "DEV-1", "DEV-3"], r"keeps the allowlist up to its last claimed issue \(DEV-1\)"),
+                   (["DEV-4", "DEV-1", "DEV-2", "DEV-3"], r"position 1 holds DEV-4 instead of DEV-1"),
+                   (["DEV-1", "DEV-3"], "never removes an issue; the batch file drops DEV-2"),
+                   (["DEV-1", "DEV-2", "DEV-3"], "the batch file changes neither")]
+        for issues, message in refused:
+            with self.subTest(issues=issues):
+                self.edit_batch(lambda b: b.update(issues=issues))
+                state = self.state()
+                with self.assertRaisesRegex(RecoveryError, message):
+                    self.repin(reorder_unclaimed=True)
+                self.assertEqual(self.state(), state)
+                self.assertFalse(list(self.state_dir.glob("resolved-config-before-*")))
+            self.batch.write_text(original)
+        # A deferred issue counts as claimed: nothing before it may move.
+        state = self.state(); state["deferred"] = {"DEV-2": {"event": "review_blocked"}}
+        (self.state_dir / "state.json").write_text(json.dumps(state))
+        self.edit_batch(lambda b: b.update(issues=["DEV-1", "DEV-3", "DEV-2"]))
+        with self.assertRaisesRegex(RecoveryError, r"last claimed issue \(DEV-2\)"):
+            self.repin(reorder_unclaimed=True)
+        state["deferred"] = {}; (self.state_dir / "state.json").write_text(json.dumps(state))
+        # An unclaimed issue that is started in Linear is not moved.
+        self.edit_batch(lambda b: b.update(issues=["DEV-1", "DEV-3", "DEV-2"]))
+        self.linear.others["DEV-3"].update(status="In Progress", statusType="started")
+        with self.assertRaisesRegex(RecoveryError, "DEV-2 is started in Linear|DEV-3 is started in Linear"):
+            self.repin(reorder_unclaimed=True)
+        self.linear.others["DEV-3"].update(status="Todo", statusType="unstarted")
+        record = self.repin(reorder_unclaimed=True)
+        self.assertEqual((record["details"]["appended_issues"], record["details"]["moved_issues"]), ([], ["DEV-3", "DEV-2"]))
+        entry = self.launch(clear_stop=True)
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-3", "DEV-2"]))
+
+    def test_insert_issues_edits_only_the_batch_file(self):
+        def insert(*extra):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["insert-issues", "--batch", str(self.batch), "--home", str(self.home), *extra])
+            return json.loads(out.getvalue())
+        before = json.loads(self.batch.read_text())
+        report = insert("--issues", "DEV-4", "DEV-5", "--before", "DEV-3", "--implement-timeout", "10800")
+        after = json.loads(self.batch.read_text())
+        self.assertEqual(after["issues"], ["DEV-1", "DEV-2", "DEV-4", "DEV-5", "DEV-3"])
+        self.assertEqual(after["phase_overrides"], {i: {"implement": {"timeout_seconds": 10800}} for i in ("DEV-4", "DEV-5")})
+        self.assertEqual({k: v for k, v in after.items() if k not in ("issues", "phase_overrides")},
+                         {k: v for k, v in before.items() if k not in ("issues", "phase_overrides")})
+        self.assertIn("--reorder-unclaimed", report["next"])
+        load_config(self.batch, self.home)  # the edited file still loads (validate-config)
+        report = insert("--issues", "DEV-6", "--terminal-issue", "DEV-6")
+        after = json.loads(self.batch.read_text())
+        self.assertEqual((after["issues"][-1], after["terminal_issue"]), ("DEV-6", "DEV-6"))
+        self.assertIn("--append-issues", report["next"])
+        edited = self.batch.read_text()
+        for extra in (["--issues", "DEV-2"], ["--issues", "DEV-7", "--before", "DEV-9"],
+                      ["--issues", "DEV-7", "--terminal-issue", "DEV-8"]):
+            with self.subTest(extra=extra), patch("sys.stderr"), self.assertRaises(SystemExit):
+                insert(*extra)
+            self.assertEqual(self.batch.read_text(), edited)
+
     def test_preconditions(self):
         with self.assertRaisesRegex(RecoveryError, "no pinned state"):
             self.repin()

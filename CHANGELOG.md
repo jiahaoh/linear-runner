@@ -15,6 +15,19 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Added
+
+* `recover repin-config --reorder-unclaimed` adopts issues inserted among, and a new order of,
+  the issues a stopped batch has not claimed. The allowlist up to its last done, active or
+  deferred issue stays as pinned; the option never removes an issue and refuses to move one
+  that is started in Linear; the record names the inserted and the moved issues. The new
+  offline command `insert-issues` edits the batch file for it (or for `--append-issues`):
+  issues inserted before a named issue or at the end, their implement timeout and a new
+  `terminal_issue`. In s29-amend-20261005 W-340 had to run before the unclaimed W-333, and
+  the operator made W-333 wait for W-340 in Linear and edited the batch JSON by hand. Project
+  impact: none. Canary tier: first-issue checkpoint (a recovery option and an offline
+  command) (`W-343`).
+
 ### Fixed
 
 * The last-issue rule of the extended checks applies to the issue that runs last, not to the

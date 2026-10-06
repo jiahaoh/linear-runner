@@ -1223,6 +1223,7 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | Withdraw a recovery that was not launched (works even after the configuration changed) | `recover cancel --batch $B --reason R --authorized-by A` |
 | Adopt a changed configuration and/or a newer runner commit (paused or stopped batch; applied at once, then record the recovery the state needs) | `recover repin-config --batch $B --reason R --authorized-by A` |
 | Add issues at the end of a paused, checkpointed or complete batch (see "Adding issues to a batch") | `recover repin-config --append-issues --batch $B --reason R --authorized-by A`, then `launch --clear-stop` |
+| Insert issues before, or reorder, issues the batch has not claimed | `insert-issues --batch $B --issues W-9 --before W-5`, then `recover repin-config --reorder-unclaimed ...`, then `launch --clear-stop` |
 | A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A` |
 
 Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
@@ -1314,7 +1315,7 @@ names live and requires them to resolve to the pinned IDs, then:
 * refuses any change to the batch identity, which needs a new batch `id`: the batch id, the
   issue allowlist and its order, the project file, the Linear project, workspace and
   assignee names, the resolved project and assignee IDs, the worktree, the branch and the
-  state directory (the one exception is `--append-issues`, below);
+  state directory (the exceptions are `--append-issues` and `--reorder-unclaimed`, below);
 * refuses a changed check definition (or check environment) while the active issue is at
   `commit`, `delivery`, `review`, `publish` or `done`, whose evidence was validated by the
   pinned checks (finish or defer it first);
@@ -1367,6 +1368,26 @@ last entry: an earlier issue that waits for an added one in Linear runs after it
 so the batch reports complete again once the added issues are Done. Other configuration
 edits in the same re-pin (guidance, `phase_overrides` for the new issues) are adopted with
 it. Start a new batch instead when the follow-up needs another base revision or branch.
+
+When an added issue must run before an issue the batch has not claimed yet (a change the last
+issue builds on), insert it there and adopt the edit with `--reorder-unclaimed`:
+
+```bash
+python3 runner.py insert-issues --batch $B --issues W-9 --before W-5 --implement-timeout 10800
+python3 runner.py recover repin-config --reorder-unclaimed --batch $B --reason R --authorized-by A
+python3 runner.py launch --batch $B --clear-stop
+```
+
+`insert-issues` edits only the batch file (`issues`, the inserted issues' `phase_overrides`
+with `--implement-timeout`, and `terminal_issue` with `--terminal-issue`), refuses an issue
+already listed, an unknown `--before` and a terminal issue outside the allowlist, restores the
+file when the edit would not load, and prints the `repin-config` command to run next.
+`--reorder-unclaimed` keeps the allowlist up to its last claimed issue (done, active or
+deferred) exactly as pinned; after it, issues may be inserted and the unclaimed issues
+reordered. It never removes an issue, and it refuses to move an issue that is started in
+Linear. The record names the inserted issues (`appended_issues`) and the earlier issues whose
+order changed (`moved_issues`). Before this option, the only way to get the order was to make
+the later issue wait for the added one in Linear (s29-amend-20261005, `W-343`).
 
 Verify no previous child is alive before recovering (recoveries and launch refuse a live
 recorded PID). Never delete state or reset the worktree to clear a failure. The lock
