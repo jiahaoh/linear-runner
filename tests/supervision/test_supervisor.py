@@ -2307,7 +2307,10 @@ class ReviewFilesTests(Harness):
             if directory.name.startswith("implement") and directory.parent.parent.name == "DEV-1":
                 figure = directory / "figures" / "plot.png"
                 figure.parent.mkdir(); figure.write_bytes(b"png bytes")
+                draft = directory / "outbox" / "001-ready.md"
+                draft.parent.mkdir(exist_ok=True); draft.write_text("A draft of the ready comment.")
                 result["deliverables"] = [{"path": str(figure), "description": "The figure the issue asks for"},
+                                          {"path": str(draft), "description": "Draft of the ready update"},
                                           {"path": "result.txt", "description": "A worktree file"},
                                           {"path": str(directory / "missing.png"), "description": "Never written"},
                                           {"path": str(outside), "description": "Outside both"}]
@@ -2316,13 +2319,15 @@ class ReviewFilesTests(Harness):
         self.launch(stop_after=["DEV-1"])
         [entry] = self.state()["history"]
         recorded = {Path(d["path"]).name: d for d in entry["deliverables"]}
-        self.assertEqual(sorted(recorded), ["plot.png", "result.txt"])
+        self.assertEqual(sorted(recorded), ["001-ready.md", "plot.png", "result.txt"])  # the record keeps it
         self.assertEqual(recorded["plot.png"]["sha256"], hashlib.sha256(b"png bytes").hexdigest())
         self.assertEqual(recorded["result.txt"]["sha256"], hashlib.sha256((self.repo / "result.txt").read_bytes()).hexdigest())
         checkpoint = self.linear.last("DEV-3", "batch-finished")
         self.assertIn("**Files to review**\n- DEV-1: " + recorded["plot.png"]["path"] + " — The figure the issue asks for",
                       checkpoint)
         self.assertNotIn("result.txt", checkpoint.split("**Files to review**")[1].split("**")[0])
+        # W-351: an outbox draft is the worker's comment, already in Linear; it is not listed.
+        self.assertNotIn("001-ready.md", checkpoint)
         self.assertNotIn("|", checkpoint.split("**Files to review**")[1].split("**")[0])
         self.launch(clear_stop=True)
         final = self.linear.last("DEV-3", "batch-finished")

@@ -192,7 +192,10 @@ migration entry and names it in its CHANGELOG project impact.
 ### Name resolution and pinning
 
 `validate-config` is fully offline: it creates no state and contacts neither Linear nor
-Codex, so the Linear project and assignee remain unresolved names in its report. `dry-run`,
+Codex, so the Linear project and assignee remain unresolved names in its report. `dry-run`
+selects the next issue as the supervisor does: it skips done and deferred issues, logs each
+issue that waits for an unfinished prerequisite ("Dry run: W-9 waits for W-8"), and writes
+no batch state (before 2.6.1 it stopped on a first issue that waits, `W-351`). `dry-run`,
 `run` and `launch` resolve the exact project name and the assignee to IDs (no match or more than one
 exact match is an error) and write `<state dir>/resolved-config.json` with the resolved IDs,
 the effective configuration, the source layer of every value and the layer files used.
@@ -957,7 +960,8 @@ list first the files the issue or the guidance asks the owner to look at. At Don
 entry records each deliverable with its SHA-256. The next checkpoint or batch-finished comment
 lists, under "Files to review", the deliverables inside each done issue's run directory
 (figures, tables, notes: files outside the diff) that no earlier batch comment listed; files
-in the worktree stay in the Done comment. The terminal report lists every deliverable with
+in the worktree, and the worker's outbox drafts (its comments, already in Linear), stay in the
+Done comment. The terminal report lists every deliverable with
 its hash. In s29-amend-20261005 the figures of the planned checkpoint were listed only among
 ten source files in W-332's Done comment (`W-347`).
 

@@ -542,6 +542,26 @@ class EngineTests(unittest.TestCase):
         self.runner.execute(dry_run=True)
         self.assertIn('Criterion lint: DEV-1 criterion 2 says "unchanged": say what compares with the base', logged)
 
+    def test_dry_run_follows_prerequisites_and_writes_nothing(self):
+        # W-351: in canary-w342-20261006 the first issue waited for the second, and dry-run stopped
+        # with "Incomplete prerequisite" while the supervisor selected the second issue.
+        self.config["issues"] = ["DEV-1", "DEV-2"]
+        self.linear.add_issue("DEV-2")
+        self.linear.data["relations"] = {"blockedBy": [{"id": "DEV-2"}]}
+        files = lambda: {p.name: p.read_bytes() for p in self.runner.root.glob("*") if p.is_file()}
+        before = files()
+        logged = []
+        self.runner.log = logged.append
+        self.runner.execute(dry_run=True)
+        self.assertEqual(logged, ["Dry run: DEV-1 waits for DEV-2", "Dry run: selected=DEV-2; ready"])
+        self.assertEqual(files(), before)
+        self.assertFalse((self.runner.root / "snapshot.json").exists())
+        # Nothing ready: the waiting issue is named and nothing raises.
+        self.linear.others["DEV-2"]["relations"] = {"blockedBy": [{"id": "DEV-1"}]}
+        logged.clear()
+        self.runner.execute(dry_run=True)
+        self.assertEqual(logged[-1], "Dry run: selected=None; nothing ready; issues wait on prerequisites")
+
     def test_the_last_issue_is_decided_by_the_queue(self):
         # W-342: the last entry of the allowlist is not necessarily the issue that runs last.
         self.config["issues"] = ["DEV-1", "DEV-2", "DEV-3"]

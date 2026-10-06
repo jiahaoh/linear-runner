@@ -1204,7 +1204,9 @@ class Runner:
             if entry["issue_id"] in listed:
                 continue
             run = Path(entry["run_dir"]).resolve()
-            items = [d for d in entry.get("deliverables") or [] if Path(d["path"]).resolve().is_relative_to(run)]
+            # Outbox drafts are the worker's comments, already posted to Linear (W-351).
+            items = [d for d in entry.get("deliverables") or [] if Path(d["path"]).resolve().is_relative_to(run)
+                     and "outbox" not in Path(d["path"]).resolve().relative_to(run).parts]
             if items:
                 lines.append(messages.deliverable_lines(items, issue=entry["issue_id"]))
             issues.append(entry["issue_id"])
@@ -2441,7 +2443,14 @@ class Runner:
         if pid and Path(f"/proc/{pid}").exists():
             raise RuntimeError(f"Previous worker PID {pid} may still be alive; inspect before resuming")
         if dry_run:
-            selected, reason = self.snapshot()
+            # The supervisor's dependency-aware selection, read-only (W-351): an issue that waits for
+            # another is reported, not raised, and nothing is written.
+            from linear_runner.supervision.supervisor import Supervisor
+            self.check_gates()
+            selected, waiting = Supervisor(self, launch_id=None).select(dry=True)
+            for issue, blockers in waiting.items():
+                self.log(f"Dry run: {issue} waits for {', '.join(blockers)}")
+            reason = "ready" if selected else "nothing ready; issues wait on prerequisites" if waiting else "complete"
             self.log(f"Dry run: selected={selected}; {reason}")
             if self.config.get("criterion_lint"):
                 done = {entry["issue_id"] for entry in self.state.get("history", [])}

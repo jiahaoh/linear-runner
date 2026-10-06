@@ -15,6 +15,16 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Fixed
+
+* `dry-run` selects the next issue with the supervisor's dependency-aware rule: it logs each
+  issue that waits for an unfinished prerequisite and the issue it selects, raises nothing
+  for a waiting issue and writes no batch state. In the 2.6.0 canary the first issue waited
+  for the second and `dry-run` stopped with "Incomplete prerequisite". The batch comment's
+  "Files to review" leaves out the worker's outbox drafts (its comments, already in Linear);
+  the canary listed one. Project impact: none. Canary tier: first-issue checkpoint (an
+  offline selection and a comment) (`W-351`).
+
 ## v2.6.0 — 2026-10-06
 
 The findings of the §2.9 amendment batch (s29-amend-20261005, complete; `W-342` to `W-348`).
