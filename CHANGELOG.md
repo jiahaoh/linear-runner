@@ -15,6 +15,16 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.6.1 — 2026-10-06
+
+The two findings of the 2.6.0 canary batch (canary-w342-20261006, complete; `W-351`).
+
+**Project impact:** none. A batch that pins `runner_version` names 2.6.1 before `recover
+repin-config` adopts the release.
+
+**Canary tier:** first-issue checkpoint; only the offline `dry-run` selection and the batch
+comment's "Files to review" changed.
+
 ### Fixed
 
 * `dry-run` selects the next issue with the supervisor's dependency-aware rule: it logs each
