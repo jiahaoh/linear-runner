@@ -533,6 +533,15 @@ class EngineTests(unittest.TestCase):
         passed, record, _ = run()
         self.assertEqual((passed, record["status"], record["note"]), (False, "failed", "the command failed in the base and the result run"))
 
+    def test_dry_run_logs_criterion_lint_warnings(self):
+        # W-345: the same rules as the launch preflight, as log lines.
+        self.config["criterion_lint"] = [{"pattern": "unchanged", "message": "say what compares with the base"}]
+        self.linear.data["description"] = "- [ ] Produce validated output\n- [ ] The A19 hash lists are unchanged."
+        logged = []
+        self.runner.log = logged.append
+        self.runner.execute(dry_run=True)
+        self.assertIn('Criterion lint: DEV-1 criterion 2 says "unchanged": say what compares with the base', logged)
+
     def test_the_last_issue_is_decided_by_the_queue(self):
         # W-342: the last entry of the allowlist is not necessarily the issue that runs last.
         self.config["issues"] = ["DEV-1", "DEV-2", "DEV-3"]

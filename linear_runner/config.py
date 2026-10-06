@@ -680,6 +680,13 @@ def load_config(batch_path, home=None):
         body = _read_text(path, f"{project_label}.context_files[{index}]")
         context[str(path)] = {"sha256": hashlib.sha256(body.encode()).hexdigest(), "text": body}
     put("context_files", list(context), project_label)
+    lint = copy.deepcopy(project.get("criterion_lint", []))
+    for index, rule in enumerate(lint):
+        try:
+            re.compile(rule["pattern"])
+        except re.error as error:
+            raise ConfigError(f"{project_label}.criterion_lint[{index}].pattern: not a regular expression ({error})")
+    put("criterion_lint", lint, project_label)
     config["_context"] = context
     sources["_context"] = project_label
 

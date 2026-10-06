@@ -17,6 +17,13 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Added
 
+* Project field `criterion_lint`: rules (`pattern`, `message`, optional `unless`) for
+  acceptance-criterion wording that reviews read literally. The launch preflight lists each
+  match in an issue the batch has not claimed as a warning, and `dry-run` logs it; nothing
+  stops. In s29-amend-20261005 "the controller's complete suite" passed two reviews and
+  blocked W-338, and "A19 hash lists unchanged" blocked W-336. Project impact: none; a
+  project may add rules (the example project has two). Canary tier: first-issue checkpoint
+  (preflight output) (`W-345`).
 * A check may set `base_parity: {"outputs": [...]}`. The controller then runs its command in
   the issue's starting commit, exported with `git archive` outside the worktree (the
   worktree's path is replaced by the export's in the command and the check environment), and

@@ -32,6 +32,7 @@ from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, Confi
 from linear_runner.engine.delivery import EMPTY_NOTE, SKIPPED_NOTE, check_outcome, check_passed, check_skipped
 from linear_runner.engine import intake
 from linear_runner.engine import parity
+from linear_runner.engine import lint as criterion_lint
 from linear_runner.linear.client import LinearClient, read_back
 from linear_runner.linear import messages
 from linear_runner.linear import updates
@@ -2415,6 +2416,12 @@ class Runner:
         if dry_run:
             selected, reason = self.snapshot()
             self.log(f"Dry run: selected={selected}; {reason}")
+            if self.config.get("criterion_lint"):
+                done = {entry["issue_id"] for entry in self.state.get("history", [])}
+                claimed = done | set(self.state.get("deferred", {}))
+                lives = [self.linear.issue(i) for i in self.config["issues"] if i not in claimed]
+                for warning in criterion_lint.lint_issues(lives, self.config["criterion_lint"], claimed):
+                    self.log(f"Criterion lint: {warning}")
             return
         if self.stop_requested():
             self.log("STOP marker present; no issue started")

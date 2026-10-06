@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linear_runner.config import load_config, pin_resolution, write_resolved
+from linear_runner.config import ConfigError, load_config, pin_resolution, write_resolved
 from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, fake_codex, fake_codex_calls, make_home
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
 from linear_runner.supervision import recovery
@@ -2235,6 +2235,39 @@ class LastIssueByQueueTests(Harness):
         self.assertEqual(self.launch()["started"]["outcome"], "complete")
         self.assertEqual(self.done(), ["DEV-1", "DEV-2"])
         self.assertEqual([self.checks_of(i) for i in ("DEV-1", "DEV-2")], [["output"], ["final", "output"]])
+
+
+class CriterionLintTests(Harness):
+    """Criterion wording the project lists as ambiguous (W-345): in s29-amend-20261005 "the
+    controller's complete suite" passed two reviews and blocked a third."""
+    PROJECT = {"criterion_lint": [{"pattern": "complete suite", "unless": "as the batch guidance defines it",
+                                   "message": "name the selections"}]}
+
+    def test_launch_lists_a_warning_per_match_in_unclaimed_issues_and_proceeds(self):
+        self.linear.data["description"] = "- [ ] Produce validated output\n- [ ] Evidence: the complete suite."
+        self.linear.others["DEV-2"]["description"] = ("- [ ] Evidence: the complete suite, as the batch guidance "
+                                                      "defines it.")
+        self.linear.others["DEV-3"]["description"] = "- [ ] Produce DEV-3 output"
+        self.launch(stop_after=["DEV-1"])
+        warnings = json.loads(self.output[-1])["warnings"]
+        self.assertIn('DEV-1 criterion 2 says "complete suite": name the selections', warnings)
+        self.assertEqual([w for w in warnings if "criterion" in w], ['DEV-1 criterion 2 says "complete suite": name the selections'])
+        self.assertEqual(self.done(), ["DEV-1"])  # the launch proceeded
+        # DEV-1 is done now: a claimed or done issue is no longer linted.
+        self.linear.others["DEV-3"]["description"] = "- [ ] The COMPLETE SUITE passes"
+        self.launch(clear_stop=True, stop_after=["DEV-2"])
+        warnings = json.loads(self.output[-1])["warnings"]
+        self.assertEqual([w for w in warnings if "criterion" in w], ['DEV-3 criterion 1 says "COMPLETE SUITE": name the selections'])
+
+    def test_the_rules_are_checked_offline(self):
+        project = json.loads((self.home / "projects" / "fixture.json").read_text())
+        for rules, message in (([{"pattern": "(", "message": "m"}], r"criterion_lint\[0\]\.pattern: not a regular expression"),
+                               ([{"pattern": "x", "message": ""}], "criterion_lint"),
+                               ([{"pattern": "x"}], "criterion_lint")):
+            with self.subTest(rules=rules):
+                (self.home / "projects" / "fixture.json").write_text(json.dumps(dict(project, criterion_lint=rules)))
+                with self.assertRaisesRegex(ConfigError, message):
+                    load_config(self.batch, self.home)
 
 
 class WaitTests(Harness):

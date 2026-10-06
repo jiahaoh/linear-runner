@@ -69,6 +69,7 @@ from linear_runner import backends
 from linear_runner.backends.codex import catalog_sha256
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
 from linear_runner.supervision import backend_start
+from linear_runner.engine import lint as criterion_lint
 from linear_runner.version import pin_problem
 from linear_runner.supervision.recovery import expected_state
 from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, evidence_intact,
@@ -232,9 +233,11 @@ def _check_linear(runner, supervisor, pending=None):
     config, linear, state = runner.config, runner.linear, runner.state
     runner.check_gates()
     issues = {}
+    lives = []
     done = {h["issue_id"] for h in state["history"]}
     for identifier in config["issues"]:
         live = linear.issue(identifier)
+        lives.append(live)
         if pending is not None and identifier not in done and live.get("statusType") != "completed":
             pending.append(live)
         issues[identifier] = {"status": live.get("status"), "statusType": live.get("statusType"),
@@ -249,6 +252,10 @@ def _check_linear(runner, supervisor, pending=None):
     active = state.get("active")
     result = {"issues": issues, "pending_recovery": pending["id"] if pending else None,
               "history": sorted(done), "deferred": sorted(state.get("deferred", {}))}
+    claimed = done | set(state.get("deferred", {})) | ({state["active"]["issue_id"]} if state.get("active") else set())
+    lint = criterion_lint.lint_issues(lives, config.get("criterion_lint"), claimed)
+    if lint:
+        result["criterion_lint"] = lint
     if active:
         if not pending:
             raise LaunchError(f"{active['issue_id']} is unfinished at step {active['step']!r}; record a recovery first")
@@ -617,6 +624,8 @@ def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=
     write_json(path, entry)
     warnings = [s["result"]["warning"] for s in record["steps"].values()
                 if isinstance(s.get("result"), dict) and s["result"].get("warning")]
+    # Criterion wording the project lists as ambiguous (W-345), one warning per match.
+    warnings += (record["steps"].get("linear", {}).get("result") or {}).get("criterion_lint", [])
     if config["attention"]["notifier"]["backend"] == "none":
         # s28-impl-20261002 (W-303): four unplanned stops, and none left the runner.
         warnings.append("No notification backend is configured (attention.notifier.backend is \"none\"): a stop "

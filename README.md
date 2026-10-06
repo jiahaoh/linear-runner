@@ -107,7 +107,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -446,6 +446,16 @@ nothing and never creates a second template.
   (after acceptance even `--accept-contract-drift` does). A new issue may declare itself
   blocked by a running one: that only changes the running issue's `blocks` relation, which is
   outside the contract and is logged.
+* Reviews read criterion words literally. A project lists wording that has cost it a review in
+  `criterion_lint`: each rule is a case-insensitive regular expression `pattern`, a `message`
+  with the suggested rewrite and an optional `unless` phrase that makes a criterion acceptable
+  (for example `"as the batch guidance defines it"`). The launch preflight (its `linear` step)
+  lists each match in an issue the batch has not claimed as a warning ("W-9 criterion 3 says
+  \"complete suite\": ..."), and `dry-run` logs the same as `Criterion lint:` lines. Warnings
+  never stop a launch; `validate-config` refuses a pattern that is not a regular expression.
+  In s29-amend-20261005 "the controller's complete suite" passed two reviews and blocked a
+  third, and "A19 hash lists unchanged" blocked one (`W-345`). The example project has two
+  rules.
 
 ## Running a batch
 
