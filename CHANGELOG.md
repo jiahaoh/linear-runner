@@ -80,6 +80,15 @@ its tier. The release procedure is in the README ("Releases").
   the final run is never lost to a transient error. Project impact: none. Canary tier:
   canary batch (the engine's check selection) (`W-342`).
 
+### Documentation
+
+* The README says what a later edit of an accepted issue does: nothing stops, because the
+  contract is compared only until the read-back right after acceptance; later launches do not
+  read it again and the batch end checks only that the issue is still Done. A test pins it. In
+  s29-amend-20261005 a wrong number in the accepted W-334 was corrected by a comment because
+  this was not written down. Project impact: none. Canary tier: first-issue checkpoint
+  (documentation) (`W-348`).
+
 ## v2.5.0 — 2026-10-04
 
 The findings of the §2.8 implementation batch (s28-impl-20261002, complete; `W-302` and

@@ -771,6 +771,16 @@ snapshot (under the current or an earlier formula) and then
 compares the snapshot and the live issue with the current field set, so a paused batch
 continues without a new batch.
 
+**Editing an issue after its acceptance.** The contract is compared until the lifecycle
+read-back right after acceptance, never again. A later edit of an accepted issue's
+description, criteria or relations (a correction found at a checkpoint, a note added for a
+later reader) does not stop the batch: later launches do not read it again, and the batch end
+checks only that the issue is still Done in Linear. Its read-back (`lifecycle/<issue>/readback.json`, with the
+contract hash it had) stays the record of what was accepted. Edit the issue when the
+correction belongs in its text, and say in a comment what changed and why; reopening it (a
+status other than Done) stops the batch at its end. In s29-amend-20261005 a wrong number in
+the accepted W-334 was corrected by a comment, because this was not written down (`W-348`).
+
 Each phase records requested and observed model/effort, usage, prompt and tool-output
 bytes and elapsed time. Exceeding a phase's soft budget (or missing usage telemetry)
 checkpoints the issue for explicit reconciliation (`recover budget`); resume does not

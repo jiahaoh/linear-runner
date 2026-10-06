@@ -2270,6 +2270,30 @@ class CriterionLintTests(Harness):
                     load_config(self.batch, self.home)
 
 
+class AcceptedIssueEditTests(Harness):
+    """What a later edit of an accepted issue's text does (W-348): in s29-amend-20261005 a wrong
+    number in an accepted issue was corrected by a comment, because the README did not say."""
+
+    def test_an_accepted_issue_edited_after_its_read_back_does_not_stop_the_batch(self):
+        self.launch(stop_after=["DEV-1"])
+        readback = json.loads((self.state_dir / "lifecycle" / "DEV-1" / "readback.json").read_text())
+        accepted = self.linear.issue("DEV-1")
+        self.linear.data["description"] = accepted["description"] + "\n\nCorrection: a number in the purpose was wrong."
+        self.linear.data["relations"] = {"blockedBy": [{"id": "DEV-9"}]}
+        self.linear.others["DEV-9"] = {"id": "DEV-9", "statusType": "completed"}
+        entry = self.launch(clear_stop=True)
+        self.assertEqual((entry["started"]["outcome"], self.done()), ("complete", ["DEV-1", "DEV-2", "DEV-3"]))
+        self.assertEqual(self.state().get("stops", []), [])
+        # The read-back recorded at acceptance stays the record; it is not taken again.
+        self.assertEqual(json.loads((self.state_dir / "lifecycle" / "DEV-1" / "readback.json").read_text()), readback)
+        self.assertFalse(list((self.state_dir / "lifecycle" / "DEV-1").glob("readback-superseded-*")))
+        # Only the Done status of an accepted issue is checked again: reopening it stops the batch end.
+        self.linear.data.update(status="In Progress", statusType="started")
+        runner = self.make_runner()
+        with self.assertRaisesRegex(RuntimeError, "Linear acceptance read-back is not Done"):
+            runner.snapshot()
+
+
 class ReviewFilesTests(Harness):
     """Files a worker made for the owner (W-347): in s29-amend-20261005 the W-332 figures for the
     planned checkpoint were listed only among ten source files in the Done comment."""
