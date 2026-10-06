@@ -1604,6 +1604,28 @@ class Runner:
         except (OSError, ValueError, KeyError):
             return git(self.repo, "rev-parse", first["commits"][0] + "^")
 
+    def is_last_issue(self, issue_id):
+        """Whether ``issue_id`` is the batch's last issue: no other allowlisted issue is still to
+        run (W-342). Done and deferred issues of this batch and issues Done in Linear do not
+        count; an issue that waits for this one does. Before W-342 the last issue was the last
+        entry of the allowlist, so an issue that ran after it (it waited for it in Linear) got
+        no final run. A Linear read that fails counts as "may be last": an extra final run is
+        cheaper than a missing one."""
+        done = {entry["issue_id"] for entry in self.state.get("history", [])}
+        deferred = set(self.state.get("deferred", {}))
+        for other in self.config["issues"]:
+            if other == issue_id or other in done or other in deferred:
+                continue
+            try:
+                status = self.linear.issue(other).get("statusType")
+            except Exception as error:  # noqa: BLE001 - see the docstring
+                self.log(f"Validation: could not read {other} to decide the last issue ({error}); "
+                         "running the last-issue checks")
+                return True
+            if status != "completed":
+                return False
+        return True
+
     def batch_changed_files(self, active):
         """Files changed since the batch's base revision (``batch_base``), the active issue's
         uncommitted and untracked files included."""
@@ -1665,11 +1687,13 @@ class Runner:
         results = []
         ran = []
         before = fingerprint(self.repo)
-        last = active["issue_id"] == self.config["issues"][-1]
+        last = None  # decided when an extended check needs it (W-342: by the queue)
         batch_changed = None
         for index, spec in enumerate(self.config["checks"]):
             if spec["tier"] == "extended" and not any(
                     fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
+                if last is None:
+                    last = self.is_last_issue(active["issue_id"])
                 if not last:
                     continue
                 if spec.get("last_issue") == "when_changed":

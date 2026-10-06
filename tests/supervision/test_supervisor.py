@@ -2127,6 +2127,34 @@ class WhenChangedBatchBaseTests(Harness):
         self.finish_a_batch_paused_by_an_earlier_release(manifest=False)
 
 
+class LastIssueByQueueTests(Harness):
+    """The last issue is the one that runs last, not the last entry of the allowlist (W-342):
+    in s29-amend-20261005 W-333 waited for the appended W-340, and the final run went to W-340."""
+    PROJECT = {"checks": [
+        {"name": "output", "kind": "code", "tier": "default", "inputs": ["result.txt"], "cwd": ".",
+         "command": ["${python}", "-c", "from pathlib import Path; assert Path('result.txt').read_text() == 'ready'"]},
+        # No issue writes under never/: the check runs only as the last issue's final word.
+        {"name": "final", "kind": "code", "tier": "extended", "inputs": ["never/*"], "cwd": ".",
+         "command": ["${python}", "-c", "pass"]}]}
+
+    def checks_of(self, issue):
+        entry = next(h for h in self.state()["history"] if h["issue_id"] == issue)
+        return sorted(r["name"] for r in json.loads((Path(entry["validation_dir"]) / "checks.json").read_text()))
+
+    def test_an_issue_that_waits_for_the_list_end_runs_last_and_gets_the_final_run(self):
+        self.linear.others["DEV-2"]["relations"] = {"blockedBy": [{"id": "DEV-3"}]}
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.done(), ["DEV-1", "DEV-3", "DEV-2"])
+        self.assertEqual([self.checks_of(i) for i in ("DEV-1", "DEV-3", "DEV-2")],
+                         [["output"], ["output"], ["final", "output"]])
+
+    def test_a_list_end_already_done_leaves_the_final_run_to_the_issue_before_it(self):
+        self.linear.others["DEV-3"].update(status="Done", statusType="completed")
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")
+        self.assertEqual(self.done(), ["DEV-1", "DEV-2"])
+        self.assertEqual([self.checks_of(i) for i in ("DEV-1", "DEV-2")], [["output"], ["final", "output"]])
+
+
 class WaitTests(Harness):
     """``runner.py wait`` (W-303): s28-impl-20261002 sat paused for 19 minutes after the
     operator's own polling loop had expired."""

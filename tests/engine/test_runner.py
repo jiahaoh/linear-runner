@@ -410,6 +410,7 @@ class EngineTests(unittest.TestCase):
                     dict({"name": "slow", "kind": "code", "tier": "extended", "inputs": ["slow/*"], "cwd": ".",
                           "command": slow}, **option)]
         self.config["issues"] = ["DEV-1", "DEV-2"]
+        self.linear.add_issue("DEV-2")
         (self.repo / "result.txt").write_text("ready")
         base = git(self.repo, "rev-parse", "HEAD")
         def run(issue, starting_commit=base):
@@ -426,6 +427,8 @@ class EngineTests(unittest.TestCase):
         self.config["checks"] = checks(last_issue="when_changed")
         passed, records = run("DEV-1")
         self.assertEqual((passed, [r["name"] for r in records], runs()), (True, ["output"], 0))
+        # DEV-1 is Done: DEV-2 is the last issue, decided by the queue (W-342).
+        self.linear.data.update(status="Done", statusType="completed")
         # The last issue, nothing in the batch matches: recorded as skipped, with the reason.
         passed, records = run("DEV-2")
         self.assertTrue(passed)
@@ -466,6 +469,28 @@ class EngineTests(unittest.TestCase):
         with self.assertRaisesRegex(DeliveryError, r"required check\(s\) \['slow'\] are not in the validated evidence"):
             verify_delivery({"required_checks": ["slow"], "manifest": "m.json", "revision_field": "revision"},
                             self.root, "0" * 40, [skipped])
+
+    def test_the_last_issue_is_decided_by_the_queue(self):
+        # W-342: the last entry of the allowlist is not necessarily the issue that runs last.
+        self.config["issues"] = ["DEV-1", "DEV-2", "DEV-3"]
+        self.linear.add_issue("DEV-2"); self.linear.add_issue("DEV-3")
+        self.runner.state["history"] = [{"issue_id": "DEV-1"}]
+        # DEV-3 is still to run (here: DEV-3 waits for DEV-2), so DEV-2 is not last.
+        self.assertFalse(self.runner.is_last_issue("DEV-2"))
+        # DEV-3 is the list's last entry, but DEV-2, which waits for it, is still to run.
+        self.assertFalse(self.runner.is_last_issue("DEV-3"))
+        # A deferred list end, or one already Done in Linear, does not count.
+        self.runner.state["deferred"] = {"DEV-3": {"event": "review_blocked"}}
+        self.assertTrue(self.runner.is_last_issue("DEV-2"))
+        self.runner.state["deferred"] = {}
+        self.linear.others["DEV-3"].update(status="Done", statusType="completed")
+        self.assertTrue(self.runner.is_last_issue("DEV-2"))
+        # A Linear read that fails counts as "may be last", with a log line.
+        del self.linear.others["DEV-3"]
+        logged = []
+        self.runner.log = logged.append
+        self.assertTrue(self.runner.is_last_issue("DEV-2"))
+        self.assertIn("could not read DEV-3 to decide the last issue", logged[0])
 
     def test_failed_checks_are_never_reused(self):
         active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1", "starting_commit": git(self.repo, "rev-parse", "HEAD")}

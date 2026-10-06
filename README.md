@@ -609,7 +609,10 @@ elsewhere stops the batch for reconciliation.
    leaves changes uncommitted and makes no Linear or Git mutations.
 4. **Checks.** Checks declare `name`, `kind`, `tier`, `inputs`, `cwd` and `command`.
    Default checks always run or reuse evidence; extended checks run for matching changed
-   inputs and at the last allowlisted issue. An extended check may set
+   inputs and at the batch's last issue. The last issue is the one that runs last: no other
+   allowlisted issue is still to run (done or deferred issues of the batch and issues Done in
+   Linear do not count, an issue that waits for this one does), whatever its position in the
+   allowlist; a Linear read that fails while deciding counts as "last". An extended check may set
    `"last_issue": "when_changed"`: at the last issue it then runs (or reuses passing
    evidence) only if a file changed since the batch's base revision matches its `inputs`,
    whichever issue of the batch changed it. The base revision is the starting commit of the
@@ -1357,8 +1360,9 @@ python3 runner.py launch --batch $B --clear-stop
 An inserted, reordered, removed or replaced issue is refused as before, and so is an
 appended issue without the flag (the message names the flag). The record names the appended
 issues with its reason and authorizer. Earlier issues keep their history, usage, repairs and
-evidence. The added issues run on the same branch, on top of the accepted commits. The new
-last issue takes over the last-issue rule of the extended checks, and the new
+evidence. The added issues run on the same branch, on top of the accepted commits. The issue
+that now runs last takes over the last-issue rule of the extended checks (it need not be the
+last entry: an earlier issue that waits for an added one in Linear runs after it), and the new
 `terminal_issue` gets the batch-finished comment; an earlier completion record is dropped,
 so the batch reports complete again once the added issues are Done. Other configuration
 edits in the same re-pin (guidance, `phase_overrides` for the new issues) are adopted with

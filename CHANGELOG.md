@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Fixed
+
+* The last-issue rule of the extended checks applies to the issue that runs last, not to the
+  last entry of the allowlist. An issue is the last when no other allowlisted issue is still
+  to run: done and deferred issues of the batch and issues Done in Linear do not count, an
+  issue that waits for it does. In s29-amend-20261005 the appended W-340 was the last entry
+  while W-333, which waited for it in Linear, ran after it; the extended checks ran at W-340
+  and W-333 got no final run. A Linear read that fails while deciding counts as "last", so
+  the final run is never lost to a transient error. Project impact: none. Canary tier:
+  canary batch (the engine's check selection) (`W-342`).
+
 ## v2.5.0 — 2026-10-04
 
 The findings of the §2.8 implementation batch (s28-impl-20261002, complete; `W-302` and
