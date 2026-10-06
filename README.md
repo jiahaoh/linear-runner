@@ -485,9 +485,22 @@ python3 runner.py validate-config --batch $B
 python3 -m unittest -v
 python3 runner.py launch --batch $B                          # preflight, start unit, confirm, exit
 python3 runner.py launch --batch $B --stop-after TEAM-123    # same, with a planned checkpoint
-python3 runner.py status --batch $B                          # state, supervisor.json, STOP marker
+python3 runner.py status --batch $B                          # short summary (status --json: the full record)
 python3 runner.py wait --batch $B                            # block until the batch stops, then say how
+python3 runner.py watch --batch $B --timeout 1800            # one line per change, then as wait
 ```
+
+`status` prints a short summary (at most 15 lines, no issue text): the phase, the active
+issue with its step and the repairs it used, the done, remaining, deferred and waiting
+issues, the supervisor's status and outcome, the STOP marker and a pending recovery.
+`status --json` prints the full saved state, supervisor status, launch and watchdog record,
+as `status` did before 2.6.0. `watch` follows a launched batch: it prints one line whenever
+the active issue, the phase, the step, the repair count or the supervisor's status changes,
+and when the supervisor stops it prints `wait`'s report as one line and exits with `wait`'s
+code. `--timeout S` makes it exit with code 6 if the batch has not stopped by then, so a
+caller with a time limit starts it again; `--interval` sets the poll (10 s). Like `wait` it
+reads the state directory only and writes nothing. An operator session followed
+s29-amend-20261005 with its own polling loop for six hours (`W-346`).
 
 `launch` resolves and pins Linear names, runs the preflight below, starts the supervisor
 (by default a transient `systemd-run --user` unit with `Restart=no`,
@@ -1182,7 +1195,8 @@ systemctl --user stop linear-runner-my-batch-manual-watchdog.timer   # remove af
 
 ```bash
 B=<batch id or file>
-python3 runner.py status --batch $B      # phase, active issue/step, blocks, deferred, pending recovery, supervisor.json, STOP, watchdog timer
+python3 runner.py status --batch $B      # phase, active issue/step, done/remaining/deferred, supervisor, STOP, pending recovery
+python3 runner.py status --batch $B --json  # the full record: blocks, stops, supervisor.json, watchdog timer
 python3 runner.py stop --batch $B        # stop between issues (durable STOP marker); see "Watchdog" for its timer
 systemctl --user stop <unit>             # immediate: child process group terminated, state preserved, blocked report
 ```

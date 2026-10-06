@@ -79,6 +79,48 @@ def report(root, status):
     return record
 
 
+# ``watch --timeout`` ended before the batch stopped; start it again (W-346).
+WATCH_TIMEOUT_EXIT = 6
+
+
+def progress(root):
+    """The fields ``watch`` reports a change of: active issue, phase, step, repairs, supervisor."""
+    root = Path(root)
+    state, status = _json(root / "state.json"), _json(root / STATUS_NAME)
+    active = state.get("active") or {}
+    return {"issue": active.get("issue_id"), "phase": state.get("phase"), "step": active.get("step"),
+            "repairs": active.get("repairs"), "done": len(state.get("history", [])),
+            "supervisor": status.get("status"), "launch_id": status.get("launch_id")}
+
+
+def progress_line(fields, at):
+    """One line for one change."""
+    issue = fields["issue"] or "-"
+    return (f"{at} {issue} phase={fields['phase']} step={fields['step'] or '-'} repairs={fields['repairs'] or 0} "
+            f"done={fields['done']} supervisor={fields['supervisor']}")
+
+
+def watch(root, *, out=print, sleep=time.sleep, poll_seconds=POLL_SECONDS, timeout=None, clock=time.monotonic,
+          stamp=None):
+    """``runner.py watch`` (W-346): print one line whenever the active issue, phase, step, repair
+    count or supervisor status changes, and return ``wait``'s report once the supervisor has
+    stopped (or ``None`` when ``timeout`` seconds pass first). Read-only, like ``wait``."""
+    from linear_runner.engine.runner import now
+    stamp = stamp or now
+    started, previous = clock(), None
+    while True:
+        status = stopped(root)  # raises NotLaunched before anything is printed
+        fields = progress(root)
+        if fields != previous:
+            out(progress_line(fields, stamp()))
+            previous = fields
+        if status is not None:
+            return report(root, status)
+        if timeout is not None and clock() - started >= timeout:
+            return None
+        sleep(poll_seconds)
+
+
 def wait(root, *, sleep=time.sleep, poll_seconds=POLL_SECONDS):
     """Block until the batch's supervisor has stopped; return ``report`` for it."""
     while True:

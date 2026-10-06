@@ -345,7 +345,7 @@ class SystemdBackendTests(Harness):
         self.assertEqual((record["watchdog_timer"]["timer"], record["watchdog_timer"]["interval_minutes"]),
                          (unit + ".timer", 10))
         with patch("sys.stdout") as stdout:
-            main(["status", "--batch", "fixture", "--home", str(self.home)])
+            main(["status", "--batch", "fixture", "--home", str(self.home), "--json"])
         report = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
         self.assertEqual((report["watchdog"]["timer"], report["watchdog"]["stopped"]), (unit + ".timer", None))
         self.assertEqual(report["launch"]["watchdog_timer"]["unit"], unit)
@@ -2270,6 +2270,87 @@ class CriterionLintTests(Harness):
                     load_config(self.batch, self.home)
 
 
+class StatusAndWatchTests(Harness):
+    """A short ``status`` and the ``watch`` command (W-346): ``status`` printed every issue's
+    description, and the operator of s29-amend-20261005 followed the batch with its own loop."""
+
+    def test_status_is_short_by_default_and_json_on_request(self):
+        self.hooks[("DEV-2", "review")] = self.blocked(times=1)
+        self.launch()
+        state = self.state()
+        state["deferred"] = {"DEV-3": {"event": "review_blocked"}}
+        write_json(self.state_dir / "state.json", state)
+        self.assertIn("issue_cache", state)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["status", "--batch", str(self.batch), "--home", str(self.home)])
+        lines = out.getvalue().splitlines()
+        self.assertLessEqual(len(lines), 15)
+        text = out.getvalue()
+        self.assertNotIn("Produce DEV-", text)  # no issue description
+        for expected in ("Batch fixture: phase paused", "Active: DEV-2 at step review, repairs used 0",
+                         "Done (1): DEV-1", "Remaining (1): DEV-2", "Deferred: DEV-3",
+                         "Supervisor: exited, outcome blocked", "STOP marker:", "Full record: status --json"):
+            self.assertIn(expected, text)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["status", "--batch", str(self.batch), "--home", str(self.home), "--json"])
+        self.assertEqual(json.loads(out.getvalue()), json.loads(json.dumps(cli_module.status_report(load_config(self.batch, self.home)))))
+
+    def test_watch_prints_one_line_per_change_and_ends_as_wait(self):
+        from linear_runner.supervision import wait
+        status_path, state_path = self.state_dir / "supervisor.json", self.state_dir / "state.json"
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        running = {"launch_id": "L-live", "pid": os.getpid(), "host": os.uname().nodename, "status": "running"}
+        write_json(status_path, running)
+        steps = [{"phase": "implementing", "active": {"issue_id": "DEV-1", "step": "implement", "repairs": 0}, "history": []},
+                 None,  # an unchanged poll prints nothing
+                 {"phase": "validating", "active": {"issue_id": "DEV-1", "step": "validate", "repairs": 0}, "history": []},
+                 {"phase": "reviewing", "active": {"issue_id": "DEV-1", "step": "review", "repairs": 0}, "history": []},
+                 {"phase": "implementing", "active": {"issue_id": "DEV-2", "step": "implement", "repairs": 0},
+                  "history": [{"issue_id": "DEV-1"}]},
+                 "checkpoint"]
+        write_json(state_path, steps[0])
+        lines, naps = [], []
+        def sleep(seconds):
+            naps.append(seconds)
+            step = steps[len(naps)]
+            if step == "checkpoint":
+                write_json(state_path, {"phase": "checkpoint", "history": [{"issue_id": "DEV-1"}]})
+                write_json(status_path, dict(running, status="exited", outcome="checkpoint"))
+            elif step:
+                write_json(state_path, step)
+        stamps = iter(f"t{i}" for i in range(20))
+        report = wait.watch(self.state_dir, out=lines.append, sleep=sleep, poll_seconds=0, stamp=lambda: next(stamps))
+        self.assertEqual(lines, ["t0 DEV-1 phase=implementing step=implement repairs=0 done=0 supervisor=running",
+                                 "t1 DEV-1 phase=validating step=validate repairs=0 done=0 supervisor=running",
+                                 "t2 DEV-1 phase=reviewing step=review repairs=0 done=0 supervisor=running",
+                                 "t3 DEV-2 phase=implementing step=implement repairs=0 done=1 supervisor=running",
+                                 "t4 - phase=checkpoint step=- repairs=0 done=1 supervisor=exited"])
+        self.assertEqual((report["outcome"], wait.EXIT_CODES[report["outcome"]]), ("checkpoint", 3))
+        self.assertEqual(report, wait.report(self.state_dir, json.loads(status_path.read_text())))
+
+    def test_watch_times_out_with_its_own_code_and_writes_nothing(self):
+        from linear_runner.supervision import wait
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        write_json(self.state_dir / "supervisor.json",
+                   {"launch_id": "L-live", "pid": os.getpid(), "host": os.uname().nodename, "status": "running"})
+        write_json(self.state_dir / "state.json", {"phase": "implementing", "history": []})
+        before = {str(p): p.read_bytes() for p in self.state_dir.rglob("*") if p.is_file()}
+        ticks = iter(range(100))
+        lines = []
+        report = wait.watch(self.state_dir, out=lines.append, sleep=lambda s: None, timeout=3, clock=lambda: next(ticks))
+        self.assertIsNone(report)
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn(wait.WATCH_TIMEOUT_EXIT, wait.EXIT_CODES.values())
+        out = io.StringIO()
+        with patch.object(wait, "POLL_SECONDS", 0), contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as stop:
+            main(["watch", "--batch", str(self.batch), "--home", str(self.home), "--timeout", "0", "--interval", "0"])
+        self.assertEqual(stop.exception.code, wait.WATCH_TIMEOUT_EXIT)
+        self.assertEqual(json.loads(out.getvalue().splitlines()[-1])["outcome"], "timeout")
+        self.assertEqual({str(p): p.read_bytes() for p in self.state_dir.rglob("*") if p.is_file()}, before)
+
+
 class WaitTests(Harness):
     """``runner.py wait`` (W-303): s28-impl-20261002 sat paused for 19 minutes after the
     operator's own polling loop had expired."""
@@ -2487,7 +2568,7 @@ class CommandLineTests(Harness):
         self.assertEqual(self.make_runner().state["config_sha256"], before)
         self.assertEqual((entry["launcher"]["cpu_list"], entry["launcher"]["startup_timeout_seconds"]), ("0", 9))
         with patch("sys.stdout") as stdout:
-            main(["status", "--batch", str(self.batch), "--home", str(self.home)])
+            main(["status", "--batch", str(self.batch), "--home", str(self.home), "--json"])
         report = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
         self.assertEqual(report["launch"]["launcher"]["environment"], {"PATH": "/usr/bin:/bin"})
         self.assertEqual(report["launch"]["launch_id"], entry["launch_id"])
@@ -2495,7 +2576,7 @@ class CommandLineTests(Harness):
     def test_status_reports_supervisor_and_marker(self):
         self.launch(stop_after=["DEV-1"])
         with patch("sys.stdout") as stdout:
-            main(["status", "--batch", str(self.batch), "--home", str(self.home)])
+            main(["status", "--batch", str(self.batch), "--home", str(self.home), "--json"])
         report = json.loads("".join(call.args[0] for call in stdout.write.call_args_list))
         self.assertEqual(report["supervisor"]["outcome"], "checkpoint")
         self.assertIn("Planned checkpoint", report["stop_marker"])

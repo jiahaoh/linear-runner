@@ -65,13 +65,23 @@ def build_parser():
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
     for name, text in (("validate-config", "offline validation; no state, Linear or model CLI"),
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
-                       ("status", "print saved state, supervisor status and pending recovery"),
                        ("wait", "block until the launched batch stops, then print how (complete, checkpoint, "
                                 "paused); reads the state directory only, no model, no Linear"),
                        ("stop", "write the STOP marker (stops between issues)"),
 
                        ("clear-stop", "remove the STOP marker")):
         commands.add_parser(name, parents=[common], help=text)
+    status = commands.add_parser("status", parents=[common],
+                                 help="a short summary of the batch: phase, active issue and step, repairs, done and "
+                                      "remaining issues, supervisor, STOP marker, pending recovery")
+    status.add_argument("--json", action="store_true",
+                        help="the full saved state, supervisor status, launch and watchdog record (as before 2.6.0)")
+    watch_progress = commands.add_parser("watch", parents=[common],
+                                         help="print one line per change of the active issue, phase, step, repairs or "
+                                              "supervisor status; exit as `wait` does when the batch stops")
+    watch_progress.add_argument("--timeout", type=float, metavar="SECONDS",
+                                help="exit with code 6 when the batch has not stopped by then (start it again)")
+    watch_progress.add_argument("--interval", type=float, default=10.0, metavar="SECONDS", help="poll interval (10)")
     run = commands.add_parser("run", parents=[common], help="run in this process (no supervisor)")
     run.add_argument("--max-issues", type=int, default=1)
     run.add_argument("--resume", action="store_true")
@@ -204,6 +214,38 @@ def status_report(config):
                        "alerts": sorted(watch.get("alerts", {})), "needs_input": sorted(watch.get("needs_input") or {})}
     return dict(state, supervisor=supervisor, launch=launch, watchdog=watchdog_status,
                 stop_marker=(root / "STOP").read_text().strip() if (root / "STOP").exists() else None)
+
+
+def status_summary(config, report):
+    """``status`` without ``--json`` (W-346): at most 15 lines, no issue description."""
+    done = [h["issue_id"] for h in report.get("history", [])]
+    deferred = sorted(report.get("deferred") or {})
+    remaining = [i for i in config["issues"] if i not in done and i not in deferred]
+    active = report.get("active") or {}
+    supervisor = report.get("supervisor") or {}
+    pending = report.get("pending_recovery") or {}
+    snapshot = Path(config["state_dir"]) / "snapshot.json"
+    waiting = (read_json(snapshot).get("waiting") or {}) if snapshot.exists() else {}
+    lines = [f"Batch {config['batch_id']}: phase {report.get('phase')}",
+             (f"Active: {active['issue_id']} at step {active.get('step')}, repairs used {active.get('repairs', 0)}"
+              if active else "Active: none"),
+             f"Done ({len(done)}): {', '.join(done) or 'none'}",
+             f"Remaining ({len(remaining)}): {', '.join(remaining) or 'none'}"]
+    if deferred:
+        lines.append(f"Deferred: {', '.join(deferred)}")
+    if waiting:
+        lines.append("Waiting: " + "; ".join(f"{i} on {', '.join(b)}" for i, b in waiting.items()))
+    lines.append(f"Supervisor: {supervisor.get('status', 'not launched')}"
+                 + (f", outcome {supervisor['outcome']}" if supervisor.get("outcome") else "")
+                 + (f" (launch {supervisor['launch_id']})" if supervisor.get("launch_id") else ""))
+    if report.get("error"):
+        lines.append(f"Error: {str(report['error'])[:300]}")
+    if report.get("stop_marker"):
+        lines.append(f"STOP marker: {report['stop_marker'][:300]}")
+    if pending:
+        lines.append(f"Pending recovery: {pending.get('id')} ({pending.get('kind')})")
+    lines.append("Full record: status --json")
+    return lines
 
 
 def stop_watchdog_timer(root, run=subprocess.run):
@@ -401,7 +443,22 @@ def main(argv=None):
         return
     root = Path(config["state_dir"])
     if args.command == "status":
-        print(json.dumps(status_report(config), indent=2))
+        report = status_report(config)
+        print(json.dumps(report, indent=2) if args.json else "\n".join(status_summary(config, report)))
+        return
+    if args.command == "watch":
+        from linear_runner.supervision import wait
+        try:
+            report = wait.watch(root, out=lambda line: print(line, flush=True), poll_seconds=args.interval,
+                                timeout=args.timeout)
+        except wait.NotLaunched as error:
+            parser.error(str(error))
+        if report is None:
+            print(json.dumps({"outcome": "timeout", "timeout_seconds": args.timeout}))
+            raise SystemExit(wait.WATCH_TIMEOUT_EXIT)
+        print(json.dumps(report))
+        if wait.EXIT_CODES[report["outcome"]]:
+            raise SystemExit(wait.EXIT_CODES[report["outcome"]])
         return
     if args.command == "wait":
         from linear_runner.supervision import wait

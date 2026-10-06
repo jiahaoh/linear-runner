@@ -17,6 +17,13 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Added
 
+* `runner.py watch --batch B [--timeout S] [--interval S]`: prints one line whenever the
+  active issue, phase, step, repair count or supervisor status changes, and when the
+  supervisor stops prints `wait`'s report and exits with `wait`'s code; `--timeout` ends it
+  with code 6 so a caller can start it again. Read-only, like `wait`. The operator session of
+  s29-amend-20261005 followed the batch with its own polling loop, re-armed every 30 minutes
+  for six hours. Project impact: none. Canary tier: first-issue checkpoint (a new read-only
+  command) (`W-346`).
 * Project field `criterion_lint`: rules (`pattern`, `message`, optional `unless`) for
   acceptance-criterion wording that reviews read literally. The launch preflight lists each
   match in an issue the batch has not claimed as a warning, and `dry-run` logs it; nothing
@@ -44,6 +51,15 @@ its tier. The release procedure is in the README ("Releases").
   the operator made W-333 wait for W-340 in Linear and edited the batch JSON by hand. Project
   impact: none. Canary tier: first-issue checkpoint (a recovery option and an offline
   command) (`W-343`).
+
+### Changed
+
+* `status` prints a short summary by default: at most 15 lines with the phase, the active
+  issue, its step and repairs, the done, remaining, deferred and waiting issues, the
+  supervisor, the STOP marker and a pending recovery; no issue text. `status --json` keeps the
+  full output. Before, one call printed every allowlisted issue's description. Project impact:
+  none; a script that parses `status` adds `--json`. Canary tier: first-issue checkpoint (an
+  operator command) (`W-346`).
 
 ### Fixed
 
