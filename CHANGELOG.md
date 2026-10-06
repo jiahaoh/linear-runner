@@ -17,6 +17,14 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Added
 
+* Batch comments list the files a worker made for the owner. At Done the history entry
+  records each deliverable with its SHA-256; the next checkpoint or batch-finished comment
+  lists, under "Files to review", the deliverables inside each done issue's run directory
+  that no earlier batch comment listed; the terminal report lists every deliverable. The
+  implement prompt asks the worker to list first the files the issue or the guidance asks the
+  owner to look at. In s29-amend-20261005 the W-332 figures for the planned checkpoint were
+  only in the Done comment, among ten source files. Project impact: none. Canary tier:
+  canary batch (the implement prompt and the batch comment changed) (`W-347`).
 * `runner.py watch --batch B [--timeout S] [--interval S]`: prints one line whenever the
   active issue, phase, step, repair count or supervisor status changes, and when the
   supervisor stops prints `wait`'s report and exits with `wait`'s code; `--timeout` ends it

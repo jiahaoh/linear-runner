@@ -56,12 +56,13 @@ def listing(items):
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def deliverable_lines(items):
-    """One line per deliverable: the path, then a short description when known."""
+def deliverable_lines(items, issue=None):
+    """One line per deliverable: the path, then a short description when known; ``issue``
+    prefixes each line (the batch comment's "Files to review", W-347)."""
     lines = []
     for item in items or []:
         description = plain(item.get("description") or "", 160).rstrip(".")
-        lines.append(f"- {item['path']}" + (f" — {description}" if description else ""))
+        lines.append(f"- {issue + ': ' if issue else ''}{item['path']}" + (f" — {description}" if description else ""))
     return "\n".join(lines)
 
 
@@ -543,8 +544,10 @@ def run_summary(ctx, *, issue, outcome, summary, evidence_paths=()):
                   headline=outcome)
 
 
-def batch_finished(ctx, *, outcome, done, total, issues, usage=None, checkpoint=None, deferred=(), evidence_paths=()):
-    """``usage`` is ``trajectory.batch_summary`` output (None when it could not be rendered)."""
+def batch_finished(ctx, *, outcome, done, total, issues, usage=None, checkpoint=None, deferred=(), evidence_paths=(),
+                   review_files=""):
+    """``usage`` is ``trajectory.batch_summary`` output (None when it could not be rendered).
+    ``review_files``: ``deliverable_lines`` of run-directory files no earlier batch comment listed."""
     if outcome == "partial" and deferred:
         steps = blocks(("Restore a set-aside issue:", command(ctx, "recover", "resume", "--issue", "<issue>", auth=True)),
                        ("Then start the batch again:", command(ctx, "launch")))
@@ -555,6 +558,7 @@ def batch_finished(ctx, *, outcome, done, total, issues, usage=None, checkpoint=
     return render("batch-finished", {"batch": ctx["batch"], "total": total,
                                      "mention": ctx["mention"] if outcome != "complete" else "",
                                      "done_count": len(done), "checkpoint": checkpoint or "", "issues": issues,
+                                     "review_files": review_files,
                                      "usage": "\n\n".join(batch_table(usage)) if usage else
                                      "The usage table could not be rendered from the saved records; see the terminal "
                                      "trajectory report.", "continue_steps": steps,

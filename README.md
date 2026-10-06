@@ -942,7 +942,14 @@ path must exist inside the worktree or the issue's run directory; others are dro
 named in the ready comment. The reviewer is told the listed deliverables. When the project
 has `delivery_integrity`, the delivery packet's `file_hashes` files (or the manifest when
 there are none) are added. The `done` comment lists them under "Deliverables to review",
-one per line, and leaves the section out when there are none.
+one per line, and leaves the section out when there are none. The prompt asks the worker to
+list first the files the issue or the guidance asks the owner to look at. At Done the history
+entry records each deliverable with its SHA-256. The next checkpoint or batch-finished comment
+lists, under "Files to review", the deliverables inside each done issue's run directory
+(figures, tables, notes: files outside the diff) that no earlier batch comment listed; files
+in the worktree stay in the Done comment. The terminal report lists every deliverable with
+its hash. In s29-amend-20261005 the figures of the planned checkpoint were listed only among
+ten source files in W-332's Done comment (`W-347`).
 
 **Issue mentions.** Linear links a bare issue identifier (`TEAM-123`) or issue URL in a
 comment to that issue and adds a "related" link between the two issues. Where a runner

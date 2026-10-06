@@ -13,6 +13,9 @@ headline.stopped: Batch {batch} stopped between issues because a STOP marker was
 **Issues**
 {issues}
 
+**Files to review**
+{review_files}
+
 **Usage per issue**
 
 {usage}

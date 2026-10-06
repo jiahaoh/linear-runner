@@ -1189,6 +1189,27 @@ class Runner:
         kept, _ = self.check_deliverables(active, items)
         return kept
 
+    def recorded_deliverables(self, active):
+        """The final deliverables with the SHA-256 of each file, for the history entry (W-347)."""
+        return [dict(item, sha256=hashlib.sha256(Path(item["path"]).read_bytes()).hexdigest())
+                for item in self.final_deliverables(active)]
+
+    def review_files(self):
+        """Lines for the batch comment's "Files to review": the deliverables inside each done
+        issue's run directory (figures, tables, notes: files outside the diff) that no earlier
+        batch comment listed. Files in the worktree stay in the Done comment (W-347)."""
+        listed = set(self.state.get("listed_review_files", []))
+        lines, issues = [], []
+        for entry in self.state["history"]:
+            if entry["issue_id"] in listed:
+                continue
+            run = Path(entry["run_dir"]).resolve()
+            items = [d for d in entry.get("deliverables") or [] if Path(d["path"]).resolve().is_relative_to(run)]
+            if items:
+                lines.append(messages.deliverable_lines(items, issue=entry["issue_id"]))
+            issues.append(entry["issue_id"])
+        return "\n".join(lines), issues
+
     def post_ready(self, active, result):
         drafts = active.get("drafts") or {}
         held = drafts.get("held", {}).get("ready")
@@ -1827,7 +1848,8 @@ class Runner:
                 "Use only relevant source files and read further references when needed. "
                 "The controller owns Linear, full checks, Git commits and final publication; you report through the outbox below. "
                 "Do focused validation; return the readiness schema with evidence for every criterion. "
-                "In `deliverables`, list each file the owner should review (for example a rendered report) with a "
+                "In `deliverables`, list first the files the issue or the guidance asks the owner to look at (figures, "
+                "reports, tables in the artifacts directory), then each other file the owner should review, with a "
                 "short description; paths inside the worktree or the artifacts directory, or [] when there are none. "
                 "Leave source uncommitted. No Linear mutations, commits, push, merge or nested dispatch. "
                 f"Artifacts: {active['run_dir']}. Report an empty commit field and any unmet criterion honestly.")
@@ -2127,7 +2149,8 @@ class Runner:
                 self.state["history"].append({"issue_id": issue, "starting_commit": active["starting_commit"],
                                               "commit": active["commit"], "run_dir": active["run_dir"],
                                               "validation_dir": active.get("validation_dir"), "completed_at": now(),
-                                              "commits": active.get("controller_commits") or [active["commit"]]})
+                                              "commits": active.get("controller_commits") or [active["commit"]],
+                                              "deliverables": self.recorded_deliverables(active)})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
 
@@ -2375,15 +2398,19 @@ class Runner:
             external = summary.get("external") or []
             outcomes = {i: "Done" if i in done else "Set aside" if i in deferred else "Waiting" if i in waiting
                         else "Done outside the batch" if i in external else "Not started" for i in self.config["issues"]}
+            review_files, listed = self.review_files()
             body = messages.batch_finished(self.ctx, outcome=outcome, done=done, total=len(self.config["issues"]),
                                            issues=issues, usage=self.batch_usage(trajectory_result, outcomes),
                                            checkpoint=(summary.get("checkpoint") or {}).get("after"), deferred=deferred,
-                                           evidence_paths=paths)
+                                           evidence_paths=paths, review_files=review_files)
             kind = "batch-finished"
         token = "T-" + run_id()
         for target in dict.fromkeys([self.config["terminal_issue"], *self.config["supervision"]["report_issues"]]):
             if target not in skip:
                 self.emit(target, kind, body, dedupe=token)
+        if kind == "batch-finished" and listed:
+            self.state["listed_review_files"] = sorted(set(self.state.get("listed_review_files", [])) | set(listed))
+            self.save()
 
     def finish_queue(self):
         if self.state.get("completion_record"):

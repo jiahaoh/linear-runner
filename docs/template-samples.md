@@ -745,6 +745,9 @@ Batch demo-batch finished with 3 of 5 issues Done, and the rest need your decisi
 **Issues**
 Done: TEAM-10, TEAM-11 and TEAM-12. Set aside: TEAM-13. Waiting on prerequisites: TEAM-14 (needs TEAM-13).
 
+**Files to review**
+- TEAM-12: /absolute/path/to/runs/TEAM-12/20260923T101500Z-1a2b3c4d/figures/qc_overview.png — QC overview the issue asks the owner to look at
+
 **Usage per issue**
 
 | Issue | Outcome | Attempts | Input (cached) | Output | Tool calls | Time |

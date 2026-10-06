@@ -270,6 +270,10 @@ def samples():
                                                               deferred=["TEAM-13"], waiting={"TEAM-14": ["TEAM-13"]}),
                                  usage=batch_usage,
                                  deferred=["TEAM-13"],
+                                 review_files=messages.deliverable_lines(
+                                     [{"path": f"{RUN}/figures/qc_overview.png",
+                                       "description": "QC overview the issue asks the owner to look at"}],
+                                     issue="TEAM-12"),
                                  evidence_paths=[f"{STATE}/terminal-report.html", f"{STATE}/terminal-report.json"])),
         ("Batch paused", "batch-paused.md", "runner", "on the terminal issue and report issues when the batch pauses",
          "TEAM-14", "batch-paused",

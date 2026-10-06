@@ -2270,6 +2270,46 @@ class CriterionLintTests(Harness):
                     load_config(self.batch, self.home)
 
 
+class ReviewFilesTests(Harness):
+    """Files a worker made for the owner (W-347): in s29-amend-20261005 the W-332 figures for the
+    planned checkpoint were listed only among ten source files in the Done comment."""
+
+    def test_deliverables_are_hashed_at_done_and_listed_once_in_the_batch_comments(self):
+        original = self.codex
+        outside = self.root / "outside.txt"; outside.write_text("not in the run directory")
+        def codex(prompt, directory, **kwargs):
+            result, events, session = original(prompt, directory, **kwargs)
+            directory = Path(directory)
+            if directory.name.startswith("implement") and directory.parent.parent.name == "DEV-1":
+                figure = directory / "figures" / "plot.png"
+                figure.parent.mkdir(); figure.write_bytes(b"png bytes")
+                result["deliverables"] = [{"path": str(figure), "description": "The figure the issue asks for"},
+                                          {"path": "result.txt", "description": "A worktree file"},
+                                          {"path": str(directory / "missing.png"), "description": "Never written"},
+                                          {"path": str(outside), "description": "Outside both"}]
+            return result, events, session
+        self.codex = codex
+        self.launch(stop_after=["DEV-1"])
+        [entry] = self.state()["history"]
+        recorded = {Path(d["path"]).name: d for d in entry["deliverables"]}
+        self.assertEqual(sorted(recorded), ["plot.png", "result.txt"])
+        self.assertEqual(recorded["plot.png"]["sha256"], hashlib.sha256(b"png bytes").hexdigest())
+        self.assertEqual(recorded["result.txt"]["sha256"], hashlib.sha256((self.repo / "result.txt").read_bytes()).hexdigest())
+        checkpoint = self.linear.last("DEV-3", "batch-finished")
+        self.assertIn("**Files to review**\n- DEV-1: " + recorded["plot.png"]["path"] + " — The figure the issue asks for",
+                      checkpoint)
+        self.assertNotIn("result.txt", checkpoint.split("**Files to review**")[1].split("**")[0])
+        self.assertNotIn("|", checkpoint.split("**Files to review**")[1].split("**")[0])
+        self.launch(clear_stop=True)
+        final = self.linear.last("DEV-3", "batch-finished")
+        self.assertNotEqual(final, checkpoint)
+        self.assertNotIn("Files to review", final)  # listed once; DEV-2 and DEV-3 have none
+        report = (self.state_dir / "terminal-report.html").read_text()
+        self.assertIn("<h2>Deliverables</h2>", report)
+        self.assertIn(recorded["plot.png"]["path"], report)
+        self.assertIn(recorded["result.txt"]["path"], report)
+
+
 class StatusAndWatchTests(Harness):
     """A short ``status`` and the ``watch`` command (W-346): ``status`` printed every issue's
     description, and the operator of s29-amend-20261005 followed the batch with its own loop."""

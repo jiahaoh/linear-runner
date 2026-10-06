@@ -24,6 +24,13 @@ def render_report(path, summary, records):
     if summary.get('error'):
         html += '<p>Blocker: ' + escape(summary['error']) + '</p>'
     html += '<h2>Completed issues</h2><table><tr><th>Issue</th><th>Result</th><th>Revision</th></tr>' + rows + '</table>'
+    files = [(h['issue_id'], d) for h in summary['history'] for d in h.get('deliverables') or []]
+    if files:
+        # The files each worker listed for the owner, re-checked and hashed at Done (W-347).
+        html += ('<h2>Deliverables</h2><table><tr><th>Issue</th><th>File</th><th>Description</th><th>SHA-256</th></tr>'
+                 + ''.join('<tr><td>' + escape(str(issue)) + '</td><td>' + escape(d['path']) + '</td><td>'
+                           + escape(d.get('description') or '') + '</td><td>' + escape(d.get('sha256', '')[:16])
+                           + '</td></tr>' for issue, d in files) + '</table>')
     html += '<h2>Usage</h2><table><tr><th>Scope</th><th>Input tokens</th><th>Cached input</th><th>Output tokens</th></tr>'
     arms = {"Runner sessions": usage} if "totals" in usage else usage
     for name, values in arms.items():
