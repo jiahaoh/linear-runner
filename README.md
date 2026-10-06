@@ -107,7 +107,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`), optional `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases") |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -622,6 +622,19 @@ elsewhere stops the batch for reconciliation.
    a long check that concerns one module, so that batches which never touch that module do
    not pay for it; a skipped check is no evidence for `delivery_integrity.required_checks`. Without
    the option (or with `"always"`) the last issue runs the check as before. A check may also
+   set `base_parity: {"outputs": [...]}` to compare a result with the issue's base revision:
+   the controller exports the issue's starting commit with `git archive` to a temporary
+   directory outside the worktree, runs the command there with the worktree's path replaced
+   by the export's in the command and the check environment (so `PYTHONPATH=${worktree}/...`
+   imports the base revision's source), runs it again in the worktree, and compares each named
+   output byte for byte. An output is relative to `cwd` or under `{run_dir}`, each run's own
+   directory. Both runs, both copies of every output and `parity.json` (the SHA-256 values
+   and the first difference) stay in the validation directory; the check fails when either
+   run fails or an output differs, and its note names the first difference. The base commit
+   is part of the evidence key, and the launch baseline does not run such a check (a clean
+   baseline has no issue base). Use it for criteria such as "equal to the base revision": in
+   s29-amend-20261005 each worker wrote that comparison itself and a review blocked when one
+   did not (`W-344`). A check may also
    set `timeout_seconds`, up to the registry's `max_check_timeout_seconds` (7200); without
    it the registry's `check_timeout_seconds` (1800) applies. A check that exceeds its limit
    is stopped and fails with exit code 124. `validate-config` lists each check's tier, time

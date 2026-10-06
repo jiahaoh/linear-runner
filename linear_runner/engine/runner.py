@@ -31,6 +31,7 @@ from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, Confi
                                   match_entry, pool_for, read_json, write_json)
 from linear_runner.engine.delivery import EMPTY_NOTE, SKIPPED_NOTE, check_outcome, check_passed, check_skipped
 from linear_runner.engine import intake
+from linear_runner.engine import parity
 from linear_runner.linear.client import LinearClient, read_back
 from linear_runner.linear import messages
 from linear_runner.linear import updates
@@ -875,8 +876,11 @@ class Runner:
                                f"see {directory}")
         return backend.result(request, events), events, meta["session_id"]
 
-    def validate(self, directory, checks, environment):
+    def validate(self, directory, checks, environment, *, root=None):
         """Run argv checks (no shell) with ``{run_dir}`` substitution; record logs and hashes.
+
+        ``root``: the tree whose ``cwd`` the checks run in (default the worktree; a base-parity
+        check's base run uses the exported base revision, W-344).
 
         Each record has ``status``: ``passed`` (exit 0), ``failed``, or ``empty`` when the
         check sets ``allow_empty`` and exited 5 (no tests selected), which counts as passing.
@@ -886,7 +890,7 @@ class Runner:
         records = []
         for index, check in enumerate(checks):
             command = [s.replace("{run_dir}", str(directory)) for s in check["command"]]
-            cwd = self.repo / check["cwd"]
+            cwd = Path(root or self.repo) / check["cwd"]
             log = directory / f"check-{index}.log"
             timeout = check.get("timeout_seconds") or self.policy["phases"]["check_timeout_seconds"]
             self.log(f"Validation: {' '.join(command)}")
@@ -1633,8 +1637,11 @@ class Runner:
         return sorted(set(git(self.repo, "diff", "--name-only", base).splitlines()
                           + git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()))
 
-    def check_keys(self, spec):
+    def check_keys(self, spec, base=None):
         """``(key, launch_key)``, the identity of one check's evidence.
+
+        A ``base_parity`` check's evidence also depends on the base revision it compared with
+        (``base``, the issue's starting commit; W-344).
 
         ``key``: the check's definition, the configured and inherited environment (without the
         per-launch LAUNCH_VARIABLES), the executable, the ``identity_files`` and the bytes of
@@ -1644,7 +1651,10 @@ class Runner:
         configured ``environment`` in its place. The launch process inherits the operator's
         shell and the supervisor inherits its unit's environment, so the two never share
         ``key``; the launch baseline reuses evidence on this key (W-303)."""
-        definition = json.dumps({"spec": spec, "environment": self.config["check_environment"]}, sort_keys=True).encode()
+        identity = {"spec": spec, "environment": self.config["check_environment"]}
+        if spec.get("base_parity"):
+            identity["base_commit"] = base
+        definition = json.dumps(identity, sort_keys=True).encode()
         full, launch = hashlib.sha256(definition), hashlib.sha256(definition)
         # Explicit external manifests/executables and inherited environment are
         # part of evidence identity; secrets are hashed, never serialized.
@@ -1677,6 +1687,49 @@ class Runner:
     def check_key(self, spec):
         return self.check_keys(spec)[0]
 
+    def run_parity_check(self, subdir, spec, base_commit):
+        """A ``base_parity`` check (W-344): the command in the exported base revision and in the
+        worktree, then its outputs compared byte for byte. Writes ``checks.json`` (one record,
+        as ``validate``) whose log is the comparison's own log."""
+        definition = {k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}
+        sides = {}
+        with parity.temporary_tree() as scratch:
+            tree = Path(scratch) / "tree"
+            tree.mkdir()
+            parity.export_tree(self.repo, base_commit, tree)
+            environment = {name: parity.retarget(value, self.repo, tree)
+                           for name, value in self.config["check_environment"].items()}
+            base_dir, result_dir = subdir / "base", subdir / "result"
+            base_dir.mkdir(); result_dir.mkdir()
+            base_check = dict(definition, command=[parity.retarget(a, self.repo, tree) for a in definition["command"]])
+            self.validate(base_dir, [base_check], environment, root=tree)
+            self.validate(result_dir, [definition], self.config["check_environment"])
+            runs = {"base": read_json(base_dir / "checks.json")[0], "result": read_json(result_dir / "checks.json")[0]}
+            sides = {"base": (base_dir, tree / spec["cwd"]), "result": (result_dir, self.repo / spec["cwd"])}
+            comparison = parity.compare(spec["base_parity"]["outputs"], sides, subdir / "outputs")
+        comparison.update(base_commit=base_commit, runs={side: {k: run[k] for k in ("exit_code", "status", "log", "sha256")}
+                                                         for side, run in runs.items()})
+        write_json(subdir / parity.COMPARISON_NAME, comparison)
+        failed = [side for side, run in runs.items() if not check_passed(run)]
+        if failed:
+            note = f"the command failed in the {' and the '.join(failed)} run"
+        else:
+            note = parity.describe(comparison, base_commit)
+        log = subdir / "check-parity.log"
+        log.write_text("\n".join([note, f"base run log: {runs['base']['log']}", f"result run log: {runs['result']['log']}",
+                                  f"comparison: {subdir / parity.COMPARISON_NAME}"]) + "\n")
+        passed = not failed and comparison["equal"]
+        record = dict(runs["result"], exit_code=0 if passed else (runs["result"]["exit_code"] or runs["base"]["exit_code"] or 1),
+                      status="passed" if passed else "failed", log=str(log),
+                      sha256=hashlib.sha256(log.read_bytes()).hexdigest(), note=note,
+                      base_parity={"base_commit": base_commit, "comparison": str(subdir / parity.COMPARISON_NAME)})
+        if passed:
+            record.pop("note")
+            record["base_parity"]["note"] = note
+        self.log(f"Validation: base parity {spec['name']}: {note}")
+        write_json(subdir / "checks.json", [record])
+        return passed
+
     def run_checks(self, active):
         directory = Path(active["run_dir"]) / ("validation-" + run_id())
         directory.mkdir()
@@ -1706,7 +1759,7 @@ class Runner:
                                         "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
                                         "model": None})
                         continue
-            key, launch_key = self.check_keys(spec)
+            key, launch_key = self.check_keys(spec, base=active["starting_commit"])
             previous = cache.get(spec["name"], {})
             # Only intact successful evidence (passed, or an allowed empty selection) is reused;
             # failures always rerun. ``key`` covers the whole check definition, allow_empty included.
@@ -1714,8 +1767,11 @@ class Runner:
                 results.append(dict(previous, reused=True))
                 continue
             subdir = directory / str(index); subdir.mkdir()
-            self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}],
-                          self.config["check_environment"])
+            if spec.get("base_parity"):
+                self.run_parity_check(subdir, spec, active["starting_commit"])
+            else:
+                self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}],
+                              self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
             result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False)
             cache[spec["name"]] = result
@@ -1729,7 +1785,7 @@ class Runner:
         # or the next round would see new inputs and rerun every check once more. Tracked and
         # unignored files cannot have changed: the fingerprint above is the same.
         for spec, result in ran:
-            result["key"], result["launch_key"] = self.check_keys(spec)
+            result["key"], result["launch_key"] = self.check_keys(spec, base=active["starting_commit"])
         if ran:
             write_json(cache_path, cache)
         if not [r for r in results if not check_skipped(r)]:

@@ -161,7 +161,9 @@ def _baseline_checks(runner, directory, *, reuse=True):
     cache = read_json(cache_path) if cache_path.exists() else {}
     records = {}
     for spec in runner.config["checks"]:
-        if spec["tier"] != "default":
+        if spec["tier"] != "default" or spec.get("base_parity"):
+            # A base-parity check compares an issue's result with its base; a clean baseline
+            # has no issue (W-344).
             continue
         previous = cache.get(spec["name"], {})
         if reuse and previous.get("launch_key") == runner.check_keys(spec)[1] and evidence_intact(previous):

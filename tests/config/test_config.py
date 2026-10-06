@@ -245,6 +245,20 @@ class LayeredConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, r"checks\[0\]\.last_issue: only an extended check has a last-issue rule"):
             self.load(project={"checks": [dict(base, name="fast", tier="default", last_issue="when_changed")]})
 
+    def test_a_check_may_compare_its_outputs_with_the_base_revision(self):
+        # W-344: base_parity names the files the command writes, relative to cwd or under {run_dir}.
+        base = {"name": "parity", "kind": "code", "tier": "extended", "inputs": ["src/*"], "cwd": ".",
+                "command": ["${python}", "-c", "pass"]}
+        loaded = self.load(project={"checks": [dict(base, base_parity={"outputs": ["{run_dir}/a.json", "build/b.txt"]})]})
+        self.assertEqual(loaded["checks"][0]["base_parity"], {"outputs": ["{run_dir}/a.json", "build/b.txt"]})
+        with self.assertRaisesRegex(ConfigError, "outputs"):
+            self.load(project={"checks": [dict(base, base_parity={})]})
+        with self.assertRaisesRegex(ConfigError, "outputs"):
+            self.load(project={"checks": [dict(base, base_parity={"outputs": []})]})
+        for bad in ("/abs/out.txt", "../out.txt", "{run_dir}/../out.txt", "x/{run_dir}/out.txt"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ConfigError, r"checks\[0\]\.base_parity\.outputs"):
+                self.load(project={"checks": [dict(base, base_parity={"outputs": [bad]})]})
+
     def test_batch_variables_override_site_variables_for_that_batch_only(self):
         site = {"variables": {"env": "/opt/env-a", "scratch": "/tmp/scratch"}}
         project = {"check_environment": {"VIRTUAL_ENV": "${env}", "TMPDIR": "${scratch}"}}

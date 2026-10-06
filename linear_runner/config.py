@@ -642,6 +642,11 @@ def load_config(batch_path, home=None):
         if spec.get("timeout_seconds", 0) > ceiling:
             raise ConfigError(f"{where}.timeout_seconds: {spec['timeout_seconds']} exceeds the registry maximum "
                               f"{ceiling} (phases.max_check_timeout_seconds)")
+        for entry in spec.get("base_parity", {}).get("outputs", []):
+            relative = entry[len("{run_dir}/"):] if entry.startswith("{run_dir}/") else entry
+            if Path(relative).is_absolute() or ".." in Path(relative).parts or "{run_dir}" in relative:
+                raise ConfigError(f"{where}.base_parity.outputs: {entry!r} must be relative to cwd or start with "
+                                  "{run_dir}/, without '..'")
         if "last_issue" in spec and spec["tier"] != "extended":
             raise ConfigError(f"{where}.last_issue: only an extended check has a last-issue rule; a default check "
                               "always runs or reuses its evidence")

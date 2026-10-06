@@ -470,6 +470,69 @@ class EngineTests(unittest.TestCase):
             verify_delivery({"required_checks": ["slow"], "manifest": "m.json", "revision_field": "revision"},
                             self.root, "0" * 40, [skipped])
 
+    def parity_setup(self):
+        """W-344: a command whose output is data.txt's content and the PROBE variable."""
+        (self.repo / "data.txt").write_text("same\n"); (self.repo / "other.txt").write_text("1")
+        git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "base revision")
+        base = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "other.txt").write_text("2")  # the issue changes a file the output does not read
+        git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "the issue")
+        writer = ("import os, sys, pathlib; pathlib.Path(sys.argv[1]).write_text(pathlib.Path('data.txt').read_text()); "
+                  "pathlib.Path(sys.argv[2]).write_text(os.environ['PROBE'] + '\\n' + os.getcwd())")
+        self.config["check_environment"] = dict(self.config["check_environment"], PROBE=str(self.repo / "src"))
+        self.config["checks"] = [{"name": "parity", "kind": "code", "tier": "default", "inputs": ["*.txt"], "cwd": ".",
+                                  "command": [sys.executable, "-c", writer, "{run_dir}/out.txt", "{run_dir}/where.txt"],
+                                  "base_parity": {"outputs": ["{run_dir}/out.txt"]}}]
+        (self.root / "runs").mkdir(exist_ok=True)
+        def run():
+            active = {"run_dir": str(self.root / "runs" / f"parity-{len(list((self.root / 'runs').glob('*')))}"),
+                      "issue_id": "DEV-1", "starting_commit": base}
+            Path(active["run_dir"]).mkdir(parents=True)
+            passed = self.runner.run_checks(active)
+            [record] = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+            return passed, record, Path(active["validation_dir"]) / "0"
+        return base, run
+
+    def test_a_base_parity_check_passes_when_every_output_equals_the_base(self):
+        base, run = self.parity_setup()
+        worktrees = git(self.repo, "worktree", "list")
+        before = git(self.repo, "status", "--porcelain")
+        passed, record, directory = run()
+        self.assertTrue(passed)
+        self.assertEqual((record["status"], record["exit_code"], record["base_parity"]["base_commit"]), ("passed", 0, base))
+        comparison = json.loads((directory / "parity.json").read_text())
+        self.assertTrue(comparison["equal"])
+        self.assertEqual(comparison["outputs"][0]["base_sha256"], comparison["outputs"][0]["result_sha256"])
+        self.assertEqual((directory / "outputs" / "base" / "0-out.txt").read_text(), "same\n")
+        self.assertEqual((directory / "outputs" / "result" / "0-out.txt").read_text(), "same\n")
+        # The base run saw the exported tree in the environment and as its directory; the worktree is untouched.
+        probe, cwd = (directory / "base" / "where.txt").read_text().splitlines()
+        self.assertNotIn(str(self.repo), probe + cwd)
+        self.assertTrue(probe.endswith("/tree/src") and cwd.endswith("/tree"))
+        self.assertEqual((directory / "result" / "where.txt").read_text().splitlines(), [str(self.repo / "src"), str(self.repo)])
+        self.assertEqual((git(self.repo, "worktree", "list"), git(self.repo, "status", "--porcelain")), (worktrees, before))
+        # The base commit is part of the evidence key: the same bytes against another base run again.
+        self.assertNotEqual(self.runner.check_keys(self.config["checks"][0], base=base),
+                            self.runner.check_keys(self.config["checks"][0], base="0" * 40))
+        passed, again, _ = run()
+        self.assertTrue(passed and again["reused"])
+
+    def test_a_base_parity_check_fails_and_names_the_first_difference(self):
+        base, run = self.parity_setup()
+        (self.repo / "data.txt").write_text("changed\n")
+        passed, record, directory = run()
+        self.assertFalse(passed)
+        self.assertEqual((record["status"], record["exit_code"]), ("failed", 1))
+        self.assertEqual(record["note"], f"{{run_dir}}/out.txt differs from the base revision {base[:12]}: "
+                                         "line 1: base 'same', result 'changed'")
+        self.assertIn(record["note"], Path(record["log"]).read_text())
+        self.assertFalse(json.loads((directory / "parity.json").read_text())["equal"])
+        # A failing command fails the check whatever the outputs.
+        (self.repo / "data.txt").write_text("same\n")
+        self.config["checks"][0]["command"] = [sys.executable, "-c", "raise SystemExit(3)"]
+        passed, record, _ = run()
+        self.assertEqual((passed, record["status"], record["note"]), (False, "failed", "the command failed in the base and the result run"))
+
     def test_the_last_issue_is_decided_by_the_queue(self):
         # W-342: the last entry of the allowlist is not necessarily the issue that runs last.
         self.config["issues"] = ["DEV-1", "DEV-2", "DEV-3"]

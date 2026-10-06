@@ -17,6 +17,16 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Added
 
+* A check may set `base_parity: {"outputs": [...]}`. The controller then runs its command in
+  the issue's starting commit, exported with `git archive` outside the worktree (the
+  worktree's path is replaced by the export's in the command and the check environment), and
+  in the worktree, and compares the named outputs byte for byte; both runs, both copies of
+  the outputs and `parity.json` stay in the validation directory, and a failure names the
+  first difference. The base commit is part of the evidence key; the launch baseline skips
+  such a check. In s29-amend-20261005 three workers wrote this comparison themselves and the
+  W-336 review blocked when the worker had not. Project impact: none; a project adds the
+  field to the checks that should compare with the base. Canary tier: canary batch (the
+  engine's validation) (`W-344`).
 * `recover repin-config --reorder-unclaimed` adopts issues inserted among, and a new order of,
   the issues a stopped batch has not claimed. The allowlist up to its last done, active or
   deferred issue stays as pinned; the option never removes an issue and refuses to move one
