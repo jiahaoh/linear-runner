@@ -15,6 +15,23 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.6.0 — 2026-10-06
+
+The findings of the §2.9 amendment batch (s29-amend-20261005, complete; `W-342` to `W-348`).
+The batch ran seven issues, one of them added at its checkpoint, and two reviews blocked: one
+on a comparison with the base revision that the worker had not kept, one on the literal
+reading of "complete suite". The issue added at the checkpoint could be placed before the
+last issue only through a Linear relation, which also moved the batch's final extended
+checks to the wrong issue, and the operator followed the batch with its own polling loop.
+
+**Project impact:** none for site, workspace and project files; two optional project fields
+are new (`criterion_lint`, and `base_parity` on a check). A script that parses `runner.py
+status` adds `--json`: `status` now prints a short summary. A batch that pins
+`runner_version` names 2.6.0 before `recover repin-config` adopts the release.
+
+**Canary tier:** canary batch; the engine (the last-issue decision, base-parity checks, the
+history record), the implement prompt and the batch comment changed.
+
 ### Added
 
 * Batch comments list the files a worker made for the owner. At Done the history entry
