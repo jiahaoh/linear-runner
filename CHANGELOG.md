@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Fixed
+
+* `watchdog` checks a batch whose configuration files changed after the pin. It works from the
+  pinned configuration, as `recover cancel` does, and names the difference in its output under
+  `pinned_configuration`; it alerts and stops its own timer as before. Until now such a tick
+  ended with "Configuration/guidance changed since ... was pinned" and exit status 2: the
+  timer of launch `L-20261006T052322Z-5bf413dc` of canary-w342-20261006 did so five times
+  after runner 2.6.1 was committed. That batch was complete, but a running batch whose
+  guidance is corrected, or whose runner checkout gets a commit, had no watchdog until it was
+  re-pinned. The fifteen §2.10 batches did not meet it. Project impact: none. Canary tier:
+  first-issue checkpoint (the watchdog command only; the engine is unchanged) (`W-441`).
+
 ### Changed
 
 * The repair phase's soft output budget is 150,000 tokens (was 50,000) in `registry/phases.json`.

@@ -475,12 +475,24 @@ def main(argv=None):
         if not (root / "resolved-config.json").exists():
             print(json.dumps({"status": "idle", "reason": "this batch has not been launched"}))
             return
+        differs = None
         try:
             config, _ = pin_resolution(config, None)
-        except (ConfigError, RuntimeError, OSError) as error:
+        except ConfigError as error:
+            # W-441: a batch whose configuration files changed after the pin keeps its watchdog.
+            # The check works from what was pinned, as `recover cancel` does, and says so.
+            differs = str(error)
+            try:
+                config = pinned_config(config)
+            except (ConfigError, OSError, ValueError, KeyError) as unreadable:
+                parser.error(str(unreadable))
+        except (RuntimeError, OSError) as error:
             parser.error(str(error))
-        print(json.dumps(watchdog.check(config, LinearClient(config["linear"]), launch_id=args.launch_id,
-                                        timer=args.timer), indent=2))
+        report = watchdog.check(config, LinearClient(config["linear"]), launch_id=args.launch_id, timer=args.timer)
+        if differs:
+            report["pinned_configuration"] = ("this check used the pinned configuration, because the "
+                                              "configuration files differ from it: " + differs)
+        print(json.dumps(report, indent=2))
         return
     if args.command in ("stop", "clear-stop"):
         root.mkdir(parents=True, exist_ok=True)

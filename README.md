@@ -1192,6 +1192,13 @@ starts. Alerts are recorded in `<state dir>/watchdog.json`, so the same conditio
 alerts twice; a new stall after progress alerts again. It never takes the project lock or
 writes `state.json`.
 
+The watchdog checks with the configuration the batch pinned. When the configuration files
+differ from the pin (a guidance file corrected for a later `recover repin-config`, a commit in
+the runner checkout), it still checks, alerts and stops its timer, and its output names the
+difference under `pinned_configuration`. Before `W-441` such a tick ended with
+"Configuration/guidance changed since ... was pinned" and exit status 2, so a running batch
+had no watchdog until it was re-pinned.
+
 `launch` (systemd backend) starts it automatically: before the supervisor unit it starts a
 transient user timer `<prefix>-<batch>-<launch id>-watchdog.timer` (with a matching
 `.service`) that runs `runner.py watchdog --batch <id> --launch-id <id> --timer <timer>`

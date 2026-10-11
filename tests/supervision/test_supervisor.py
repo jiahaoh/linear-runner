@@ -2541,6 +2541,72 @@ class MentionOnlyNotifierTests(ConfiguredNotifierTests):
     SITE = {"attention": {"notifier": {"backend": "linear-mention-only"}}}
 
 
+class WatchdogAfterAPinChangeTests(Harness):
+    """W-441: `watchdog` checks a batch whose configuration files changed after the pin. The timer of
+    canary-w342-20261006 ended five ticks with "Configuration/guidance changed since ... was pinned"
+    and exit status 2 after runner 2.6.1 was committed: no check, no alert."""
+
+    def change_the_files(self):
+        path = self.home / "projects" / "fixture.json"
+        project = json.loads(path.read_text())
+        project["checks"].append(dict(EMPTY_CHECK))
+        path.write_text(json.dumps(project))
+        with self.assertRaisesRegex(ConfigError, "Configuration/guidance changed"):
+            pin_resolution(load_config(self.batch, self.home), self.linear)
+
+    def watchdog(self, *arguments, alive=True):
+        from linear_runner.supervision import watchdog
+        check, self.stopped = watchdog.check, []
+        def stop(command, **kwargs):
+            self.stopped.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        def checked(config, linear, **kwargs):
+            return check(config, self.linear, alive=lambda pid: alive, systemctl=stop, log=lambda message: None, **kwargs)
+        out = io.StringIO()
+        with patch.object(watchdog, "check", side_effect=checked), contextlib.redirect_stdout(out):
+            main(["watchdog", "--batch", str(self.batch), "--home", str(self.home), *arguments])
+        return json.loads(out.getvalue())
+
+    def running_supervisor(self):
+        def killed(result):
+            raise SystemExit("supervisor killed")  # no terminal outcome is written
+        self.hooks[("DEV-2", "implement")] = killed
+        with self.assertRaises(SystemExit):
+            self.launch()
+        self.assertEqual(json.loads((self.state_dir / "supervisor.json").read_text())["status"], "running")
+
+    def test_a_running_batch_is_checked_with_its_pinned_configuration(self):
+        self.running_supervisor()
+        self.change_the_files()
+        report = self.watchdog(alive=True)
+        self.assertEqual(report["status"], "ok")
+        self.assertIn("this check used the pinned configuration, because the configuration files differ from it: "
+                      "Configuration/guidance changed since", report["pinned_configuration"])
+        self.assertNotIn("watchdog", self.linear.kinds("DEV-2"))
+
+    def test_a_vanished_supervisor_is_still_alerted(self):
+        self.running_supervisor()
+        self.change_the_files()
+        report = self.watchdog(alive=False)
+        self.assertEqual((report["status"], report["condition"], report["issue"]), ("alerted", "gone", "DEV-2"))
+        self.assertIn("pinned_configuration", report)
+        self.assertIn("stopped without reporting an outcome while working on DEV-2",
+                      self.linear.last("DEV-2", "watchdog"))
+
+    def test_the_tick_still_stops_its_timer_once_the_launch_has_an_outcome(self):
+        launch_id = self.launch()["launch_id"]
+        self.assertEqual(json.loads((self.state_dir / "supervisor.json").read_text())["status"], "exited")
+        self.change_the_files()
+        report = self.watchdog("--launch-id", launch_id, "--timer", "fixture-watchdog.timer")
+        self.assertEqual((report["status"], report["timer_stopped"]), ("ok", True))
+        self.assertEqual(self.stopped, [["systemctl", "--user", "stop", "fixture-watchdog.timer"]])
+        self.assertIn("pinned_configuration", report)
+
+    def test_files_that_match_the_pin_add_no_field(self):
+        self.running_supervisor()
+        self.assertNotIn("pinned_configuration", self.watchdog(alive=True))
+
+
 class CommandLineTests(Harness):
     def test_recover_requires_reason_and_authorizer(self):
         args = ["--batch", str(self.batch), "--home", str(self.home)]
