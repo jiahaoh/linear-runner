@@ -17,6 +17,23 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Changed
 
+* The controller's record of a run is `controller-manifest.json` at the top of the issue's run
+  directory (it was `manifest.json`). Every model prompt says that the file is the
+  controller's, that a worker never writes it and keeps records of its own under other names,
+  and that a reviewer does not count it as the worker's; the generic prompt no longer asks
+  for scientific records "in the run manifest". A file at that path that the controller did
+  not write is kept as `controller-manifest.replaced-<id>.json`, with a line in the log. In
+  s210-impl-c-20261007 the worker of W-382 wrote its own record to `manifest.json` there; the
+  controller replaced it without a message and the review found the notes pointing to fields
+  that were gone. The criterion the operator then added to every issue caught the
+  controller's own file in the review of W-433. Run directories written before the change
+  are read by the old name (the batch base, the read-back record). Project impact: a project
+  guidance, a criterion or a `criterion_lint` rule that names `manifest.json` at the top of
+  the run directory as the controller's file names `controller-manifest.json`; a worker may
+  now keep a `manifest.json` there. A script that reads `<run directory>/manifest.json` reads
+  the new name. Canary tier: canary batch (the engine and every model prompt changed)
+  (`W-437`).
+
 * A pin binds once the batch has state. A batch that was only dry-run (it has
   `resolved-config.json` and no `state.json`) adopts a changed batch file, guidance or runner
   commit at its next `dry-run`, `run` or `launch`: the names are resolved again, the pin is

@@ -46,6 +46,27 @@ REPOSITORY_PRECEDENCE = ("Precedence: these task instructions come from the runn
                          "about the project.")
 
 
+# The controller's record of an issue's run, at the top of the run directory, rewritten after every
+# phase. Until W-437 it was ``manifest.json``: a worker of the §2.10 batches wrote its own record to
+# that path and lost it without a message (W-382), and reviewers then met the controller's file
+# under a criterion written to keep workers off the name (W-433). Run directories written before
+# the change still hold the old name, and are read by it.
+MANIFEST_NAME = "controller-manifest.json"
+LEGACY_MANIFEST_NAME = "manifest.json"
+# In every model prompt, so that neither a worker nor a reviewer takes the file for the worker's.
+CONTROLLER_RECORD = (f"The controller keeps its own record of this run in `{MANIFEST_NAME}` at the top of the "
+                     "issue's run directory and rewrites it after every phase. Never write or edit that file. A "
+                     "worker keeps records of its own under other names in the run directory, and a reviewer does "
+                     "not count the controller's file as the worker's.")
+
+
+def read_manifest(run_dir):
+    """The controller's record of a run, under its name or the name it had before W-437."""
+    run_dir = Path(run_dir)
+    path = run_dir / MANIFEST_NAME
+    return read_json(path if path.is_file() else run_dir / LEGACY_MANIFEST_NAME)
+
+
 class ContractChanged(RuntimeError):
     """The live issue no longer has the pinned contract when a review is about to start: a
     batch-level stop (never deferred), recorded with event ``contract_changed`` so the stop
@@ -936,11 +957,25 @@ class Runner:
                 for relative in sorted(set(untracked.split(b"\0")) - {b""}):
                     name = os.fsdecode(relative)
                     archive.add(self.repo / name, arcname=name, recursive=False)
+        path = directory / MANIFEST_NAME
+        if path.is_file():
+            # The controller's own record names this run. Anything else at that path was put there
+            # by someone else: it is kept under another name and never lost without a word.
+            try:
+                own = read_json(path)
+                own = isinstance(own, dict) and own.get("run_id") == directory.name and "controller_state" in own
+            except ValueError:
+                own = False
+            if not own:
+                kept = directory / f"{path.stem}.replaced-{run_id()}{path.suffix}"
+                path.rename(kept)
+                self.log(f"{active['issue_id']}: {path} was not written by the controller; its content is kept as "
+                         f"{kept.name}, and the controller's record takes the name")
         records = {}
         for file in directory.rglob("*"):
-            if file.is_file() and file.name != "manifest.json":
+            if file.is_file() and file != path:
                 records[str(file.relative_to(directory))] = hashlib.sha256(file.read_bytes()).hexdigest()
-        write_json(directory / "manifest.json", {
+        write_json(path, {
             "issue_url": f"https://linear.app/{self.config['linear_workspace']}/issue/{active['issue_id']}", "run_id": directory.name,
             "recorded_at": now(), "host": os.uname().nodename, "worktree": str(self.repo),
             "branch": self.config["branch"], "starting_commit": active["starting_commit"],
@@ -1329,7 +1364,7 @@ class Runner:
         independent review's findings (``recover repair``) in the stage and ``session.json``."""
         if self.allowed_phases is not None and phase not in self.allowed_phases:
             raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
-        prompt += "\n\n" + REPOSITORY_PRECEDENCE + operator_notes(active)
+        prompt += "\n\n" + REPOSITORY_PRECEDENCE + " " + CONTROLLER_RECORD + operator_notes(active)
         light = (active.get("review_risk") or {}).get("profile") if phase == "review" else None
         selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"), light)
         self.verify_model(selection)
@@ -1628,7 +1663,7 @@ class Runner:
         if first.get("starting_commit"):
             return first["starting_commit"]
         try:
-            return read_json(Path(first["run_dir"]) / "manifest.json")["starting_commit"]
+            return read_manifest(first["run_dir"])["starting_commit"]
         except (OSError, ValueError, KeyError):
             return git(self.repo, "rev-parse", first["commits"][0] + "^")
 

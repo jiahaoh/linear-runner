@@ -1110,8 +1110,17 @@ recovery whose expected state still matches exactly. Then it:
 4. after each accepted issue re-validates the accepted result against the pinned
    contract, reads Linear Done and the checked checklist back and writes
    `lifecycle/<issue>/readback.json` (commit, live status, contract hash, SHA-256 of
-   `final-result.json`, `intake.json`, `manifest.json` and `delivery/integrity.json`); the
+   `final-result.json`, `intake.json`, `controller-manifest.json` and `delivery/integrity.json`); the
    issue's plain-language `done` comment points to the run directory;
+   `controller-manifest.json` at the top of that directory is the controller's own record of
+   the run (commits, the configuration, the sessions, the SHA-256 of every other file),
+   rewritten after every phase. Every model prompt says that the file is the controller's and
+   that a worker keeps its records under other names. A file at that path that the controller
+   did not write is kept as `controller-manifest.replaced-<id>.json` with a line in the log.
+   Until `W-437` the record was `manifest.json`: a worker's own record of that name was
+   replaced without a message, and a criterion that kept workers off the name then caught the
+   controller's file in review. Run directories from before the change are read by the old
+   name;
 5. stops at a planned checkpoint (`supervision.stop_after` or `--stop-after`), on STOP,
    when nothing more is ready (`partial`, listing deferred and waiting issues) or when the
    queue is complete, writes the terminal report and posts a new `batch-finished` comment on

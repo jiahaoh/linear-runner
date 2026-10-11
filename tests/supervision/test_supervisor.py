@@ -2200,8 +2200,11 @@ class WhenChangedBatchBaseTests(Harness):
         for entry in state["history"]:
             del entry["starting_commit"]
         write_json(self.state_dir / "state.json", state)
+        # Those releases kept the controller's record of a run as manifest.json (W-437).
+        run = Path(state["history"][0]["run_dir"])
+        (run / "controller-manifest.json").rename(run / "manifest.json")
         if not manifest:
-            (Path(state["history"][0]["run_dir"]) / "manifest.json").unlink()
+            (run / "manifest.json").unlink()
         self.assertEqual(self.make_runner().batch_base({"starting_commit": git(self.repo, "rev-parse", "HEAD")}), base)
         self.assertEqual(self.launch(clear_stop=True)["started"]["outcome"], "complete")
         self.assert_last_issue_covers_the_batch()

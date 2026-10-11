@@ -1,6 +1,7 @@
 """Engine behavior: real Git and checks, fake boundary for Codex and Linear I/O."""
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import os
@@ -12,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linear_runner.config import config_fingerprint, load_config, load_registry, pin_resolution
+from linear_runner.config import RUNNER_ROOT, config_fingerprint, load_config, load_registry, pin_resolution
 from tests.fixtures import FakeLinear, make_home
 from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
@@ -73,7 +74,7 @@ class EngineTests(unittest.TestCase):
         self.runner.execute(limit=1)
         self.assertEqual(len(self.calls), 2)
         self.assertTrue((self.runner.root / "terminal-report.json").is_file())
-        manifest = json.loads((Path(self.runner.state["history"][0]["run_dir"]) / "manifest.json").read_text())
+        manifest = json.loads((Path(self.runner.state["history"][0]["run_dir"]) / "controller-manifest.json").read_text())
         self.assertEqual(manifest["issue_url"], "https://linear.app/test/issue/DEV-1")
         # Stage comments name what ran: the fixture's Standard pools are astra medium on Codex.
         self.assertIn("Implementation runs with astra (medium effort, Codex).", self.linear.last("DEV-1", "claim"))
@@ -1599,12 +1600,85 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(evidence["usage_events"])
         self.assertIsNone(evidence["billed_cost"])
 
+    # W-437: the controller's record of a run has a name of its own. In s210-impl-c-20261007 the worker of
+    # W-382 wrote its record to manifest.json at the top of the run directory and the controller replaced it.
+    def test_a_workers_manifest_at_the_top_of_the_run_directory_keeps_its_content(self):
+        original = self.runner.run_session
+        def session(prompt, directory, **kwargs):
+            value = original(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("implement"):
+                (Path(directory).parent / "manifest.json").write_text('{"worker": "my own record"}')
+            return value
+        self.runner.run_session = session
+        self.runner.execute(limit=1)
+        run = Path(self.runner.state["history"][0]["run_dir"])
+        self.assertEqual((run / "manifest.json").read_text(), '{"worker": "my own record"}')
+        record = json.loads((run / "controller-manifest.json").read_text())
+        self.assertEqual(record["run_id"], run.name)
+        # The worker's file is one of the run's files in the controller's record, like any other.
+        self.assertEqual(record["files_sha256"]["manifest.json"],
+                         hashlib.sha256(b'{"worker": "my own record"}').hexdigest())
+        self.assertNotIn("controller-manifest.json", record["files_sha256"])
+        self.assertFalse(list(run.glob("controller-manifest.replaced-*")))
+
+    def test_a_file_the_controller_did_not_write_at_its_own_path_is_kept_and_named(self):
+        logged = []
+        log = self.runner.log
+        self.runner.log = lambda message: (logged.append(message), log(message))
+        original = self.runner.run_session
+        def session(prompt, directory, **kwargs):
+            value = original(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("implement"):
+                (Path(directory).parent / "controller-manifest.json").write_text("not the controller's")
+            return value
+        self.runner.run_session = session
+        self.runner.execute(limit=1)
+        run = Path(self.runner.state["history"][0]["run_dir"])
+        [kept] = run.glob("controller-manifest.replaced-*.json")
+        self.assertEqual(kept.read_text(), "not the controller's")
+        self.assertEqual(json.loads((run / "controller-manifest.json").read_text())["run_id"], run.name)
+        [line] = [line for line in logged if "was not written by the controller" in line]
+        self.assertIn(f"DEV-1: {run / 'controller-manifest.json'} was not written by the controller; its content is "
+                      f"kept as {kept.name}", line)
+
+    def test_every_model_prompt_names_the_controllers_record(self):
+        prompts = {}
+        original = self.runner.run_session
+        def session(prompt, directory, **kwargs):
+            prompts[Path(directory).name.split("-")[0]] = prompt
+            return original(prompt, directory, **kwargs)
+        self.runner.run_session = session
+        self.runner.config["checks"][0]["command"] = [sys.executable, "-c", "import sys; from pathlib import Path; "
+                                                      "sys.exit(0 if Path('result.txt').read_text() == 'fixed' else 1)"]
+        def fixing(prompt, directory, **kwargs):
+            value = session(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("repair"):
+                (self.repo / "result.txt").write_text("fixed")
+            return value
+        self.runner.run_session = fixing
+        self.runner.execute(limit=1)
+        self.assertEqual(sorted(prompts), ["implement", "repair", "review"])
+        for phase, prompt in prompts.items():
+            with self.subTest(phase=phase):
+                self.assertIn("The controller keeps its own record of this run in `controller-manifest.json` at the "
+                              "top of the issue's run directory and rewrites it after every phase. Never write or edit "
+                              "that file. A worker keeps records of its own under other names in the run directory, "
+                              "and a reviewer does not count the controller's file as the worker's.", prompt)
+        self.assertNotIn("run manifest", (RUNNER_ROOT / "prompts" / "generic.md").read_text())
+
+    def test_a_run_directory_from_before_the_rename_is_read_by_its_old_name(self):
+        old = self.root / "old-run"; old.mkdir()
+        write_json(old / "manifest.json", {"starting_commit": "abc", "run_id": "old-run", "controller_state": "idle"})
+        self.assertEqual(runner_module.read_manifest(old)["starting_commit"], "abc")
+        write_json(old / "controller-manifest.json", {"starting_commit": "def"})
+        self.assertEqual(runner_module.read_manifest(old)["starting_commit"], "def")
+
     def test_paused_work_has_patch_and_untracked_snapshot(self):
         (self.repo / "README.md").write_text("after\n")
         (self.repo / "new").write_text("new content\n")
         directory = self.root / "run"; directory.mkdir()
         self.runner.manifest({"issue_id": "DEV-1", "run_dir": str(directory), "starting_commit": "baseline", "session_id": "s"})
-        data = json.loads((directory / "manifest.json").read_text())
+        data = json.loads((directory / "controller-manifest.json").read_text())
         snapshot = data["uncommitted_snapshot"]
         self.assertIn("+after", (directory / (snapshot + ".patch")).read_text())
         with tarfile.open(directory / (snapshot + ".tar.gz")) as archive:

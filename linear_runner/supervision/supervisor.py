@@ -39,7 +39,8 @@ from linear_runner.config import config_fingerprint, read_json, write_json
 from linear_runner.linear import messages
 from linear_runner.supervision.recovery import append_log, block_record, defer, expected_state, park
 from linear_runner.supervision.rules import RuleError, evaluate, parse_rules
-from linear_runner.engine.runner import (IssueBlocked, PHASES, Runner, git, issue_contract, now, project_lock,
+from linear_runner.engine.runner import (IssueBlocked, LEGACY_MANIFEST_NAME, MANIFEST_NAME, PHASES, Runner, git,
+                                         issue_contract, now, project_lock,
                                          published_contract_matches, resolve_profile, review_criteria, run_id,
                                          validate_review_result)
 
@@ -234,7 +235,9 @@ class Supervisor:
         self.r.verify_issue(live, completed=True)
         if not published_contract_matches(live, contract_issue):
             raise RuntimeError(f"{issue}: post-run checklist read-back mismatch")
-        files = {name: sha256(run / name) for name in ("final-result.json", "intake.json", "issue.json", "manifest.json")
+        # The controller's record under its name, or under the name it had before W-437.
+        manifest = MANIFEST_NAME if (run / MANIFEST_NAME).is_file() else LEGACY_MANIFEST_NAME
+        files = {name: sha256(run / name) for name in ("final-result.json", "intake.json", "issue.json", manifest)
                  if (run / name).is_file()}
         integrity = run / "delivery" / "integrity.json"
         if integrity.is_file():
