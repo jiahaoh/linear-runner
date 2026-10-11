@@ -15,13 +15,17 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from linear_runner.config import ConfigError, load_config, pin_resolution, write_resolved
 from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, fake_codex, fake_codex_calls, make_home
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
+from linear_runner.supervision import launcher as launcher_module
 from linear_runner.supervision import recovery
+from linear_runner.supervision import wait as wait_module
 from linear_runner.supervision.recovery import RecoveryError, verify_log
 from linear_runner.supervision.rules import RuleError, evaluate, parse_rules
 from linear_runner import cli as cli_module
@@ -2539,6 +2543,117 @@ class ConfiguredNotifierTests(NotificationWarningTests):
 
 class MentionOnlyNotifierTests(ConfiguredNotifierTests):
     SITE = {"attention": {"notifier": {"backend": "linear-mention-only"}}}
+
+
+class LaunchInProgressTests(Harness):
+    """W-438: `watch` and `wait` beside a launch that is still running its checks, and a launch of
+    a batch whose supervisor is still exiting. In the §2.10 batches a `watch` started with the
+    launch ended at once, and the operator polled `status` before every relaunch."""
+
+    def marker(self):
+        return self.state_dir / wait_module.LAUNCHING_NAME
+
+    def launching(self, launch_id="L-new", pid=None):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        write_json(self.marker(), {"launch_id": launch_id, "pid": pid or os.getpid(), "host": os.uname().nodename,
+                                   "started": 0, "at": "2026-01-01T00:00:00+00:00"})
+
+    def supervisor(self, launch_id, status="exited", outcome="complete"):
+        write_json(self.state_dir / "supervisor.json", {"launch_id": launch_id, "status": status, "outcome": outcome,
+                                                        "pid": os.getpid(), "host": os.uname().nodename})
+
+    def watch(self, on_sleep):
+        lines, sleeps = [], []
+        def sleep(seconds):
+            sleeps.append(seconds)
+            on_sleep(len(sleeps))
+        report = wait_module.watch(self.state_dir, out=lines.append, sleep=sleep, stamp=lambda: "T")
+        return lines, report
+
+    def test_watch_waits_for_the_supervisor_of_a_first_launch(self):
+        self.launching()
+        def checks_end(count):
+            if count == 2:
+                self.supervisor("L-new"); self.marker().unlink()
+        lines, report = self.watch(checks_end)
+        self.assertEqual(lines[0], "T launch L-new is running its checks; waiting for its supervisor")
+        self.assertEqual(len([line for line in lines if "running its checks" in line]), 1)  # said once
+        self.assertTrue(lines[1].startswith("T - phase=None"))
+        self.assertEqual((report["outcome"], report["launch_id"]), ("complete", "L-new"))
+
+    def test_watch_beside_a_relaunch_does_not_report_the_launch_before(self):
+        self.supervisor("L-old", outcome="blocked")
+        self.launching()
+        def checks_end(count):
+            if count == 1:
+                self.supervisor("L-new")  # the launch itself still confirms, then removes its record
+        lines, report = self.watch(checks_end)
+        self.assertEqual(lines[0], "T launch L-new is running its checks; waiting for its supervisor")
+        self.assertEqual(report["launch_id"], "L-new")
+        self.assertEqual(wait_module.wait(self.state_dir, sleep=lambda seconds: None)["launch_id"], "L-new")
+
+    def test_without_a_live_launch_a_batch_is_reported_as_before(self):
+        with self.assertRaisesRegex(wait_module.NotLaunched, "This batch has not been launched"):
+            wait_module.watch(self.state_dir, out=lambda line: None)
+        gone = subprocess.Popen([sys.executable, "-c", "pass"]); gone.wait()
+        self.launching(pid=gone.pid)  # left by a launch that was killed
+        with self.assertRaisesRegex(wait_module.NotLaunched, "This batch has not been launched"):
+            wait_module.watch(self.state_dir, out=lambda line: None)
+        self.supervisor("L-old", outcome="blocked")
+        self.assertEqual(wait_module.wait(self.state_dir)["launch_id"], "L-old")
+
+    def test_a_launch_names_itself_while_it_runs_and_not_afterwards(self):
+        seen = []
+        real = launcher_module.preflight
+        def observed(config, runner, **kwargs):
+            record = json.loads(self.marker().read_text())
+            seen.append((record["launch_id"] == kwargs["launch_id"], record["pid"] == os.getpid(),
+                         wait_module.launching(self.state_dir)["launch_id"] == kwargs["launch_id"]))
+            return real(config, runner, **kwargs)
+        with patch.object(launcher_module, "preflight", side_effect=observed):
+            self.launch(stop_after=["DEV-1"])
+        self.assertEqual(seen, [(True, True, True)])
+        self.assertFalse(self.marker().exists())
+        self.assertIsNone(wait_module.launching(self.state_dir))
+        with self.assertRaisesRegex(LaunchError, "STOP marker present"):  # a refused launch leaves none either
+            self.launch()
+        self.assertFalse(self.marker().exists())
+
+    def paused_batch(self):
+        self.hooks[("DEV-1", "review")] = self.blocked(times=1)
+        self.launch()
+        self.assertEqual(self.state()["phase"], "paused")
+        self.recover("review")
+
+    def test_a_launch_of_a_paused_batch_waits_for_the_supervisor_that_is_still_exiting(self):
+        self.paused_batch()
+        release = threading.Event()
+        def exiting_supervisor():
+            with project_lock(self.state_dir / "controller.lock"):
+                release.wait(5)
+        holder = threading.Thread(target=exiting_supervisor); holder.start()
+        self.addCleanup(holder.join); self.addCleanup(release.set)
+        time.sleep(0.2)
+        threading.Timer(0.5, release.set).start()
+        self.assertEqual(self.launch()["started"]["outcome"], "complete")  # one call, no second try
+
+    def test_a_lock_that_stays_held_refuses_after_the_stated_wait(self):
+        self.paused_batch()
+        with project_lock(self.state_dir / "controller.lock"), patch.object(launcher_module, "LAUNCH_LOCK_WAIT_SECONDS", 0.2):
+            with self.assertRaisesRegex(LaunchError, r"Another controller holds this project's lock \(waited 0\.2 s\)\. "
+                                                     r"The supervisor that paused this batch may still be exiting"):
+                self.launch()
+        self.assertFalse(self.marker().exists())
+
+    def test_a_batch_that_is_not_paused_is_refused_at_once(self):
+        self.launch(stop_after=["DEV-1"])
+        self.assertNotEqual(self.state()["phase"], "paused")
+        started = time.monotonic()
+        with project_lock(self.state_dir / "controller.lock"):
+            with self.assertRaisesRegex(LaunchError, r"Another controller holds this project's lock\. A supervisor or "
+                                                     r"another command is running for this batch; see `status`"):
+                self.launch(clear_stop=True)
+        self.assertLess(time.monotonic() - started, 5)
 
 
 class WatchdogAfterAPinChangeTests(Harness):

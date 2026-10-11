@@ -15,6 +15,20 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Added
+
+* `watch` and `wait` wait for a launch that is still running its checks. `launch` writes
+  `launching.json` (its launch id, process and host) into the state directory while it runs;
+  while that names a live launch whose supervisor has not reported, `watch` says once "launch
+  L-... is running its checks; waiting for its supervisor" and both wait for it. In the §2.10
+  batches a `watch` started with the launch of s210-impl-j-20261010 ended with "This batch has
+  not been launched", since the checks take about 13 minutes there; beside a relaunch the same
+  commands returned the report of the launch before. `launch` now also waits up to 60 s for
+  the project lock when the saved state says the batch is paused, as `recover` already does,
+  so a relaunch right after a pause needs no loop on `status`. Project impact: none. Canary
+  tier: first-issue checkpoint (the launch's own bookkeeping and two read-only commands)
+  (`W-438`).
+
 ### Fixed
 
 * A read of Linear that gets no answer within the timeout is tried again (after 2 s and 5 s)

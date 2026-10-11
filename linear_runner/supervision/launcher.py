@@ -54,6 +54,7 @@ timers. The foreground backend starts no timer.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -68,12 +69,12 @@ import time
 from linear_runner import backends
 from linear_runner.backends.codex import catalog_sha256
 from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
-from linear_runner.supervision import backend_start
+from linear_runner.supervision import backend_start, wait
 from linear_runner.engine import lint as criterion_lint
 from linear_runner.version import pin_problem
 from linear_runner.supervision.recovery import expected_state
 from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, evidence_intact,
-                                         fingerprint, git, now, project_lock, resolve_profile, run_id)
+                                         LockBusy, fingerprint, git, now, project_lock, resolve_profile, run_id)
 from linear_runner.linear import messages
 from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor, pid_alive
 
@@ -535,16 +536,50 @@ def _marker_reason(stop):
                                     "or by `runner.py stop` of a runner before 2.5.0")
 
 
+# A supervisor that just paused its batch still holds the project lock while it posts its stop
+# comments, for about 20 seconds in the §2.10 batches. A launch of a paused batch waits this
+# long for the lock, as `recover` does, before it refuses (W-438).
+LAUNCH_LOCK_WAIT_SECONDS = 60
+
+
 def launch(config, linear, *, backend, stop_after=(), scope="queue", clear_stop=False, force_preflight=False,
            runner=None, out=print):
+    """Preflight, start the supervisor, confirm. While it runs, ``launching.json`` in the state
+    directory names this launch, so that `wait` and `watch` started beside it wait for its
+    supervisor instead of reporting the launch before (W-438)."""
     root = Path(config["state_dir"])
     root.mkdir(parents=True, exist_ok=True)
     launch_id = "L-" + run_id()
+    try:
+        return _launch(config, linear, root=root, launch_id=launch_id, backend=backend, stop_after=stop_after,
+                       scope=scope, clear_stop=clear_stop, force_preflight=force_preflight, runner=runner, out=out)
+    finally:
+        marker = root / wait.LAUNCHING_NAME
+        try:
+            if marker.exists() and read_json(marker).get("launch_id") == launch_id:
+                marker.unlink()
+        except (OSError, ValueError):
+            pass
+
+
+def _launch(config, linear, *, root, launch_id, backend, stop_after, scope, clear_stop, force_preflight, runner, out):
     unknown = [i for i in stop_after if i not in config["issues"]]
     if unknown:
         raise LaunchError(f"--stop-after {unknown} not in the issue allowlist")
     status_path = root / STATUS_NAME
-    with project_lock(root / "controller.lock"):
+    state_path = root / "state.json"
+    paused = state_path.exists() and read_json(state_path).get("phase") == "paused"
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(project_lock(root / "controller.lock",
+                                            wait_seconds=LAUNCH_LOCK_WAIT_SECONDS if paused else 0))
+        except LockBusy as error:
+            raise LaunchError(f"{error}. " + ("The supervisor that paused this batch may still be exiting (posting "
+                                              "its stop comments); wait until `status` shows it exited, then launch "
+                                              "again" if paused else "A supervisor or another command is running "
+                                              "for this batch; see `status`")) from None
+        write_json(root / wait.LAUNCHING_NAME, {"launch_id": launch_id, "pid": os.getpid(),
+                                                "host": os.uname().nodename, "started": time.time(), "at": now()})
         previous = read_json(status_path) if status_path.exists() else {}
         if previous.get("status") == "running" and pid_alive(previous.get("pid")) and previous.get("host") == os.uname().nodename:
             raise LaunchError(f"Supervisor {previous['launch_id']} (PID {previous['pid']}) is still running")

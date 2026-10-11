@@ -11,6 +11,11 @@ supervisor's the process cannot be seen; there a STOP marker counts as the stop.
 supervisor's host a STOP marker next to a live supervisor is a requested stop (``runner.py
 stop``): the supervisor exits after the current issue, and ``wait`` keeps waiting for that.
 
+A launch runs its checks before it starts the supervisor (about 13 minutes for one project of the
+§2.10 batches), and until then ``supervisor.json`` is missing or still names the launch before.
+``launch`` leaves ``launching.json`` for that time; while it names a live launch whose supervisor
+has not reported yet, ``wait`` and ``watch`` wait for that supervisor (W-438).
+
 Outcomes and exit codes: ``complete`` 0 (every allowlisted issue is Done), ``checkpoint`` 3 (a
 planned checkpoint or a requested stop, between issues), ``paused`` 4 (a recorded stop that
 needs a recovery; the report names the issue, the step, the stop class and the reason),
@@ -33,6 +38,12 @@ OUTCOMES = {"complete": "complete", "checkpoint": "checkpoint", "stopped": "chec
             "partial": "partial"}
 
 
+# What ``launch`` writes while it runs: its launch id, process and host (W-438).
+LAUNCHING_NAME = "launching.json"
+# On another host the launch's process cannot be seen; its record counts for this long.
+LAUNCHING_MAX_SECONDS = 4 * 3600
+
+
 class NotLaunched(RuntimeError):
     pass
 
@@ -41,9 +52,30 @@ def _json(path):
     return read_json(path) if path.exists() else {}
 
 
+def launching(root, clock=time.time):
+    """The record of a launch that is running now and whose supervisor has not reported yet;
+    ``None`` otherwise. A record whose process is gone was left by a killed launch."""
+    root = Path(root)
+    try:
+        record = _json(root / LAUNCHING_NAME)
+    except ValueError:  # being written
+        return None
+    if not record:
+        return None
+    if record.get("host") == os.uname().nodename:
+        if not pid_alive(record.get("pid")):
+            return None
+    elif clock() - record.get("started", 0) > LAUNCHING_MAX_SECONDS:
+        return None
+    return None if _json(root / STATUS_NAME).get("launch_id") == record.get("launch_id") else record
+
+
 def stopped(root):
-    """The supervisor's status record once it has stopped; ``None`` while it runs."""
+    """The supervisor's status record once it has stopped; ``None`` while it runs, and while a
+    launch is running its checks before it starts the supervisor."""
     path = Path(root) / STATUS_NAME
+    if launching(root):
+        return None
     if not path.exists():
         raise NotLaunched(f"This batch has not been launched: {path} does not exist")
     status = read_json(path)
@@ -107,13 +139,20 @@ def watch(root, *, out=print, sleep=time.sleep, poll_seconds=POLL_SECONDS, timeo
     stopped (or ``None`` when ``timeout`` seconds pass first). Read-only, like ``wait``."""
     from linear_runner.engine.runner import now
     stamp = stamp or now
-    started, previous = clock(), None
+    started, previous, announced = clock(), None, None
     while True:
         status = stopped(root)  # raises NotLaunched before anything is printed
-        fields = progress(root)
-        if fields != previous:
-            out(progress_line(fields, stamp()))
-            previous = fields
+        launch = launching(root)
+        if launch:
+            # The state still shows the launch before; say once what is being waited for.
+            if announced != launch.get("launch_id"):
+                out(f"{stamp()} launch {launch.get('launch_id')} is running its checks; waiting for its supervisor")
+                announced = launch.get("launch_id")
+        else:
+            fields = progress(root)
+            if fields != previous:
+                out(progress_line(fields, stamp()))
+                previous = fields
         if status is not None:
             return report(root, status)
         if timeout is not None and clock() - started >= timeout:

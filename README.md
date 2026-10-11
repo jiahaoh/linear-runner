@@ -505,6 +505,14 @@ caller with a time limit starts it again; `--interval` sets the poll (10 s). Lik
 reads the state directory only and writes nothing. An operator session followed
 s29-amend-20261005 with its own polling loop for six hours (`W-346`).
 
+`watch` and `wait` can be started beside a `launch`. A launch runs its checks before it starts
+the supervisor, and for that time it leaves `launching.json` in the state directory with its
+launch id, process and host. While that record names a live launch whose supervisor has not
+reported yet, `watch` prints once "launch L-... is running its checks; waiting for its
+supervisor" and both commands wait for that supervisor; they no longer end with "This batch
+has not been launched", or with the report of the launch before, as they did in the §2.10
+batches (`W-438`). A record left by a launch that was killed is ignored: its process is gone.
+
 `launch` resolves and pins Linear names, runs the preflight below, starts the supervisor
 (by default a transient `systemd-run --user` unit with `Restart=no`,
 `KillMode=control-group`, logs appended to `<state dir>/supervisor.log` and an
@@ -1273,7 +1281,10 @@ A recovery takes the project lock. Right after a stop the supervisor may still h
 it posts the stop comments, so `recover` waits up to 60 s for the lock; if it is still held,
 `recover` ends with one line ("Another controller holds this project's lock (waited 60 s).
 The supervisor may still be exiting ...", exit 2) and records nothing: check `status`, then
-run the same command again.
+run the same command again. `launch` waits the same 60 s for the lock when the saved state says
+the batch is paused, so `launch --clear-stop` given right after a pause needs no polling
+either (`W-438`); a batch that is not paused is refused at once, as before, since the lock is
+then held by a running supervisor.
 
 Every recovery requires `--reason` and `--authorized-by`, runs offline except
 `--repin-contract`, `--accept-contract-drift` (both read the live issue) and `repin-config`
