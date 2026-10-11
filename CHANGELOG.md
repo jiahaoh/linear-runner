@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* A pin binds once the batch has state. A batch that was only dry-run (it has
+  `resolved-config.json` and no `state.json`) adopts a changed batch file, guidance or runner
+  commit at its next `dry-run`, `run` or `launch`: the names are resolved again, the pin is
+  replaced and one line says so. While preparing s210-impl-a-20261007 the operator corrected
+  one guidance sentence after a dry-run; `dry-run` then refused the change and `recover
+  repin-config` refused with "This batch has no pinned state to re-pin", so the sentence had
+  to be restored byte for byte. A batch that has state is refused as before and adopts a
+  change with `recover repin-config`. Project impact: none. Canary tier: first-issue
+  checkpoint (the pin check before a batch's first run) (`W-378`).
+
 ### Added
 
 * `watch` and `wait` wait for a launch that is still running its checks. `launch` writes

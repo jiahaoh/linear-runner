@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 # The checkout root (runner.py, registry/, schema/, templates/, examples/): the parent of this package.
 RUNNER_ROOT = Path(__file__).resolve().parent.parent
@@ -873,18 +874,33 @@ def _with_ids(config, ids, label):
     return resolved
 
 
+def NOTICE(text):
+    """One line for the person at the terminal (replaced in tests)."""
+    print(text, file=sys.stderr)
+
+
 def pin_resolution(config, linear):
     """Return (resolved config, fresh). Reuse pinned IDs; resolve live only for a new batch."""
     path = Path(config["state_dir"]) / RESOLVED_NAME
     if path.exists():
         pinned = read_json(path)
+        problem = None
         if pinned.get("resolution", {}).get("names") != resolution_names(config):
-            raise ConfigError("Linear names changed since this batch pinned its IDs; restore the configuration or prepare a new batch")
-        resolved = _with_ids(config, pinned["resolution"]["ids"], f"pinned {RESOLVED_NAME}")
-        if config_fingerprint(resolved) != pinned.get("config_sha256"):
-            raise ConfigError(f"Configuration/guidance changed since {path} was pinned; restore the saved batch configuration, "
-                              "or adopt the change with `runner.py recover repin-config` while the batch is paused or stopped")
-        return resolved, False
+            problem = "Linear names changed since this batch pinned its IDs; restore the configuration or prepare a new batch"
+        else:
+            resolved = _with_ids(config, pinned["resolution"]["ids"], f"pinned {RESOLVED_NAME}")
+            if config_fingerprint(resolved) != pinned.get("config_sha256"):
+                problem = (f"Configuration/guidance changed since {path} was pinned; restore the saved batch configuration, "
+                           "or adopt the change with `runner.py recover repin-config` while the batch is paused or stopped")
+        if problem is None:
+            return resolved, False
+        # A pin binds once the batch has state. A batch that was only dry-run has claimed nothing,
+        # and `recover repin-config` needs a state to re-pin, so such a batch could not adopt an
+        # edit by any named command (W-378). Its pin is replaced by the files as they are now.
+        if linear is None or (Path(config["state_dir"]) / "state.json").exists():
+            raise ConfigError(problem)
+        NOTICE(f"This batch has not run yet, so the configuration pinned at {pinned.get('resolved_at')} "
+               f"({path}) is replaced by the configuration files as they are now.")
     ids = {"project_id": linear.resolve_project(config["project_name"]),
            "assignee_id": linear.resolve_user(config["assignee"])}
     return _with_ids(config, ids, "Linear name resolution"), True

@@ -1,5 +1,7 @@
 """Engine behavior: real Git and checks, fake boundary for Codex and Linear I/O."""
+import contextlib
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linear_runner.config import load_config, load_registry, pin_resolution
+from linear_runner.config import config_fingerprint, load_config, load_registry, pin_resolution
 from tests.fixtures import FakeLinear, make_home
 from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
@@ -1664,6 +1666,7 @@ class ControllerTests(unittest.TestCase):
         pinned = json.loads(pinned_path.read_text())
         self.assertEqual(pinned["resolution"]["ids"], {"project_id": "p", "assignee_id": "owner"})
         before = pinned_path.read_bytes()
+        write_json(pinned_path.parent / "state.json", {"phase": "idle", "history": []})  # the run began: the pin binds
         (self.home / "guidance.md").write_text("Changed scope")
         with patch.object(LinearClient, "call", side_effect=AssertionError("no Linear access")), \
                 patch.object(Runner, "execute") as execute, patch("sys.stderr"):
@@ -1671,6 +1674,32 @@ class ControllerTests(unittest.TestCase):
                 main(["run", *self.args])
             execute.assert_not_called()
         self.assertEqual(pinned_path.read_bytes(), before)
+
+    def test_a_batch_that_was_only_dry_run_adopts_an_edited_guidance_file_by_another_dry_run(self):
+        # W-378: no step needs a file of the state directory to be edited or removed by hand.
+        linear = FakeLinear()
+        state = self.root / "state" / "fixture"
+        def dry_run():
+            printed = io.StringIO()
+            with patch.object(cli_module, "LinearClient", return_value=linear), \
+                    contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                main(["dry-run", *self.args])
+            return printed.getvalue(), json.loads((state / "resolved-config.json").read_text())["config_sha256"]
+        first, pinned = dry_run()
+        self.assertNotIn("has not run yet", first)
+        self.assertFalse((state / "state.json").exists())
+        files = sorted(p.name for p in state.iterdir())
+        (self.home / "guidance.md").write_text("Implement a tiny fixture only, and one corrected sentence.")
+        second, adopted = dry_run()
+        self.assertIn("This batch has not run yet, so the configuration pinned at", second)
+        self.assertNotEqual(adopted, pinned)
+        self.assertEqual(adopted, config_fingerprint(pin_resolution(load_config(self.batch, self.home), linear)[0]))
+        self.assertIn("DEV-1", second)  # it selects the first issue, as the first dry-run did
+        self.assertIn("DEV-1", first)
+        self.assertEqual(sorted(p.name for p in state.iterdir()), files)
+        self.assertFalse((state / "state.json").exists())
+        third, again = dry_run()  # nothing changed: the pin stays, with no word
+        self.assertEqual((again, "has not run yet" in third), (adopted, False))
 
     def test_state_changed_config_is_refused_without_rewrite(self):
         linear = FakeLinear()

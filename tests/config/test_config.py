@@ -520,7 +520,8 @@ class ResolutionTests(unittest.TestCase):
         self.assertFalse(fresh)
         self.assertEqual(config_fingerprint(again), config_fingerprint(resolved))
         self.assertEqual(again["_sources"]["project_id"], "pinned resolved-config.json")
-        # Renamed project or changed guidance cannot silently reuse the pinned batch.
+        # Renamed project or changed guidance cannot silently reuse the pinned batch once it has run.
+        write(Path(resolved["state_dir"]) / "state.json", "{}")
         project = json.loads((home / "projects/fixture.json").read_text())
         write(home / "projects/fixture.json", dict(project, linear_project="Renamed"))
         with self.assertRaisesRegex(ConfigError, "names changed"):
@@ -529,6 +530,36 @@ class ResolutionTests(unittest.TestCase):
         write(home / "guidance.md", "Different scope")
         with self.assertRaisesRegex(ConfigError, "Configuration/guidance changed"):
             pin_resolution(load_config(batch, home), NoNetwork())
+
+    def test_a_batch_that_has_not_run_replaces_its_pin_with_the_files_as_they_are(self):
+        # W-378: s210-impl-a-20261007 was dry-run, one guidance sentence was corrected, and then
+        # `dry-run` refused the change while `recover repin-config` had "no pinned state to re-pin".
+        home, batch = make_home(self.root, self.root / "repo")
+        resolved, _ = pin_resolution(load_config(batch, home), FakeLinear())
+        write_resolved(resolved)
+        pinned_path = Path(resolved["state_dir"]) / "resolved-config.json"
+        self.assertFalse((pinned_path.parent / "state.json").exists())
+        notices = []
+        with patch.object(config, "NOTICE", notices.append):
+            same, fresh = pin_resolution(load_config(batch, home), FakeLinear())
+            self.assertEqual((fresh, notices), (False, []))  # unchanged files keep the pin, with no word
+            write(home / "guidance.md", "One corrected sentence.")
+            linear = FakeLinear()
+            adopted, fresh = pin_resolution(load_config(batch, home), linear)
+        self.assertTrue(fresh)
+        self.assertEqual(linear.resolutions, [("project", "Fixture project"), ("user", "me")])
+        self.assertNotEqual(config_fingerprint(adopted), config_fingerprint(resolved))
+        [notice] = notices
+        self.assertIn("This batch has not run yet, so the configuration pinned at", notice)
+        self.assertIn("is replaced by the configuration files as they are now.", notice)
+        write_resolved(adopted)
+        self.assertEqual(json.loads(pinned_path.read_text())["config_sha256"], config_fingerprint(adopted))
+        again, fresh = pin_resolution(load_config(batch, home), FakeLinear())
+        self.assertEqual((fresh, config_fingerprint(again)), (False, config_fingerprint(adopted)))
+        # A command that has no Linear client, the watchdog's, never re-pins.
+        write(home / "guidance.md", "Another sentence.")
+        with self.assertRaisesRegex(ConfigError, "Configuration/guidance changed"):
+            pin_resolution(load_config(batch, home), None)
 
 
 

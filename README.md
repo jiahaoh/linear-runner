@@ -205,6 +205,14 @@ change to the resolved configuration, is refused. A paused or stopped batch can 
 changed configuration or runner commit explicitly with `recover repin-config` (see "Stop,
 recovery and continuation"). Use a new batch `id` for a new queue.
 
+The pin binds once the batch has state. A batch that was only dry-run has `resolved-config.json`
+and no `state.json`: it has claimed nothing. When its batch file, its guidance or the runner
+changed since that dry-run, the next `dry-run`, `run` or `launch` resolves the names again,
+replaces the pin and says so in one line ("This batch has not run yet, so the configuration
+pinned at ... is replaced by the configuration files as they are now."). Before `W-378` such a
+batch was stuck: `dry-run` refused the change, and `recover repin-config` refused a batch with
+no state to re-pin.
+
 The configuration fingerprint in `state.json` and `resolved-config.json` covers the whole
 resolved configuration: guidance text, commands, environment, policy, IDs and the runner
 identity. The runner is identified by its release, Git commit and a clean/dirty flag, not
