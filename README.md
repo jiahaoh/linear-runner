@@ -812,6 +812,10 @@ output or tool calls over budget, or a missing figure, still checkpoint (the sto
 uncached figure); `recover budget --input-tokens` then sets the limit on the same basis. A phase
 that returned `blocked` within budget stops for its own block, not for the budget.
 
+The repair phase may write 150,000 output tokens (50,000 before `W-440`). Five repairs of the
+fifteen §2.10 batches finished `ready` with 66,138 to 134,258 output tokens, each rewriting long
+specification pages as its findings asked, and each stopped its batch for `recover budget`.
+
 **Phase timeouts per issue.** Each model phase has a hard timeout (`phases.json`,
 `timeout_seconds`). A batch can raise it for a named issue and phase when that phase is
 known to include long external steps (for example browser screenshots), up to the registry's

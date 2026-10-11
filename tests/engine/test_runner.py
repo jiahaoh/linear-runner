@@ -1451,6 +1451,45 @@ class EngineTests(unittest.TestCase):
                                  f"input {usage['input_tokens']} > 15000000, but only {uncached} was uncached; "
                                  "the input budget judges uncached input")
 
+    # W-440: five ready repairs of the §2.10 batches wrote 66,138 to 134,258 output tokens against the
+    # 50,000 the registry had, and each stopped its batch (registry repair budget: 5M input, 150k output, 100 tool calls).
+    def replay_repair(self, output_tokens):
+        """One failing check, then a repair that fixes it and writes ``output_tokens``. The repair
+        resumes the implement session, whose counter (5 output tokens so far) is cumulative."""
+        policy, _, _ = load_registry(self.root / "no-home")
+        budget = policy["phases"]["phases"]["repair"]["budget"]
+        self.assertEqual(budget, {"input_tokens": 5_000_000, "output_tokens": 150_000, "tool_calls": 100})
+        self.policy["phases"]["phases"]["repair"]["budget"] = dict(budget)
+        self.runner.config["checks"][0]["command"] = [sys.executable, "-c", "import sys; from pathlib import Path; "
+                                                      "sys.exit(0 if Path('result.txt').read_text() == 'fixed' else 1)"]
+        original = self.runner.run_session
+        def session(prompt, directory, **kwargs):
+            value = original(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("repair"):
+                (self.repo / "result.txt").write_text("fixed")
+                record = json.loads((Path(directory) / "session.json").read_text())
+                record["execution_evidence"]["usage_events"] = [{"usage": {"input_tokens": 200, "output_tokens": 5 + output_tokens}}]
+                write_json(Path(directory) / "session.json", record)
+            return value
+        self.runner.run_session = session
+
+    def test_a_repair_of_the_size_seen_in_s210_passes_the_registry_budget_and_a_larger_one_stops(self):
+        self.replay_repair(134_258)  # W-357, the largest of the five
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+        self.assertEqual(self.calls, ["implement", "repair", "review"])
+        self.setUp()
+        self.replay_repair(150_001)
+        with self.assertRaisesRegex(RuntimeError, r"Phase soft budget exceeded: output_tokens 150001 > 150000; reconcile before resume"):
+            self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["active"]["budget_exceeded"]["phase"], "repair")
+        # The other budgets are as before.
+        policy, _, _ = load_registry(self.root / "no-home")
+        phases = policy["phases"]
+        self.assertEqual(phases["phases"]["implement"]["budget"], {"input_tokens": 15_000_000, "output_tokens": 250_000, "tool_calls": 250})
+        self.assertEqual(phases["phases"]["review"]["budget"]["output_tokens"], 40_000)
+        self.assertEqual(phases["max_repairs"], 2)
+
     def test_uncached_input_or_output_over_budget_still_checkpoints_a_blocked_or_ready_phase(self):
         usage, tool_calls, _ = self.W256
         self.registry_budget(input_tokens=400_000)  # below W-256's 407,519 uncached input

@@ -2,7 +2,7 @@
   "notes": [
     "Settled policy. Budgets are soft: exceeding one checkpoints the issue for explicit reconciliation.",
     "Batch-3 observed maxima: implement 13.3M input / 75k output / 125 tool calls / 2793 s; review 2.3M input / 16k output / 48 tool calls / 575 s.",
-    "implement 15M/250k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement. The implement output budget was 150k until W-263: legitimate implement phases wrote 166,709 (W-245, ready) and 183,191 (W-256) output tokens. Repair output stays 50k: no repair near it has been observed.",
+    "implement 15M/250k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement. The implement output budget was 150k until W-263: legitimate implement phases wrote 166,709 (W-245, ready) and 183,191 (W-256) output tokens. The repair output budget was 50k until W-440: five repairs of the fifteen §2.10 batches (s210-spec-20261006, s210-amend-20261006, s210-impl-h-20261009) finished ready with 66,138 to 134,258 output tokens (W-401, W-356, W-331, W-328, W-357), each rewriting long specification pages as its findings asked, and each stopped its batch at a budget checkpoint. 150k is the largest of them plus about a tenth.",
     "review 5M/40k/120 matches the last working batch-3 budget; 1800 s is about three times the slowest observed review.",
     "max_repairs 2 is the engine's upper bound, shared across resumes and profiles; each check may run 1800 s.",
     "bounded_sessions holds the thresholds; a batch turns the behavior on with context_controls.bounded_sessions (off by default). A worker session whose cumulative input reached 5M tokens, or the first repair after implement, continues in a fresh session seeded with a handoff file (at most 12,000 bytes) instead of resuming the long one. 5M is where batch-3 implement sessions (the W-170 resume, W-171, W-172) approached the model context window.",
@@ -23,7 +23,7 @@
     "repair": {
       "budget": {
         "input_tokens": 5000000,
-        "output_tokens": 50000,
+        "output_tokens": 150000,
         "tool_calls": 100
       },
       "timeout_seconds": 5400

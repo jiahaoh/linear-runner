@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* The repair phase's soft output budget is 150,000 tokens (was 50,000) in `registry/phases.json`.
+  Five repairs of the fifteen §2.10 batches (s210-spec-20261006, s210-amend-20261006,
+  s210-impl-h-20261009) finished ready with 66,138 to 134,258 output tokens, each rewriting
+  long specification pages as its findings asked; each stopped its batch at a budget
+  checkpoint that the operator reconciled with `recover budget`. These were all the budget
+  stops of §2.10. Project impact: none; a paused batch adopts the new registry with `recover
+  repin-config`, and a private registry that sets its own repair budget keeps it. Canary tier:
+  canary batch (the engine checkpoints a repair at another figure) (`W-440`).
+
 ## v2.6.1 — 2026-10-06
 
 The two findings of the 2.6.0 canary batch (canary-w342-20261006, complete; `W-351`).
