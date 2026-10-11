@@ -1,5 +1,7 @@
-"""The Linear client's credential handling: opt-in automatic refresh of an expired credential."""
+"""The Linear client: opt-in automatic refresh of an expired credential, and requests that get no answer."""
+import io
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -7,8 +9,10 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+import urllib.error
 
-from linear_runner.linear import client
+from linear_runner.linear import attention, client
 from linear_runner.linear.client import LinearClient
 
 ENDPOINT = "https://mcp.linear.app/mcp"
@@ -106,3 +110,86 @@ class CredentialRefreshTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeAnswer(io.BytesIO):
+    """A JSON answer of the MCP endpoint, as the opener hands it out."""
+    headers = {"Content-Type": "application/json"}
+
+
+class TimedOutRequestTests(unittest.TestCase):
+    """W-439: a request to Linear that gets no answer. On 2026-10-09 the batches s210-impl-h-20261009
+    and s210-impl-i-20261009 each stopped with the class environment on "The read operation timed
+    out"; nothing was wrong, and `recover resume` with a launch cleared both. The supervisor logs
+    of the two stops name no call, so these tests show the path with an opener that times out."""
+
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"TEST_LINEAR_TOKEN": "t"}); patcher.start(); self.addCleanup(patcher.stop)
+        self.linear = LinearClient({"token_env": "TEST_LINEAR_TOKEN", "timeout_seconds": 30})
+        self.linear.opener = self
+        self.sent, self.failures = [], []
+
+    def open(self, request, timeout):
+        """The opener: fails with the next entry of ``failures`` if one is left, else answers."""
+        message = json.loads(request.data)
+        name = message["params"].get("name") or message["method"]
+        self.sent.append(name)
+        self.assertEqual(timeout, 30)
+        failure = self.failures.pop(0) if self.failures else None
+        if failure is not None:
+            raise failure
+        if message["method"] == "initialize":
+            result = {"protocolVersion": "2025-06-18"}
+        else:
+            result = {"content": [{"type": "text", "text": json.dumps({"id": "DEV-1"})}]}
+        return FakeAnswer(json.dumps({"jsonrpc": "2.0", "id": message.get("id"), "result": result}).encode())
+
+    TIMEOUT = TimeoutError("The read operation timed out")
+
+    def test_a_read_that_got_no_answer_once_is_tried_again(self):
+        self.linear.initialized = True
+        for failure in (self.TIMEOUT, urllib.error.URLError(TimeoutError("timed out"))):  # reading, connecting
+            with self.subTest(failure=failure):
+                self.sent[:], self.failures[:] = [], [failure]
+                self.assertEqual(self.linear.issue("DEV-1"), {"id": "DEV-1"})
+                self.assertEqual(self.sent, ["get_issue", "get_issue"])
+
+    def test_a_read_that_never_gets_an_answer_stops_after_three_tries_and_says_so(self):
+        self.linear.initialized = True
+        self.failures[:] = [self.TIMEOUT] * 5
+        with self.assertRaisesRegex(client.LinearTimeout, r"^Linear did not answer list_comments within 30 s in each of "
+                                                          r"3 tries; check the network and Linear's status, then "
+                                                          r"continue with `recover resume`$") as raised:
+            self.linear.comments("DEV-1")
+        self.assertEqual(self.sent, ["list_comments"] * 3)
+        self.assertEqual(attention.classify_stop(raised.exception), "environment")
+
+    def test_a_write_that_got_no_answer_is_sent_once(self):
+        self.linear.initialized = True
+        for name, arguments in (("save_issue", {"id": "DEV-1", "state": "In Review"}),
+                                ("save_comment", {"issueId": "DEV-1", "body": "x"})):
+            with self.subTest(name=name):
+                self.sent[:], self.failures[:] = [], [self.TIMEOUT]
+                with self.assertRaisesRegex(client.LinearTimeout, rf"^Linear did not answer {name} within 30 s\. It is a "
+                                                                  r"write, so it was sent once and may have been applied: "
+                                                                  r"inspect the issue before retrying$") as raised:
+                    self.linear.call(name, **arguments)
+                self.assertEqual(self.sent, [name])
+                self.assertEqual(attention.classify_stop(raised.exception), "environment")
+
+    def test_the_session_is_opened_again_before_a_write_is_ever_sent(self):
+        self.failures[:] = [self.TIMEOUT]
+        self.assertEqual(self.linear.call("save_issue", id="DEV-1", state="Done"), {"id": "DEV-1"})
+        self.assertEqual(self.sent, ["initialize", "initialize", "notifications/initialized", "save_issue"])
+        self.linear.initialized, self.sent[:], self.failures[:] = False, [], [self.TIMEOUT] * 3
+        with self.assertRaisesRegex(client.LinearTimeout, r"^Linear did not answer the session's initialization within "
+                                                          r"30 s in each of 3 tries, before save_issue was sent; "):
+            self.linear.call("save_issue", id="DEV-1", state="Done")
+        self.assertEqual(self.sent, ["initialize"] * 3)
+
+    def test_other_failures_of_a_request_are_raised_as_before(self):
+        self.linear.initialized = True
+        self.failures[:] = [urllib.error.URLError(ConnectionRefusedError("refused"))]
+        with self.assertRaises(urllib.error.URLError):
+            self.linear.issue("DEV-1")
+        self.assertEqual(self.sent, ["get_issue"])

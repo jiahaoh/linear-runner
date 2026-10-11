@@ -17,6 +17,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Fixed
 
+* A read of Linear that gets no answer within the timeout is tried again (after 2 s and 5 s)
+  before it stops the batch. On 2026-10-09 the batches s210-impl-h-20261009 and
+  s210-impl-i-20261009 each stopped with the class `environment` and "The read operation timed
+  out", one minute and fifteen minutes after their launch; nothing was wrong, and `recover
+  resume` with another launch cleared both. Their logs name no call: the client let the
+  timeout of any single request pass up to the supervisor. Now a `get_` or `list_` tool and the
+  opening of the session are sent up to three times, and the stop that remains says "Linear did
+  not answer <tool> within 30 s in each of 3 tries". A write is still sent once, since it may
+  have been applied, and its stop now names the tool and says so. Project impact: none. Canary
+  tier: canary batch (every engine step reads Linear through this path) (`W-439`).
+
 * `watchdog` checks a batch whose configuration files changed after the pin. It works from the
   pinned configuration, as `recover cancel` does, and names the difference in its output under
   `pinned_configuration`; it alerts and stops its own timer as before. Until now such a tick

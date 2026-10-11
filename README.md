@@ -1039,7 +1039,13 @@ fails; the write itself is never repeated inside that retry. When Linear answers
 temporarily unavailable (a 5xx, or `upstream_unavailable`), a read or an idempotent write
 (state, labels, description) is repeated after 2 s and 5 s; a comment write is repeated only
 after its marker is looked for, so a comment that did land is adopted, never posted twice. A
-failure that remains is an `environment` stop ("Linear temporarily unavailable"). The comment ends with
+failure that remains is an `environment` stop ("Linear temporarily unavailable"). A request that
+gets no answer within `timeout_seconds` (30) is handled by what it asks: a read (a `get_` or
+`list_` tool, or the opening of the session) changes nothing and is sent again after 2 s and
+5 s, and after three tries the stop says "Linear did not answer get_issue within 30 s in each
+of 3 tries"; a write may have been applied, so it is sent once and stops with "Linear did not
+answer save_issue within 30 s. It is a write, so it was sent once and may have been applied"
+(`W-439`). The comment ends with
 one hidden line, `<!-- linear-runner <batch>/<issue>/<kind>/<n> -->`. If a write's response
 or the following save is lost, the next run finds the comment by that line and adopts it, so
 an event is never posted twice. A failed write keeps the batch from advancing; the pending

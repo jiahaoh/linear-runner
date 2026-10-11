@@ -48,6 +48,18 @@ class LinearTransient(RuntimeError):
     """Linear answered that it is temporarily unavailable (a 5xx); the message says so."""
 
 
+# A request that gets no answer within ``timeout_seconds`` stopped two §2.10 batches on
+# 2026-10-09, each cleared by `recover resume` and a launch (W-439). A read (a ``get_`` or
+# ``list_`` tool, or the session's initialization) changes nothing, so it is tried again after
+# these pauses. A write whose answer is lost may have been applied: it is sent once, as before.
+TIMEOUT_DELAYS = (2, 5)
+READ_TOOLS = ("get_", "list_")
+
+
+class LinearTimeout(RuntimeError):
+    """Linear did not answer a request within the timeout; the message says what was asked."""
+
+
 # Workspace ``auth.refresh_command`` overrides it. A short Codex session starts the configured
 # Linear MCP server, which refreshes the Codex-owned credential (W-251).
 DEFAULT_REFRESH_COMMAND = "codex exec --skip-git-repo-check 'Reply with OK.'"
@@ -165,8 +177,9 @@ class LinearClient:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         request = urllib.request.Request(self.url, data=json.dumps(message).encode(), headers=headers)
+        seconds = self.config.get("timeout_seconds", 30)
         try:
-            with self.opener.open(request, timeout=self.config.get("timeout_seconds", 30)) as response:
+            with self.opener.open(request, timeout=seconds) as response:
                 self.session = response.headers.get("Mcp-Session-Id", self.session)
                 if notification:
                     response.read()
@@ -193,16 +206,42 @@ class LinearClient:
                 raise LinearTransient(f"Linear temporarily unavailable (HTTP {error.code}); reconcile the write "
                                       "outcome before resume") from None
             raise RuntimeError(f"Linear HTTP {error.code}; reconcile authentication/write outcome before resume") from None
+        except TimeoutError:
+            raise LinearTimeout(f"within {seconds} s") from None
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, TimeoutError):
+                raise LinearTimeout(f"within {seconds} s") from None
+            raise
+
+    def initialize(self):
+        """Open the MCP session once. It changes nothing in Linear, so a request of it that gets
+        no answer is sent again."""
+        if self.initialized:
+            return
+        result = self.rpc("initialize", {"protocolVersion": self.protocol, "capabilities": {},
+                                         "clientInfo": {"name": "linear-codex-runner", "version": "2"}})
+        self.protocol = result["protocolVersion"]
+        self.rpc("notifications/initialized", notification=True)
+        self.initialized = True
 
     def call(self, name, **arguments):
-        if not self.initialized:
-            result = self.rpc("initialize", {"protocolVersion": self.protocol, "capabilities": {},
-                                             "clientInfo": {"name": "linear-codex-runner", "version": "2"}})
-            self.protocol = result["protocolVersion"]
-            self.rpc("notifications/initialized", notification=True)
-            self.initialized = True
+        is_read = name.startswith(READ_TOOLS)
+        waits, tries = iter(TIMEOUT_DELAYS), 0
+        while not self.initialized:
+            tries += 1
+            try:
+                self.initialize()
+            except LinearTimeout as error:
+                pause = next(waits, None)
+                if pause is None:
+                    raise LinearTimeout(f"Linear did not answer the session's initialization {error} in each of "
+                                        f"{tries} tries, before {name} was sent; check the network and Linear's "
+                                        "status, then continue with `recover resume`") from None
+                SLEEP(pause)
         pauses = iter(TRANSIENT_DELAYS if name != "save_comment" else ())
+        waits, tries = iter(TIMEOUT_DELAYS if is_read else ()), 0
         while True:
+            tries += 1
             try:
                 result = self.tool(name, arguments)
                 break
@@ -210,6 +249,15 @@ class LinearClient:
                 pause = next(pauses, None)
                 if pause is None:
                     raise
+                SLEEP(pause)
+            except LinearTimeout as error:
+                pause = next(waits, None)
+                if pause is None and is_read:
+                    raise LinearTimeout(f"Linear did not answer {name} {error} in each of {tries} tries; check the "
+                                        "network and Linear's status, then continue with `recover resume`") from None
+                if pause is None:
+                    raise LinearTimeout(f"Linear did not answer {name} {error}. It is a write, so it was sent once "
+                                        "and may have been applied: inspect the issue before retrying") from None
                 SLEEP(pause)
         texts = [part["text"] for part in result.get("content", []) if part.get("type") == "text"]
         try:
