@@ -15,6 +15,39 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.7.0 — 2026-10-11
+
+The runner housekeeping after the fifteen §2.10 batches (s210-spec-20261006 to
+s210-impl-l-20261010, all complete; `W-378`, `W-437` to `W-441`). The batches ran 60 issues
+with 93 launches and 83 recorded recoveries. Five of the stops came from the repair output
+budget, two from a single Linear request that got no answer, three review rounds from the
+controller's `manifest.json`, and the operator wrote wait loops around `watch` and `launch`.
+One finding is older: the watchdog of the 2.6.0 canary could not check once the checkout had
+changed.
+
+**Project impact:** a project guidance, an acceptance criterion or a `criterion_lint` rule that
+names `manifest.json` at the top of the run directory as the controller's file names
+`controller-manifest.json`, and a script that reads `<run directory>/manifest.json` reads the
+new name. Nothing else changes for site, workspace and project files. A batch that pins
+`runner_version` names 2.7.0 before `recover repin-config` adopts the release.
+
+**Canary tier:** canary batch; the engine (the run record, the repair budget, the pin of a
+batch that has not run), every model prompt and the Linear client changed.
+
+### Added
+
+* `watch` and `wait` wait for a launch that is still running its checks. `launch` writes
+  `launching.json` (its launch id, process and host) into the state directory while it runs;
+  while that names a live launch whose supervisor has not reported, `watch` says once "launch
+  L-... is running its checks; waiting for its supervisor" and both wait for it. In the §2.10
+  batches a `watch` started with the launch of s210-impl-j-20261010 ended with "This batch has
+  not been launched", since the checks take about 13 minutes there; beside a relaunch the same
+  commands returned the report of the launch before. `launch` now also waits up to 60 s for
+  the project lock when the saved state says the batch is paused, as `recover` already does,
+  so a relaunch right after a pause needs no loop on `status`. Project impact: none. Canary
+  tier: first-issue checkpoint (the launch's own bookkeeping and two read-only commands)
+  (`W-438`).
+
 ### Changed
 
 * The controller's record of a run is `controller-manifest.json` at the top of the issue's run
@@ -44,19 +77,14 @@ its tier. The release procedure is in the README ("Releases").
   change with `recover repin-config`. Project impact: none. Canary tier: first-issue
   checkpoint (the pin check before a batch's first run) (`W-378`).
 
-### Added
-
-* `watch` and `wait` wait for a launch that is still running its checks. `launch` writes
-  `launching.json` (its launch id, process and host) into the state directory while it runs;
-  while that names a live launch whose supervisor has not reported, `watch` says once "launch
-  L-... is running its checks; waiting for its supervisor" and both wait for it. In the §2.10
-  batches a `watch` started with the launch of s210-impl-j-20261010 ended with "This batch has
-  not been launched", since the checks take about 13 minutes there; beside a relaunch the same
-  commands returned the report of the launch before. `launch` now also waits up to 60 s for
-  the project lock when the saved state says the batch is paused, as `recover` already does,
-  so a relaunch right after a pause needs no loop on `status`. Project impact: none. Canary
-  tier: first-issue checkpoint (the launch's own bookkeeping and two read-only commands)
-  (`W-438`).
+* The repair phase's soft output budget is 150,000 tokens (was 50,000) in `registry/phases.json`.
+  Five repairs of the fifteen §2.10 batches (s210-spec-20261006, s210-amend-20261006,
+  s210-impl-h-20261009) finished ready with 66,138 to 134,258 output tokens, each rewriting
+  long specification pages as its findings asked; each stopped its batch at a budget
+  checkpoint that the operator reconciled with `recover budget`. These were all the budget
+  stops of §2.10. Project impact: none; a paused batch adopts the new registry with `recover
+  repin-config`, and a private registry that sets its own repair budget keeps it. Canary tier:
+  canary batch (the engine checkpoints a repair at another figure) (`W-440`).
 
 ### Fixed
 
@@ -80,17 +108,6 @@ its tier. The release procedure is in the README ("Releases").
   guidance is corrected, or whose runner checkout gets a commit, had no watchdog until it was
   re-pinned. The fifteen §2.10 batches did not meet it. Project impact: none. Canary tier:
   first-issue checkpoint (the watchdog command only; the engine is unchanged) (`W-441`).
-
-### Changed
-
-* The repair phase's soft output budget is 150,000 tokens (was 50,000) in `registry/phases.json`.
-  Five repairs of the fifteen §2.10 batches (s210-spec-20261006, s210-amend-20261006,
-  s210-impl-h-20261009) finished ready with 66,138 to 134,258 output tokens, each rewriting
-  long specification pages as its findings asked; each stopped its batch at a budget
-  checkpoint that the operator reconciled with `recover budget`. These were all the budget
-  stops of §2.10. Project impact: none; a paused batch adopts the new registry with `recover
-  repin-config`, and a private registry that sets its own repair budget keeps it. Canary tier:
-  canary batch (the engine checkpoints a repair at another figure) (`W-440`).
 
 ## v2.6.1 — 2026-10-06
 

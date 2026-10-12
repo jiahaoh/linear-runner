@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import subprocess
 
-RELEASE = "2.6.1"
+RELEASE = "2.7.0"
 
 
 def _git(root, *args):
