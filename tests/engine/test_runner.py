@@ -1661,9 +1661,16 @@ class EngineTests(unittest.TestCase):
         for phase, prompt in prompts.items():
             with self.subTest(phase=phase):
                 self.assertIn("The controller keeps its own record of this run in `controller-manifest.json` at the "
-                              "top of the issue's run directory and rewrites it after every phase. Never write or edit "
-                              "that file. A worker keeps records of its own under other names in the run directory, "
-                              "and a reviewer does not count the controller's file as the worker's.", prompt)
+                              "top of the issue's run directory. It writes that file when the batch pauses on the "
+                              "issue and when the issue is done, so during a later phase the file may still name an "
+                              "earlier commit; that is not a defect of the work. Never write or edit that file. A "
+                              "worker keeps records of its own under other names in the run directory, and a reviewer "
+                              "does not count the controller's file as the worker's.", prompt)
+        # 2.7.0 said "rewrites it after every phase", which the engine does not do: the record is
+        # written at a pause and at Done, and a review that follows a repair reads the earlier one.
+        run = Path(self.runner.state["history"][0]["run_dir"])
+        self.assertEqual(len(list(run.glob("controller-manifest*.json"))), 1)
+        self.assertNotIn("after every phase", runner_module.CONTROLLER_RECORD)
         self.assertNotIn("run manifest", (RUNNER_ROOT / "prompts" / "generic.md").read_text())
 
     def test_a_run_directory_from_before_the_rename_is_read_by_its_old_name(self):

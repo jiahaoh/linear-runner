@@ -15,6 +15,29 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.7.1 — 2026-10-11
+
+One sentence of 2.7.0 was wrong, found the same day while its canary was being prepared, before
+any batch ran on 2.7.0 (`W-437`).
+
+**Project impact:** none. A batch that pins `runner_version` names 2.7.1; nothing should pin
+2.7.0.
+
+**Canary tier:** canary batch; every model prompt changed again, and the canary that 2.7.0
+asks for has not run, so one canary on 2.7.1 serves both.
+
+### Fixed
+
+* The sentence about the controller's record in every model prompt, and the README, no longer
+  say that the controller rewrites `controller-manifest.json` after every phase. It does not:
+  the record is written when the batch pauses on the issue, when the issue is deferred and
+  when it is done. The prompt now says so, and that during a later phase the file may still
+  name an earlier commit, which is not a defect of the work. Four reviews of the §2.10 batches
+  (W-400, W-426, W-428, W-429) listed exactly that as a limitation ("the top-level manifest
+  still identifies the earlier commit"); under the sentence of 2.7.0 a reviewer could have
+  read it as a fault. The engine is unchanged. Project impact: none. Canary tier: canary
+  batch (every model prompt) (`W-437`).
+
 ## v2.7.0 — 2026-10-11
 
 The runner housekeeping after the fifteen §2.10 batches (s210-spec-20261006 to

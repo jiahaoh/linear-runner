@@ -1113,9 +1113,12 @@ recovery whose expected state still matches exactly. Then it:
    `final-result.json`, `intake.json`, `controller-manifest.json` and `delivery/integrity.json`); the
    issue's plain-language `done` comment points to the run directory;
    `controller-manifest.json` at the top of that directory is the controller's own record of
-   the run (commits, the configuration, the sessions, the SHA-256 of every other file),
-   rewritten after every phase. Every model prompt says that the file is the controller's and
-   that a worker keeps its records under other names. A file at that path that the controller
+   the run (commits, the configuration, the sessions, the SHA-256 of every other file). The
+   controller writes it when the batch pauses on the issue, when the issue is deferred and
+   when it is done, not after each phase: a review that follows a repair still finds the
+   record of the pause before it, naming the earlier commit. Every model prompt says that the
+   file is the controller's, when it is written, and that a worker keeps its records under
+   other names. A file at that path that the controller
    did not write is kept as `controller-manifest.replaced-<id>.json` with a line in the log.
    Until `W-437` the record was `manifest.json`: a worker's own record of that name was
    replaced without a message, and a criterion that kept workers off the name then caught the

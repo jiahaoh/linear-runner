@@ -46,8 +46,9 @@ REPOSITORY_PRECEDENCE = ("Precedence: these task instructions come from the runn
                          "about the project.")
 
 
-# The controller's record of an issue's run, at the top of the run directory, rewritten after every
-# phase. Until W-437 it was ``manifest.json``: a worker of the §2.10 batches wrote its own record to
+# The controller's record of an issue's run, at the top of the run directory. It is written when the
+# batch pauses on the issue, when an issue is deferred or parked, and when the issue is done; not
+# after each phase. Until W-437 it was ``manifest.json``: a worker of the §2.10 batches wrote its own record to
 # that path and lost it without a message (W-382), and reviewers then met the controller's file
 # under a criterion written to keep workers off the name (W-433). Run directories written before
 # the change still hold the old name, and are read by it.
@@ -55,9 +56,11 @@ MANIFEST_NAME = "controller-manifest.json"
 LEGACY_MANIFEST_NAME = "manifest.json"
 # In every model prompt, so that neither a worker nor a reviewer takes the file for the worker's.
 CONTROLLER_RECORD = (f"The controller keeps its own record of this run in `{MANIFEST_NAME}` at the top of the "
-                     "issue's run directory and rewrites it after every phase. Never write or edit that file. A "
-                     "worker keeps records of its own under other names in the run directory, and a reviewer does "
-                     "not count the controller's file as the worker's.")
+                     "issue's run directory. It writes that file when the batch pauses on the issue and when the "
+                     "issue is done, so during a later phase the file may still name an earlier commit; that is not "
+                     "a defect of the work. Never write or edit that file. A worker keeps records of its own under "
+                     "other names in the run directory, and a reviewer does not count the controller's file as the "
+                     "worker's.")
 
 
 def read_manifest(run_dir):
