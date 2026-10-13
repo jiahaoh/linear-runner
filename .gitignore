@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .worktrees/
+# Type declarations Claude Code lays beside a mod it loads from this checkout.
+mods/*/.claude-plugin/types/

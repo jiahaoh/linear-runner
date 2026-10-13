@@ -1,0 +1,28 @@
+{
+  "name": "runner-board",
+  "version": "0.3.0",
+  "description": "A pane that shows linear-runner batches: each batch's issues at their stage, with time and tokens, and how the batches follow from one another",
+  "author": {
+    "name": "linear-runner"
+  },
+  "userConfig": {
+    "python": {
+      "type": "string",
+      "title": "Python",
+      "description": "The Python (3.10 or newer) that runs the runner: a program on the PATH, or a path (~/ is your home).",
+      "default": "python3"
+    },
+    "runner": {
+      "type": "string",
+      "title": "Runner entry point",
+      "description": "runner.py of a linear-runner checkout (~/ is your home). A relative path is taken from this plugin's folder: the default is the checkout this plugin is part of.",
+      "default": "../../runner.py"
+    },
+    "home": {
+      "type": "string",
+      "title": "Runner home",
+      "description": "The runner's private configuration home, whose batches/ folder holds the batch files (~/ is your home). Left at its default, $LINEAR_RUNNER_HOME is used when it is set, as the runner does.",
+      "default": "~/.config/linear-runner"
+    }
+  }
+}

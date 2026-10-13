@@ -1,0 +1,16 @@
+{
+  "name": "linear-runner",
+  "owner": {
+    "name": "linear-runner"
+  },
+  "metadata": {
+    "description": "The mods that ship with linear-runner"
+  },
+  "plugins": [
+    {
+      "name": "runner-board",
+      "source": "./mods/runner-board",
+      "description": "A pane that shows linear-runner batches, their issues and how the batches follow from one another"
+    }
+  ]
+}

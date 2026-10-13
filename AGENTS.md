@@ -28,4 +28,5 @@ workers continue their dispatched issue.
 - `linear_runner/supervision/`: launch and preflight, supervisor, recoveries, watchdog, wait, decision rules.
 - `linear_runner/reporting/`: offline records, trajectory, measurement, terminal report, the board record (`status --board`), template samples.
 - `registry/`, `schema/`, `templates/`, `prompts/`, `examples/`, `testdata/`: data at the checkout root; code finds them through `linear_runner.config.RUNNER_ROOT`. Editing `registry/` or guidance changes configuration fingerprints.
+- `mods/runner-board/`: the progress board, a Claude Code mod (README "Progress board"); the root `.claude-plugin/marketplace.json` lists it. It reads the runner only through `status --board`, and no worker session loads it. Its tests are not part of the unit suite: run `claude plugin validate mods/runner-board` and `claude plugin test mods/runner-board` after changing it or the board record. `hooks/status-board.fixture.ts` is written by `tests/reporting/test_board.py`, never by hand.
 - `tests/`: mirrors the package; shared fixtures (fake Linear, temporary private home, `CHECKOUT`) in `tests/fixtures.py`.

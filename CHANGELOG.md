@@ -46,6 +46,27 @@ its tier. The release procedure is in the README ("Releases").
   `status --json` print what they printed before. README "Running a batch" lists the fields
   (`W-442`).
 
+* The progress board ships with the runner as a Claude Code mod in `mods/runner-board/`, with
+  its plugin manifest and its tests, and the checkout is a plugin marketplace that lists it
+  (`.claude-plugin/marketplace.json`). The board was built on 2026-10-10 and 2026-10-11 in the
+  operator's own plugin folder: its source was in no repository, it named one host's Python
+  and runner paths in its code, and it read `status --json`, `report` and a lineage file of its
+  own, so a runner release could break it without a test noticing. It now reads only
+  `status --board` and draws the batch file's `purpose`, `follows`, `reason` and `from_issues`;
+  the cache folder is gone, and the lineage file is still read for a batch file that has none
+  of the keys. The Python executable, the runner's entry point and the private home are
+  options of the plugin whose defaults name no host (`python3`, the checkout the plugin is in,
+  `~/.config/linear-runner`). One test of the mod draws the `status --board` record of the
+  runner's own test fixture, which `tests/reporting/test_board.py` keeps current as
+  `testdata/board/status-board.json` and as a module the mod can import. Three lines of an
+  opened issue are gone with the full state: the first paragraph of its description, the
+  issues it waits for and the text of its last block; a done issue now shows its result
+  summary. Worker and reviewer sessions are unchanged and load no plugin. README "Progress
+  board" says what the board shows, how to install it from the checkout, that it needs Claude
+  Code 2.1.295 or later, and how its tests run (`claude plugin test`; the unit suite does not
+  need Claude Code). Project impact: none. Canary tier: first-issue checkpoint (no engine,
+  prompt, backend or command changes; the mod runs in the operator's own session) (`W-444`).
+
 ### Changed
 
 * The entry the engine appends to `history` when an issue is accepted keeps the summary of the

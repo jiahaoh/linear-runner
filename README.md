@@ -61,6 +61,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/reporting/board.py` | The compact record of a batch for a progress board (`runner.py status --board`): model-free and read-only |
 | `linear_runner/reporting/report.py` | Standalone terminal HTML/JSON report |
 | `linear_runner/reporting/render_samples.py` | Builds one sample comment per template for `docs/template-samples.md` |
+| `mods/runner-board/` | The progress board: a Claude Code mod that draws batches, their issues and how batches follow (see "Progress board"); `.claude-plugin/marketplace.json` at the root lists it for `claude plugin install` |
 | `templates/` | Human-review Linear comment templates and the worker/reviewer draft templates |
 | `registry/` | Public policy defaults; each file's `notes` explain its values |
 | `schema/` | JSON schemas for every registry file and configuration layer |
@@ -676,6 +677,92 @@ reused until the backend identity above changes. A failure stops `launch` before
 claimed, naming the backend and quoting its own error; the prompt, schema, events and stderr
 are kept in `<state dir>/preflight/<launch id>/backend_start/<backend>/`. The token never
 appears in them.
+
+## Progress board
+
+`mods/runner-board/` is a Claude Code mod: a plugin whose code draws a pane in the Claude
+desktop app and in the terminal. It shows the batches you put on it and only reads. For each
+batch it runs `runner.py status --board` (see "Running a batch") and draws that record; it
+runs no other runner command, keeps no cache and writes no file. Until `W-444` it lived in the
+operator's own plugin folder, named that host's paths in its code and read `status --json`,
+`report` and a file of its own.
+
+* **Board**: one card for each batch, with the `purpose` its batch file states, its state, how
+  many issues are done, and whether a STOP marker or a recovery is pending. Under it the
+  issues in queue order, each with its stage as a status icon in Linear's manner (a ring
+  queued, a pie that fills from implement to review, a check done, a pause or an alert where
+  the batch stopped on it), its title, and its time and tokens. An issue opens to its link in
+  Linear, the result summary, when it was accepted and at which commit, its time, its input,
+  cached and output tokens with the report's bounds ("≥" at least, "≤" at most), how often the
+  review and the worker blocked it, and the files made for the owner.
+* **Lineage**: the batches as a graph, each under the batch its `follows` names. With the
+  pointer on a batch the graph shows what the batch is for and its issues; on the line between
+  two it shows the `reason` and `from_issues`. The terminal shows the same as a list.
+
+Purpose and predecessor are the batch file's `purpose`, `follows`, `reason` and `from_issues`
+(see "Configuration layers"). A batch file that holds none of them is looked up in the files
+of `<home>/lineage/`, which the board read before batch files had the keys
+(`{"status": "draft", "batches": {"<batch id>": {"purpose": ..., "follows": ..., "reason":
+..., "from_issues": [...]}}}`; with `"status": "draft"` the Lineage view says that the text is
+not reviewed). Once a batch file has a key of its own, its entry in such a file is not read.
+
+`/runner-board add <batch id>` puts a batch on the board (a trailing `*` adds every batch
+file whose name starts so), `remove <batch id>` and `clear` take batches off, and a batch that
+the session launches with `runner.py launch` joins by itself. Batches under way are read
+again every ten seconds, the others when you press Refresh. The board is kept across sessions.
+
+**Installing it from the checkout.** The checkout is a plugin marketplace with this one
+plugin (`.claude-plugin/marketplace.json`):
+
+```bash
+claude plugin marketplace add /path/to/linear-runner
+claude plugin install runner-board@linear-runner
+```
+
+A marketplace that is a folder is read in place: the plugin runs from `mods/runner-board` of
+that checkout, and after `git pull` a `/reload-plugins` loads the new code. Claude Code lays
+its type declarations beside a mod it loads from a folder
+(`mods/runner-board/.claude-plugin/types/`, ignored by Git). Run `git status` in the checkout
+after the first load: a batch that pins `runner_version` needs it clean. To try the board for
+one session without installing it, start that session with `claude --plugin-dir
+/path/to/linear-runner/mods/runner-board`. Installed from a copy instead (`/plugin install
+runner-board --marketplace <owner>/<repo>`), the plugin has no checkout around it, and the
+`runner` option below must name one.
+
+The three paths are options of the plugin; set them on the install screen, in `/config`, or
+with `claude plugin configure runner-board@linear-runner`. A value that starts with `~/` is
+under your home.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `python` | `python3` | The Python (3.10 or newer) that runs the runner: a program on the `PATH`, or a path. Where the session's `python3` is older, the card shows the runner's own message, and this option names a newer one |
+| `runner` | `../../runner.py` | The runner's entry point. A relative path is taken from the plugin's folder, so the default is the checkout the plugin is part of |
+| `home` | `~/.config/linear-runner` | The private home whose `batches/` holds the batch files. Left at the default, `$LINEAR_RUNNER_HOME` is used when it is set, as the runner does |
+
+It needs Claude Code 2.1.295 or later (checked with 2.1.295; 2.1.293 and earlier refuse a
+button that holds more than one text, so they do not draw the board) and a runner that has
+`status --board`.
+
+Worker and reviewer sessions do not load the board, nor any other installed plugin: the
+runner starts every Claude session with `--setting-sources ''` and a settings file of its own
+(see "Model backends and pools"), and `tests/backends/test_claude.py` holds that argument
+list.
+
+The mod has its own tests, which Claude Code runs; the runner's unit suite does not need
+Claude Code:
+
+```bash
+claude plugin validate mods/runner-board     # the manifest, the options and what the module hooks and calls
+claude plugin test mods/runner-board         # hooks/register.test.tsx, on the terminal and the desktop surface
+```
+
+One of them draws the record of the runner's own test fixture and checks the stages, titles,
+summaries, time and tokens against it. A mod's test can import only code files of the mod's
+folder, so that record is kept twice, as `testdata/board/status-board.json` and as the module
+`mods/runner-board/hooks/status-board.fixture.ts`; `tests/reporting/test_board.py` writes both
+and fails when either differs from what `status --board` prints (see
+`testdata/board/README.md`). The tests cover what the mod asks of the runner and the tree it
+returns for each surface, not the painting of the pane itself.
 
 ## Lifecycle
 

@@ -3,8 +3,10 @@
 The fixture is a batch of the supervisor harness, run twice: DEV-1 is accepted after a blocked
 review and a repair of its findings, DEV-2 is active in a repair whose session was cut off (a
 start and no finish), and DEV-3 is queued. ``testdata/board/status-board.json`` is the record of
-that batch with its times, commits and identifiers replaced by fixed ones; the board mod reads
-the same file in its own tests.
+that batch with its times, commits and identifiers replaced by fixed ones. The board mod's tests
+(``mods/runner-board``, run by ``claude plugin test``) read the same record: a mod's test can import
+only code files of the mod's own folder, so the record is also kept there as a module, and the test
+below holds both files to it.
 """
 import contextlib
 import io
@@ -23,7 +25,13 @@ from tests.fixtures import CHECKOUT
 from tests.linear.test_run_summary import Recorded, report_json
 
 EXAMPLE = CHECKOUT / "testdata" / "board" / "status-board.json"
-UPDATE = "LINEAR_RUNNER_UPDATE_BOARD_EXAMPLE"  # set to rewrite EXAMPLE from the fixture
+# The same record where the board mod's tests can import it (W-444): a comment, then the JSON as a module.
+MOD_EXAMPLE = CHECKOUT / "mods" / "runner-board" / "hooks" / "status-board.fixture.ts"
+MOD_HEADER = ("// What `runner.py status --board` prints for the runner's own test fixture: the record of\n"
+              "// testdata/board/status-board.json, as a module, because a mod's tests can import only code files of the\n"
+              "// mod's own folder. tests/reporting/test_board.py writes both files and fails when either differs from\n"
+              "// the record, so do not edit this one by hand (see testdata/board/README.md).\n")
+UPDATE = "LINEAR_RUNNER_UPDATE_BOARD_EXAMPLE"  # set to rewrite both files from the fixture
 ACCEPTED = "The table is read and written losslessly; the notes cover both formats."
 LINEAGE = {"purpose": "Repair what the review of the first batch found.", "follows": "fixture-first",
            "reason": "The review found two defects, and the owner asked for both to be repaired.",
@@ -220,11 +228,17 @@ class BoardTests(Recorded):
 
     def test_the_example_the_board_mod_reads_is_this_record(self):
         record = stable(self.board()[0])
+        text = json.dumps(record, indent=2) + "\n"
         if os.environ.get(UPDATE):
             EXAMPLE.parent.mkdir(parents=True, exist_ok=True)
-            EXAMPLE.write_text(json.dumps(record, indent=2) + "\n")
-        self.assertEqual(json.loads(EXAMPLE.read_text()), record,
-                         f"rewrite it with {UPDATE}=1 python3 -m unittest tests.reporting.test_board")
+            EXAMPLE.write_text(text)
+            MOD_EXAMPLE.write_text(MOD_HEADER + "export default " + text)
+        hint = f"rewrite it with {UPDATE}=1 python3 -m unittest tests.reporting.test_board"
+        self.assertEqual(json.loads(EXAMPLE.read_text()), record, hint)
+        # The module the mod's tests import is that record and nothing else.
+        module = MOD_EXAMPLE.read_text()
+        self.assertTrue(module.startswith(MOD_HEADER + "export default {"), hint)
+        self.assertEqual(json.loads(module[len(MOD_HEADER + "export default "):]), record, hint)
 
 
 class UnclaimedBatchTests(Recorded):
