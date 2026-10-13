@@ -297,6 +297,61 @@ class LayeredConfigTests(unittest.TestCase):
             cli.main(["validate-config", "--batch", str(path), "--home", str(home)])
         self.assertEqual(json.loads(out.getvalue())["variable_overrides"], {"env": "/opt/env-b"})
 
+    def validate(self, path, home):
+        """Offline ``validate-config``: (report or None, exit status, what it wrote to stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                cli.main(["validate-config", "--batch", str(path), "--home", str(home)])
+        except SystemExit as stop:
+            return None, stop.code, err.getvalue()
+        return json.loads(out.getvalue()), 0, err.getvalue()
+
+    def test_a_batch_file_states_its_purpose_and_the_batch_it_follows(self):
+        # W-443: the reason for each of the fifteen §2.10 batches existed only as prose in its guidance.
+        example = ROOT / "examples/home/batches/example.json"
+        held = json.loads(example.read_text())
+        self.assertEqual([key in held for key in config.LINEAGE_KEYS], [True] * 4)
+        report, status, _ = self.validate(example, ROOT / "examples/home")
+        self.assertEqual((status, report["lineage"], report["warnings"]),
+                         (0, {key: held[key] for key in config.LINEAGE_KEYS}, []))
+        home = Path(shutil.copytree(ROOT / "examples/home", self.root / "home"))
+        for follows, expected in ((7, "batch.follows: expected string or null"), ("", "batch.follows: invalid value"),
+                                  ("a b", "batch.follows: invalid value")):
+            write(home / "batches/example.json", dict(held, follows=follows))
+            report, status, error = self.validate(home / "batches/example.json", home)
+            with self.subTest(follows=follows):
+                self.assertEqual((report, status), (None, 2))
+                self.assertIn(expected, error)
+        for key, value, expected in (("purpose", "", "batch.purpose: must not be empty"),
+                                     ("reason", ["a"], "batch.reason: expected string"),
+                                     ("from_issues", "TEAM-1", "batch.from_issues: expected array"),
+                                     ("from_issues", ["TEAM 1"], r"batch.from_issues\[0\]: invalid value")):
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ConfigError, expected):
+                self.load(batch={key: value})
+        # A file without the keys loads as before, and holds none of them.
+        self.assertEqual(self.load()["lineage"], {})
+        self.assertEqual(self.load(batch={"follows": None})["lineage"], {"follows": None})
+
+    def test_validate_config_reports_a_predecessor_that_is_no_batch_file_without_failing(self):
+        lineage = {"purpose": "Repair what the review of the first batch found.", "follows": "fixture-first",
+                   "reason": "The review found two defects.", "from_issues": ["DEV-7", "DEV-8"]}
+        home, path = make_home(self.root, self.repo, batch=lineage)
+        report, status, _ = self.validate(path, home)
+        self.assertEqual((status, report["valid"], report["lineage"]), (0, True, lineage))
+        [warning] = report["warnings"]
+        self.assertNotIn("\n", warning)
+        self.assertTrue(warning.startswith(f"batch fixture.follows: 'fixture-first' names no batch file in "
+                                           f"{home / 'batches'}"), warning)
+        # Found by its file name, or by the id of a file with another name (as the example batch has).
+        write(home / "batches" / "older.json", dict(json.loads(path.read_text()), id="fixture-first"))
+        self.assertEqual(self.validate(path, home)[0]["warnings"], [])
+        (home / "batches" / "older.json").rename(home / "batches" / "fixture-first.json")
+        write(home / "batches" / "broken.json", "{")  # another file that does not parse is not this batch's error
+        self.assertEqual(self.validate(path, home)[0]["warnings"], [])
+        write(path, dict(json.loads(path.read_text()), follows="fixture"))
+        self.assertEqual(self.validate(path, home)[0]["warnings"], ["batch fixture.follows: 'fixture' is this batch itself"])
+
     def test_checks_gates_and_paths_are_validated(self):
         check = {"name": "x", "kind": "code", "tier": "default", "inputs": ["*.py"], "cwd": ".", "command": ["true"]}
         cases = [({"project": {"checks": [dict(check, cwd="..")]}}, "inside the worktree"),
@@ -371,6 +426,10 @@ class LayeredConfigTests(unittest.TestCase):
         self.assertEqual(baseline, config_fingerprint(dict(resolved, _sources={}, _layers={})))
         # Launch settings never block resuming: they are recorded per launch instead.
         self.assertEqual(baseline, config_fingerprint(dict(resolved, launcher=dict(resolved["launcher"], cpu_list="3"))))
+        # Nor does the batch's record for people (W-443): the engine never reads it.
+        self.assertEqual(baseline, config_fingerprint(dict(resolved, lineage={"reason": "One corrected sentence."})))
+        described = pin_resolution(self.load(batch={"purpose": "A fixture.", "follows": None}), FakeLinear())[0]
+        self.assertEqual(baseline, config_fingerprint(described))
 
 
 class RunnerIdentityTests(unittest.TestCase):

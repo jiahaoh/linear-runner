@@ -1,6 +1,10 @@
 {
   "interface_version": 1,
   "id": "example-batch",
+  "purpose": "Implement the first issue of the example project.",
+  "follows": null,
+  "reason": "The first batch of this line of work. A later batch names the batch it stems from in follows and says here who decided what, and from which review or finding.",
+  "from_issues": [],
   "project": "example",
   "issues": [
     "TEAM-123"

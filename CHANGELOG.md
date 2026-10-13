@@ -15,6 +15,23 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Added
+
+* A batch file may state its purpose and the batch it follows, in four optional keys:
+  `purpose` (one sentence), `follows` (the `id` of the batch it stems from, or `null` for the
+  first of a line of work), `reason` (why it follows) and `from_issues` (the issues whose
+  result led to it). §2.10 ran as fifteen batches in six days, and the reason for each existed
+  only as prose in its guidance file; a session copied them by hand into a file the runner
+  does not know, and for four batches had to infer the predecessor. The keys are a record for
+  people that the operator writes with the batch: the engine never reads them, and they are
+  outside the configuration fingerprint, so correcting a sentence on a pinned batch needs no
+  `recover repin-config`. `validate-config` prints them under `lineage` and `status --json`
+  under `lineage` as the batch file holds them now. A `follows` that names no batch file of
+  the home is one line under `warnings` of `validate-config`, which still passes. Existing
+  batch files are not migrated. Project impact: none; the keys are optional, and a batch file
+  without them loads as before with the same fingerprint. Canary tier: first-issue checkpoint
+  (the change touches only configuration loading, `validate-config` and `status`) (`W-443`).
+
 ## v2.7.2 — 2026-10-13
 
 One number of the registry changes, so that an issue that processes a whole sample can run as

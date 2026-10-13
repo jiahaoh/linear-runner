@@ -13,7 +13,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from linear_runner.config import RUNNER_ROOT, config_fingerprint, load_config, load_registry, pin_resolution
+from linear_runner.config import (RUNNER_ROOT, config_fingerprint, load_config, load_registry, pin_resolution,
+                                  write_resolved)
 from tests.fixtures import FakeLinear, make_home
 from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
@@ -1781,6 +1782,48 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse((state / "state.json").exists())
         third, again = dry_run()  # nothing changed: the pin stays, with no word
         self.assertEqual((again, "has not run yet" in third), (adopted, False))
+
+    def test_a_pinned_batch_keeps_its_pin_when_its_reason_is_edited_and_status_shows_the_edit(self):
+        # W-443: the four keys are a record for people, so correcting one needs no `recover repin-config`.
+        held = json.loads(self.batch.read_text())
+        lineage = {"purpose": "Repair the two defects.", "follows": "fixture-first",
+                   "reason": "The review of the first batch found them.", "from_issues": ["DEV-7"]}
+        self.batch.write_text(json.dumps(dict(held, **lineage)))
+        linear = FakeLinear()
+        config, _ = pin_resolution(load_config(self.batch, self.home), linear)
+        write_resolved(config)
+        runner = Runner(config, linear); runner.verify_config(); runner.save()  # the batch has state: the pin binds
+        pinned_path = self.root / "state" / "fixture" / "resolved-config.json"
+        pinned = pinned_path.read_bytes()
+
+        def dry_run():
+            printed, status = io.StringIO(), 0
+            with patch.object(cli_module, "LinearClient", return_value=linear), \
+                    contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+                try:
+                    main(["dry-run", *self.args])
+                except SystemExit as stop:
+                    status = stop.code
+            return printed.getvalue(), status
+        edited = dict(lineage, reason="The review of the first batch found them, and the owner asked for both.")
+        self.batch.write_text(json.dumps(dict(held, **edited)))
+        self.assertEqual(config_fingerprint(pin_resolution(load_config(self.batch, self.home), linear)[0]),
+                         config_fingerprint(config))
+        printed, status = dry_run()
+        self.assertEqual(status, 0)
+        self.assertIn("Dry run: selected=DEV-1; ready", printed)
+        self.assertNotIn("repin-config", printed)
+        self.assertEqual(pinned_path.read_bytes(), pinned)  # no new pin either
+        out = io.StringIO()
+        with patch.object(LinearClient, "call", side_effect=AssertionError("no Linear access")), \
+                contextlib.redirect_stdout(out):
+            main(["status", *self.args, "--json"])
+        self.assertEqual(json.loads(out.getvalue())["lineage"], edited)
+        # A key the engine does read is still refused.
+        self.batch.write_text(json.dumps(dict(held, **edited, supervision={"on_block": "continue_independent"})))
+        refused, status = dry_run()
+        self.assertEqual(status, 2)
+        self.assertIn("recover repin-config", refused)
 
     def test_state_changed_config_is_refused_without_rewrite(self):
         linear = FakeLinear()

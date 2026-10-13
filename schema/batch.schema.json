@@ -47,6 +47,30 @@
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
+    "purpose": {
+      "description": "One sentence for people: what this batch is for. With follows, reason and from_issues it is a record the operator writes with the batch; the engine never reads the four keys and they are outside the configuration fingerprint.",
+      "$ref": "#/$defs/text"
+    },
+    "follows": {
+      "description": "The id of the batch this one stems from, or null for the first batch of a line of work. validate-config reports an id that names no batch file of the home, without failing.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "reason": {
+      "description": "Why this batch follows that one: who decided what, and from which review or finding.",
+      "$ref": "#/$defs/text"
+    },
+    "from_issues": {
+      "description": "The issues whose result led to this batch; they need not be in its allowlist.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
     "variables": {
       "description": "Values for site variables (site.json variables) that apply to this batch only, for example another Python environment. Each name must be a site variable; executables and the built-ins (home, runner_root, batch, worktree) cannot be overridden. Part of the fingerprinted batch configuration.",
       "type": "object",

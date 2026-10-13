@@ -108,7 +108,7 @@ model does not allow) are errors.
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases") |
+| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -161,6 +161,19 @@ configuration (`recover repin-config` adopts a change), and `validate-config` li
 only defined names are replaced and any other `${...}` text stays literal. `{run_dir}` (no
 dollar sign) in a check argument is still replaced by that check's validation directory at
 run time. Commands are argv arrays; no shell is involved.
+
+A batch file may say what it is for and where it comes from, in four optional keys that the
+operator writes with the batch: `purpose` (one sentence), `follows` (the `id` of the batch this
+one stems from, or `null` for the first batch of a line of work), `reason` (why it follows: who
+decided what, and from which review or finding) and `from_issues` (the issues whose result led
+to it; they need not be in the allowlist). They are a record for people, so that the reason for
+a batch is not only prose in its guidance, forgotten within days (`W-443`). The engine never
+reads them: they change no order, gate or prompt, and they are outside the configuration
+fingerprint, so correcting a sentence on a pinned batch needs no `recover repin-config`.
+`validate-config` prints them under `lineage`, and `status --json` under `lineage` as the batch
+file holds them now; a key the file lacks is absent there. When `follows` names no batch file
+of the home (neither `<home>/batches/<id>.json` nor a file there with that `id`),
+`validate-config` says so in one line under `warnings` and still passes.
 
 Credentials are never stored: the workspace names an environment variable or a credential
 cache path, and `linear_runner/linear/client.py` re-reads it on each request. Do not put secrets in
@@ -224,7 +237,8 @@ checkout are not distinguished; run batches from a clean commit (`recover repin-
 adopts a new commit for a paused or stopped batch). The site `launcher` block
 and the site and workspace `attention` blocks are the exceptions: they only choose how the
 supervisor process starts and how a person is told about progress and stops, so they are
-left out of the fingerprint and changing them never blocks resuming. Each launch record
+left out of the fingerprint and changing them never blocks resuming. The batch's `purpose`,
+`follows`, `reason` and `from_issues` are left out as well: they are a record for people. Each launch record
 (`<state dir>/launches/<launch id>.json`) stores the launcher settings actually used, and
 `status` shows those of the latest launch.
 

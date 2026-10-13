@@ -33,8 +33,12 @@ INTERFACE_PATH = RUNNER_ROOT / "registry" / "interface.json"
 MIGRATIONS_PATH = RUNNER_ROOT / "interface-migrations.json"
 # Host launch settings (how the supervisor process starts) and attention settings (how a
 # person is told about progress and stops) do not change what the batch does, so changing
-# them never blocks resuming. Each launch record stores the launcher values used.
-UNFINGERPRINTED = ("launcher", "attention")
+# them never blocks resuming. Each launch record stores the launcher values used. ``lineage``
+# is what a batch file says about itself for people (W-443): its purpose, the batch it follows,
+# why, and the issues whose result led to it. The engine never reads those keys, so correcting
+# a sentence of them on a pinned batch needs no re-pin.
+UNFINGERPRINTED = ("launcher", "attention", "lineage")
+LINEAGE_KEYS = ("purpose", "follows", "reason", "from_issues")
 _VARIABLE = re.compile(r"\$\{([^}]*)\}")
 # Defaults for the supervisor (batch layer) and launcher (site layer).
 # Per-batch opt-in context-cost controls (thresholds and rules live in the registry).
@@ -102,6 +106,30 @@ def batch_variables(values, site, where):
                               f"under variables ({sorted(site.get('variables', {}))})")
         resolved[name] = os.path.expanduser(value)
     return resolved
+
+
+def lineage_warnings(config):
+    """Lines for ``validate-config`` about the batch's ``follows``: a predecessor that is no
+    batch file of the home (by file name or by ``id``), or the batch itself. Never an error:
+    the key is a record for people, and the batch it names may have been removed."""
+    follows = config["lineage"].get("follows")
+    if follows is None:
+        return []
+    label = f"batch {config['batch_id']}.follows"
+    if follows == config["batch_id"]:
+        return [f"{label}: {follows!r} is this batch itself"]
+    directory = Path(config["variables"]["home"]) / "batches"
+    known = set()
+    for path in sorted(directory.glob("*.json")):
+        known.add(path.stem)
+        try:
+            known.add(read_json(path).get("id"))
+        except (OSError, ValueError, AttributeError):
+            continue
+    if follows in known:
+        return []
+    return [f"{label}: {follows!r} names no batch file in {directory} (nothing depends on it; correct the id or "
+            "keep it as the record of a batch whose file is gone)"]
 
 
 def variable_overrides(config):
@@ -558,6 +586,8 @@ def load_config(batch_path, home=None):
     if "runner_version" in batch:
         # Only a pinned release enters the configuration, so unpinned fingerprints are unchanged.
         put("runner_version", batch["runner_version"], batch_label)
+    # The batch's record for people, as its file holds it: a key the file lacks stays absent.
+    put("lineage", {key: copy.deepcopy(batch[key]) for key in LINEAGE_KEYS if key in batch}, batch_label)
     for gate in config["human_gates"]:
         if gate["issue_id"] in config["issues"]:
             raise ConfigError(f"{batch_label}: human gate {gate['issue_id']} cannot also be an implementation issue")

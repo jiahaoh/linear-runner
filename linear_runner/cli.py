@@ -12,8 +12,8 @@ import signal
 import subprocess
 import sys
 
-from linear_runner.config import (PHASES, ConfigError, load_config, pin_resolution, pinned_config, read_json,
-                                  variable_overrides, write_json, write_resolved)
+from linear_runner.config import (PHASES, ConfigError, lineage_warnings, load_config, pin_resolution, pinned_config,
+                                  read_json, variable_overrides, write_json, write_resolved)
 from linear_runner.engine.runner import LockBusy, Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
 
@@ -35,6 +35,7 @@ def summarize(config):
             "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
             "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
             "variable_overrides": variable_overrides(config),
+            "lineage": config["lineage"], "warnings": lineage_warnings(config),
             "checks": [dict({"name": c["name"], "tier": c["tier"],
                              "timeout_seconds": c.get("timeout_seconds",
                                                       config["policy"]["phases"]["check_timeout_seconds"])},
@@ -212,7 +213,8 @@ def status_report(config):
     timer = ((launch or {}).get("watchdog_timer") or {}).get("timer")
     watchdog_status = {"timer": timer, "stopped": (watch.get("timers") or {}).get(timer) if timer else None,
                        "alerts": sorted(watch.get("alerts", {})), "needs_input": sorted(watch.get("needs_input") or {})}
-    return dict(state, supervisor=supervisor, launch=launch, watchdog=watchdog_status,
+    # ``lineage``: the purpose and predecessor the batch file holds now (W-443), not a pinned copy.
+    return dict(state, supervisor=supervisor, launch=launch, watchdog=watchdog_status, lineage=config["lineage"],
                 stop_marker=(root / "STOP").read_text().strip() if (root / "STOP").exists() else None)
 
 
