@@ -31,6 +31,33 @@ its tier. The release procedure is in the README ("Releases").
   batch files are not migrated. Project impact: none; the keys are optional, and a batch file
   without them loads as before with the same fingerprint. Canary tier: first-issue checkpoint
   (the change touches only configuration loading, `validate-config` and `status`) (`W-443`).
+* `status --board` prints one compact JSON record of a batch for a progress board, and writes
+  nothing. The board built on 2026-10-10 and 2026-10-11 read `status --json`, about 70 KB for
+  one batch with the full text of every issue and every event, every ten seconds, and had
+  `report` write into a cache folder of its own for time and tokens. The record holds the
+  batch (identifier, phase, the supervisor's status and outcome, the time of the first and of
+  the last launch, the STOP marker, a pending recovery, the error, and the purpose and
+  predecessor of the batch file) and, for each issue in queue order, its identifier, title,
+  link, stage, repairs, how often the worker and the review blocked it, the result summary,
+  the time of acceptance and its commit, the names of the files for the owner, and the elapsed
+  time and token totals with their bounds. Time and tokens are the trajectory report's own
+  counting, so `report --runs` on the same run directories gives the same figures, and an
+  invocation that has not finished is left out of both. It makes no Linear call. `status` and
+  `status --json` print what they printed before. README "Running a batch" lists the fields
+  (`W-442`).
+
+### Changed
+
+* The entry the engine appends to `history` when an issue is accepted keeps the summary of the
+  accepted result (`summary`). Until now the state held a result summary for the active issue
+  only, so nothing said what a finished issue did. A state written before this change has no
+  such key, and `status --board` then gives `null` for it; nothing else reads the key.
+  `dry-run` and the launch preflight write `titles.json` into the state directory, with the
+  title and link of every allowlisted issue: the state holds an issue only once the batch has
+  claimed it, so a queued issue had no title. `dry-run` reads each allowlisted issue once more
+  for it and still writes no `state.json`. Project impact: none. Canary tier: canary batch
+  (the engine writes one more key into `history`, and the launch preflight one more file)
+  (`W-442`).
 
 ## v2.7.2 — 2026-10-13
 

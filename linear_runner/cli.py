@@ -75,8 +75,13 @@ def build_parser():
     status = commands.add_parser("status", parents=[common],
                                  help="a short summary of the batch: phase, active issue and step, repairs, done and "
                                       "remaining issues, supervisor, STOP marker, pending recovery")
-    status.add_argument("--json", action="store_true",
-                        help="the full saved state, supervisor status, launch and watchdog record (as before 2.6.0)")
+    views = status.add_mutually_exclusive_group()
+    views.add_argument("--json", action="store_true",
+                       help="the full saved state, supervisor status, launch and watchdog record (as before 2.6.0)")
+    views.add_argument("--board", action="store_true",
+                       help="one compact JSON record for a progress board: the batch and, per issue in queue order, "
+                            "title, stage, repairs, blocks, result summary, acceptance, time and tokens as `report` "
+                            "counts them; no issue text, no events; writes nothing")
     watch_progress = commands.add_parser("watch", parents=[common],
                                          help="print one line per change of the active issue, phase, step, repairs or "
                                               "supervisor status; exit as `wait` does when the batch stops")
@@ -446,6 +451,10 @@ def main(argv=None):
     root = Path(config["state_dir"])
     if args.command == "status":
         report = status_report(config)
+        if args.board:
+            from linear_runner.reporting import board
+            print(json.dumps(board.record(config, report)))
+            return
         print(json.dumps(report, indent=2) if args.json else "\n".join(status_summary(config, report)))
         return
     if args.command == "watch":
@@ -531,6 +540,9 @@ def main(argv=None):
         try:
             runner.execute(dry_run=args.command == "dry-run", limit=args.max_issues if args.command == "run" else 1,
                            resume=getattr(args, "resume", False))
+            if args.command == "dry-run":
+                # A batch that is only dry-run has no state: its titles are kept for `status --board` (W-442).
+                runner.record_titles()
         except (Exception, KeyboardInterrupt) as error:
             runner.stop_child()
             runner.log(f"Paused: {error}")

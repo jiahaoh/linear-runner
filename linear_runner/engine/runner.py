@@ -54,6 +54,10 @@ REPOSITORY_PRECEDENCE = ("Precedence: these task instructions come from the runn
 # the change still hold the old name, and are read by it.
 MANIFEST_NAME = "controller-manifest.json"
 LEGACY_MANIFEST_NAME = "manifest.json"
+# The title and link of every allowlisted issue, in the state directory, for `status --board`
+# (W-442): the state holds an issue only once the batch has claimed it. Written by `dry-run`
+# and by the launch preflight, which read every issue anyway.
+TITLES_NAME = "titles.json"
 # In every model prompt, so that neither a worker nor a reviewer takes the file for the worker's.
 CONTROLLER_RECORD = (f"The controller keeps its own record of this run in `{MANIFEST_NAME}` at the top of the "
                      "issue's run directory. It writes that file when the batch pauses on the issue and when the "
@@ -1049,6 +1053,15 @@ class Runner:
         for identifier in self.config["issues"]:
             self.verify_issue(self.linear.issue(identifier), completed=True)
         return None, "complete"
+
+    def record_titles(self, lives=None):
+        """Write ``titles.json``: the title and link of each allowlisted issue. ``lives`` are the
+        issues in allowlist order when the caller has just read them; otherwise they are read here."""
+        if lives is None:
+            lives = [self.linear.issue(identifier) for identifier in self.config["issues"]]
+        write_json(self.root / TITLES_NAME, {"at": now(), "issues": {
+            identifier: {"title": live.get("title"), "url": live.get("url")}
+            for identifier, live in zip(self.config["issues"], lives)}})
 
     # --- Human-review Linear events ------------------------------------------------
     # Every lifecycle event is a NEW comment on the owning issue (updates.Ledger). The
@@ -2186,11 +2199,14 @@ class Runner:
             if not any(h["issue_id"] == issue for h in self.state["history"]):
                 # ``validation_dir`` names the validation the issue was accepted on. Directory names
                 # (``validation-<UTC second>-<random>``) do not order validations within a second.
+                # ``summary`` is what the accepted result says was done: once the issue has left
+                # ``active`` the state held no word of it, and `status --board` shows it (W-442).
                 self.state["history"].append({"issue_id": issue, "starting_commit": active["starting_commit"],
                                               "commit": active["commit"], "run_dir": active["run_dir"],
                                               "validation_dir": active.get("validation_dir"), "completed_at": now(),
                                               "commits": active.get("controller_commits") or [active["commit"]],
-                                              "deliverables": self.recorded_deliverables(active)})
+                                              "deliverables": self.recorded_deliverables(active),
+                                              "summary": result.get("summary")})
             self.state.setdefault("issue_cache", {})[issue] = self.linear.issue(issue)
             self.save(active=None, phase="idle", last_commit=active["commit"], error=None)
 

@@ -245,6 +245,7 @@ def _check_linear(runner, supervisor, pending=None):
                               "blockedBy": [p["id"] for p in live.get("relations", {}).get("blockedBy", [])]}
         if identifier not in done and live.get("statusType") != "completed":
             supervisor.rules(live)
+    runner.record_titles(lives)  # for `status --board` (W-442): queued issues have no other record
     pending = state.get("pending_recovery")
     if pending and expected_state(state) != pending["expected"]:
         raise LaunchError(f"State changed since recovery {pending['id']} was recorded; record a new recovery")

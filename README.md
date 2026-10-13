@@ -58,6 +58,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/reporting/records.py` | Reads saved session, check and intake records from evidence roots and deduplicates copies |
 | `linear_runner/reporting/trajectory.py` | Deterministic trajectory/usage/attempts/validation-audit/batch-comparison report (`runner.py report`, and `terminal-trajectory.*` at the terminal step) |
 | `linear_runner/reporting/measure.py` | Offline context-cost measurement: intake components, prompt/tool-output bytes, per-call context growth (`runner.py measure`) |
+| `linear_runner/reporting/board.py` | The compact record of a batch for a progress board (`runner.py status --board`): model-free and read-only |
 | `linear_runner/reporting/report.py` | Standalone terminal HTML/JSON report |
 | `linear_runner/reporting/render_samples.py` | Builds one sample comment per template for `docs/template-samples.md` |
 | `templates/` | Human-review Linear comment templates and the worker/reviewer draft templates |
@@ -65,7 +66,7 @@ the checkout root, which is also `${runner_root}`.
 | `schema/` | JSON schemas for every registry file and configuration layer |
 | `examples/home/` | Placeholder private home: site, workspace, project and batch files |
 | `prompts/` | Generic worker guidance |
-| `testdata/` | Fictional runner records for the renderer and measurement tests |
+| `testdata/` | Fictional runner records for the renderer and measurement tests, and the `status --board` example (`testdata/board/`) that the runner's tests keep current |
 | `tests/` | Offline tests, laid out like the package (`tests/engine/`, `tests/backends/`, ...); shared fixtures in `tests/fixtures.py`; `tests/test_public_tree.py` fails on private identifiers in any tracked file |
 
 Run the tests from the checkout root; they need no network, Linear, model CLI or systemd:
@@ -208,7 +209,9 @@ migration entry and names it in its CHANGELOG project impact.
 Codex, so the Linear project and assignee remain unresolved names in its report. `dry-run`
 selects the next issue as the supervisor does: it skips done and deferred issues, logs each
 issue that waits for an unfinished prerequisite ("Dry run: W-9 waits for W-8"), and writes
-no batch state (before 2.6.1 it stopped on a first issue that waits, `W-351`). `dry-run`,
+no batch state (before 2.6.1 it stopped on a first issue that waits, `W-351`). It does keep
+the title and link of every allowlisted issue in `<state dir>/titles.json`, as each `launch`
+does, so that `status --board` can name an issue before the batch claims it. `dry-run`,
 `run` and `launch` resolve the exact project name and the assignee to IDs (no match or more than one
 exact match is an error) and write `<state dir>/resolved-config.json` with the resolved IDs,
 the effective configuration, the source layer of every value and the layer files used.
@@ -511,6 +514,7 @@ python3 -m unittest -v
 python3 runner.py launch --batch $B                          # preflight, start unit, confirm, exit
 python3 runner.py launch --batch $B --stop-after TEAM-123    # same, with a planned checkpoint
 python3 runner.py status --batch $B                          # short summary (status --json: the full record)
+python3 runner.py status --batch $B --board                  # one compact JSON record for a progress board
 python3 runner.py wait --batch $B                            # block until the batch stops, then say how
 python3 runner.py watch --batch $B --timeout 1800            # one line per change, then as wait
 ```
@@ -519,7 +523,38 @@ python3 runner.py watch --batch $B --timeout 1800            # one line per chan
 issue with its step and the repairs it used, the done, remaining, deferred and waiting
 issues, the supervisor's status and outcome, the STOP marker and a pending recovery.
 `status --json` prints the full saved state, supervisor status, launch and watchdog record,
-as `status` did before 2.6.0. `watch` follows a launched batch: it prints one line whenever
+as `status` did before 2.6.0.
+
+`status --board` prints one JSON object on one line for a program that draws the batch, for
+example a progress board that asks every few seconds. `status --json` carries the full text of
+every saved issue and every recorded event (about 70 KB for one batch of the §2.10 batches);
+the board record has no issue description and no event list. It reads the state directory and
+the saved records of the issues' run directories, writes nothing, takes no lock and makes no
+Linear call (`W-442`).
+
+| Part | Fields |
+| --- | --- |
+| `schema` | `linear-runner.board/1` |
+| `batch` | `id`, `phase`, `supervisor` (`status`, `outcome`), `first_launch_at` and `last_launch_at` (from the launch records; `null` before the first launch), `stop_marker`, `pending_recovery` (`id`, `kind`, or `null`), `error`, `lineage` (the batch file's `purpose`, `follows`, `reason` and `from_issues`, see "Configuration layers") |
+| `issues`, in queue order | `id`, `title`, `url`, `stage`, `repairs`, `blocked` (`worker`, `review`: how often each blocked the issue), `summary`, `accepted_at`, `commit`, `files` (the names of the deliverables for the owner), `elapsed_seconds`, `tokens`, `pending_invocations` |
+
+`stage` is `done`, `deferred`, `queued` or the step of the active issue. `summary` is the
+summary of the accepted result for a done issue, and of the latest result for an active or
+set-aside one; the engine keeps the accepted summary in the issue's `history` entry, and a
+batch whose state was written before that gives `null`. `repairs` is the state's repair count
+for an active or set-aside issue and the report's count of finished repair attempts for a done
+one. `elapsed_seconds` and `tokens` are what `report --runs` gives for the same run
+directories: the issue's time from its first invocation's start to its last one's end, and the
+totals of `input_tokens`, `cached_input_tokens`, `output_tokens` and
+`reasoning_output_tokens`, each as `{"value", "bound"}` with the report's bounds (`exact`,
+`lower-bound`, `upper-bound`; an unknown value is `null`). An invocation that has not finished
+is left out, as in the report, and counted in `pending_invocations`, so the figures of an
+issue under way cover its finished phases. `title` and `url` come from `titles.json` in the
+state directory, which `dry-run` and every `launch` write for the whole allowlist; until then
+an issue the batch has not claimed has no title, and its `url` is built from the workspace and
+the identifier.
+
+`watch` follows a launched batch: it prints one line whenever
 the active issue, the phase, the step, the repair count or the supervisor's status changes,
 and when the supervisor stops it prints `wait`'s report as one line and exits with `wait`'s
 code. `--timeout S` makes it exit with code 6 if the batch has not stopped by then, so a

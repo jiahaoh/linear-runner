@@ -1,0 +1,133 @@
+{
+  "schema": "linear-runner.board/1",
+  "batch": {
+    "id": "fixture",
+    "phase": "paused",
+    "supervisor": {
+      "status": "exited",
+      "outcome": "blocked"
+    },
+    "first_launch_at": "2026-01-01T01:00:00+00:00",
+    "last_launch_at": "2026-01-01T02:00:00+00:00",
+    "stop_marker": "Supervisor L-20260101T000000Z-00000000 exited at 2026-01-01T04:00:00+00:00; inspect `status` before relaunching.",
+    "pending_recovery": null,
+    "error": "The repair session was cut off",
+    "lineage": {
+      "purpose": "Repair what the review of the first batch found.",
+      "follows": "fixture-first",
+      "reason": "The review found two defects, and the owner asked for both to be repaired.",
+      "from_issues": [
+        "DEV-7"
+      ]
+    }
+  },
+  "issues": [
+    {
+      "id": "DEV-1",
+      "title": "Read and write the table",
+      "url": "https://linear.app/test/issue/DEV-1/read-and-write-the-table",
+      "stage": "done",
+      "repairs": 1,
+      "blocked": {
+        "worker": 0,
+        "review": 1
+      },
+      "summary": "The table is read and written losslessly; the notes cover both formats.",
+      "accepted_at": "2026-01-01T03:00:00+00:00",
+      "commit": "0000000000000000000000000000000000000000",
+      "files": [
+        "DEV-1.txt"
+      ],
+      "elapsed_seconds": 210.0,
+      "tokens": {
+        "input_tokens": {
+          "value": 900,
+          "bound": "exact"
+        },
+        "cached_input_tokens": {
+          "value": 360,
+          "bound": "exact"
+        },
+        "output_tokens": {
+          "value": 45,
+          "bound": "exact"
+        },
+        "reasoning_output_tokens": {
+          "value": null,
+          "bound": null
+        }
+      },
+      "pending_invocations": 0
+    },
+    {
+      "id": "DEV-2",
+      "title": "Plot the table",
+      "url": "https://linear.app/test/issue/DEV-2/plot-the-table",
+      "stage": "repair",
+      "repairs": 1,
+      "blocked": {
+        "worker": 0,
+        "review": 0
+      },
+      "summary": "The plot is drawn.",
+      "accepted_at": null,
+      "commit": null,
+      "files": [],
+      "elapsed_seconds": 30.0,
+      "tokens": {
+        "input_tokens": {
+          "value": 500,
+          "bound": "exact"
+        },
+        "cached_input_tokens": {
+          "value": 200,
+          "bound": "exact"
+        },
+        "output_tokens": {
+          "value": 25,
+          "bound": "exact"
+        },
+        "reasoning_output_tokens": {
+          "value": null,
+          "bound": null
+        }
+      },
+      "pending_invocations": 1
+    },
+    {
+      "id": "DEV-3",
+      "title": "Write the report",
+      "url": "https://linear.app/test/issue/DEV-3/write-the-report",
+      "stage": "queued",
+      "repairs": 0,
+      "blocked": {
+        "worker": 0,
+        "review": 0
+      },
+      "summary": null,
+      "accepted_at": null,
+      "commit": null,
+      "files": [],
+      "elapsed_seconds": null,
+      "tokens": {
+        "input_tokens": {
+          "value": null,
+          "bound": null
+        },
+        "cached_input_tokens": {
+          "value": null,
+          "bound": null
+        },
+        "output_tokens": {
+          "value": null,
+          "bound": null
+        },
+        "reasoning_output_tokens": {
+          "value": null,
+          "bound": null
+        }
+      },
+      "pending_invocations": 0
+    }
+  ]
+}
