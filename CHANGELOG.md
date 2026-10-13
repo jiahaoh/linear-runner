@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* The largest phase timeout a batch may set for a named issue (`phases.max_timeout_seconds`
+  of `registry/phases.json`, used by a batch's `phase_overrides`) is 43,200 s, 12 hours. It
+  was 14,400 s. A real example that processes every field of view of a sample in one issue
+  was planned at 6.7 to 7.9 hours, which no single phase could hold. The phases' own
+  timeouts, the check timeouts and every budget are unchanged, and no batch gets a longer
+  phase unless its file asks for one. Project impact: none; a paused batch adopts the new
+  registry with `recover repin-config`. Canary tier: first-issue checkpoint (the change
+  touches only what `validate-config` and preflight accept) (`W-464`).
+
 ## v2.7.1 — 2026-10-11
 
 One sentence of 2.7.0 was wrong, found the same day while its canary was being prepared, before

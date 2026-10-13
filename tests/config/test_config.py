@@ -208,8 +208,10 @@ class LayeredConfigTests(unittest.TestCase):
     def test_phase_overrides_raise_a_timeout_up_to_the_registry_maximum(self):
         loaded = self.load(batch={"phase_overrides": {"DEV-1": {"repair": {"timeout_seconds": 9000}}}})
         self.assertEqual(loaded["phase_overrides"], {"DEV-1": {"repair": {"timeout_seconds": 9000}}})
+        longest = {"DEV-1": {"implement": {"timeout_seconds": 43200}}}  # the registry maximum itself (W-464)
+        self.assertEqual(self.load(batch={"phase_overrides": longest})["phase_overrides"], longest)
         self.assertNotIn("phase_overrides", self.load())  # absent: fingerprints of other batches unchanged
-        cases = [({"DEV-1": {"repair": {"timeout_seconds": 20000}}}, "exceeds the registry maximum 14400"),
+        cases = [({"DEV-1": {"repair": {"timeout_seconds": 43201}}}, "exceeds the registry maximum 43200"),
                  ({"DEV-9": {"repair": {"timeout_seconds": 9000}}}, "not in the issue allowlist"),
                  ({"DEV-1": {"deliver": {"timeout_seconds": 9000}}}, "unknown key"),
                  ({"DEV-1": {"review": {"budget": 1}}}, "")]

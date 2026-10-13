@@ -834,8 +834,8 @@ specification pages as its findings asked, and each stopped its batch for `recov
 
 **Phase timeouts per issue.** Each model phase has a hard timeout (`phases.json`,
 `timeout_seconds`). A batch can raise it for a named issue and phase when that phase is
-known to include long external steps (for example browser screenshots), up to the registry's
-`max_timeout_seconds` (14400); `validate-config` refuses a larger value or an issue outside
+known to include long external steps (for example browser screenshots, or a real example
+that processes a whole sample), up to the registry's `max_timeout_seconds` (43200, 12 hours); `validate-config` refuses a larger value or an issue outside
 the allowlist and lists the overrides:
 
 ```json
