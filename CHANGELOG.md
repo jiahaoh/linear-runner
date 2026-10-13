@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.7.2 — 2026-10-13
+
+One number of the registry changes, so that an issue that processes a whole sample can run as
+one phase (`W-464`).
+
+**Project impact:** none. No batch gets a longer phase unless its file asks for one in
+`phase_overrides`; a paused batch adopts the new registry with `recover repin-config`.
+
+**Canary tier:** first-issue checkpoint; the change touches only the value that
+`validate-config` and the launch preflight accept for a phase timeout.
+
 ### Changed
 
 * The largest phase timeout a batch may set for a named issue (`phases.max_timeout_seconds`
