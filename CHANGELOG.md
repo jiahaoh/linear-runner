@@ -15,6 +15,19 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v2.8.0 — 2026-10-14
+
+A progress board for batches: a compact `status --board` record, optional lineage keys in a
+batch file, and the board itself shipped as a Claude Code mod in the checkout (`W-442`,
+`W-443`, `W-444`).
+
+**Project impact:** none. The lineage keys are optional and outside the fingerprint; existing
+batch files load as before with the same fingerprint.
+
+**Canary tier:** canary batch; the engine writes one more key (`summary`) into an accepted
+issue's `history` entry, and `dry-run` and the launch preflight write `titles.json` into the
+state directory.
+
 ### Added
 
 * A batch file may state its purpose and the batch it follows, in four optional keys:
