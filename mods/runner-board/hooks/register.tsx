@@ -418,10 +418,10 @@ function batchLook(batch: Batch, state: string): Look {
 
 const cut = (text: string, length: number) => (text.length > length ? text.slice(0, Math.max(1, length - 1)) + '…' : text)
 
-function eastern(time: string | number, zone = false) {
+// In the local time zone of the runtime the board runs in.
+function localTime(time: string | number, zone = false) {
   try {
     return new Date(time).toLocaleString('en-US', {
-      timeZone: 'America/New_York',
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
@@ -573,7 +573,7 @@ function lineageGraph(all: Batch[]) {
     })
     card(`tn${index}`, `n${index}`, x, y, y + NODE.h, [
       { text: `${bare(batch)}  ${state}  ${done}/${batch.issues.length}`, style: 'b' },
-      ...(started ? [{ text: eastern(started, true), style: 'd' as const }] : []),
+      ...(started ? [{ text: localTime(started, true), style: 'd' as const }] : []),
       ...wrap(link?.purpose ?? 'No purpose is recorded.', TIP.chars).map(text => ({ text })),
       ...(!parent && link?.reason ? wrap('Started: ' + link.reason, TIP.chars).map(text => ({ text, style: 'i' as const })) : []),
       { text: '' },
@@ -644,7 +644,7 @@ function details(board: Board | undefined, id: string) {
   const isDone = issue.stage === 'done'
   const isWaiting = issue.stage === 'queued' || issue.stage === 'deferred'
   if (isDone) {
-    const when = issue.accepted_at ? eastern(issue.accepted_at, true) : 'at an unrecorded time'
+    const when = issue.accepted_at ? localTime(issue.accepted_at, true) : 'at an unrecorded time'
     lines.push({ label: 'Accepted', text: `${when}${issue.commit ? `, commit ${issue.commit.slice(0, 9)}` : ''}` })
   }
   if (issue.summary) {
@@ -826,7 +826,7 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{'  ' + done + '/' + batch.issues.length}</Text>
               </Button>
             </Box>
-            {started && <Text dimColor>{eastern(started)}</Text>}
+            {started && <Text dimColor>{localTime(started)}</Text>}
           </Box>
           <Box paddingLeft={3}>
             <Text dimColor wrap="wrap">
@@ -907,7 +907,7 @@ export const register: Register = (on, options) => {
             .map(([kind, word, color]) => (
               <Text color={color}>{'  ·  ' + tally(kind) + ' ' + word}</Text>
             ))}
-          {updatedAt !== null && <Text dimColor>{'  ·  read ' + eastern(updatedAt, true)}</Text>}
+          {updatedAt !== null && <Text dimColor>{'  ·  read ' + localTime(updatedAt, true)}</Text>}
         </Text>
         {batches.length === 0 && (
           <Text dimColor>No batch here yet. Add one with /runner-board add &lt;batch id&gt;; a trailing * adds several.</Text>
@@ -998,7 +998,7 @@ export const register: Register = (on, options) => {
                       <Text dimColor>{isOpen ? '  ▾' : '  ▸'}</Text>
                     </Button>
                   </Box>
-                  {started && <Text dimColor>{eastern(started)}</Text>}
+                  {started && <Text dimColor>{localTime(started)}</Text>}
                 </Box>
                 {purpose && (
                   <Box paddingLeft={3}>

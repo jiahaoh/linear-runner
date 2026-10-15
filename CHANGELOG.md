@@ -62,6 +62,10 @@ its tier. The release procedure is in the README ("Releases").
   prose. Project impact: none; the parsed policy without its notes is unchanged, so only the
   new runner commit changes a batch's fingerprint, as any commit does. Canary tier:
   first-issue checkpoint (formatting and notes only) (`W-496`).
+* The progress board shows times in the local time zone of the runtime it runs in, instead of
+  a time zone named in its code. On a host in New York the board shows the same times as
+  before. Its test formats the expected time in the same local zone, so it no longer assumes
+  New York. Project impact: none. Canary tier: none needed (the board mod only) (`W-497`).
 
 ### Removed
 

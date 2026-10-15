@@ -199,8 +199,11 @@ test('the board draws the record of the runner\'s own fixture: stages, titles, s
     await ui.press({ key: 'issue-fixture/DEV-1' })
     await shows(String(done.summary))
     expect((await ui.find({ type: 'Link' }))?.props.href).toBe(done.url)
-    // 2026-01-01T03:00 UTC, the fixture's third moment, in the board's own time zone.
-    expect(await ui.find({ type: 'Text', text: /^Dec 31, 10:00\sPM EST, commit 000000000$/ })).toBeDefined()
+    // 2026-01-01T03:00 UTC, the fixture's third moment, in the runtime's local time zone (Dec 31, 10:00 PM EST
+    // in New York); the expected text is formatted here, so the test passes in any zone.
+    const accepted = new Date('2026-01-01T03:00:00Z').toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+    await shows(`${accepted}, commit 000000000`)
     await shows('4m from first start to last finish')
     await shows('900 input (360 of it read from cache), 45 output')
     await shows('blocked it once')
