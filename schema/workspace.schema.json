@@ -4,69 +4,30 @@
   "description": "Stored as workspaces/<slug>.json. Credentials are referenced by environment-variable name or credential-cache path, never stored.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "slug",
-    "auth"
-  ],
+  "required": ["slug", "auth"],
   "properties": {
-    "slug": {
-      "$ref": "#/$defs/slug"
-    },
+    "slug": {"$ref": "#/$defs/slug"},
     "auth": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "token_env": {
-          "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-        },
-        "credentials_file": {
-          "type": "string",
-          "minLength": 1
-        },
-        "timeout_seconds": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "refresh_command": {
-          "description": "How the operator refreshes the OAuth credential in credentials_file; named in preflight and in the stop for an expired credential (default: a short `codex exec`).",
-          "type": "string",
-          "minLength": 1
-        },
-        "auto_refresh": {
-          "description": "When the OAuth credential in credentials_file has expired, run refresh_command once (argv, no shell, bounded timeout) and continue if the reread credential expires in the future; otherwise pause as without it (default false).",
-          "type": "boolean"
-        },
-        "min_lifetime_minutes": {
-          "description": "Launch preflight fails when the OAuth credential in credentials_file expires sooner than this (default 0: off; Codex refreshes the credential only after it has expired).",
-          "type": "integer",
-          "minimum": 0
-        },
-        "warn_lifetime_minutes": {
-          "description": "Launch preflight warns when the OAuth credential in credentials_file expires sooner than this (default 720).",
-          "type": "integer",
-          "minimum": 0
-        }
+        "token_env": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+        "credentials_file": {"type": "string", "minLength": 1},
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "refresh_command": {"description": "How the operator refreshes the OAuth credential in credentials_file; named in preflight and in the stop for an expired credential (default: a short `codex exec`).", "type": "string", "minLength": 1},
+        "auto_refresh": {"description": "When the OAuth credential in credentials_file has expired, run refresh_command once (argv, no shell, bounded timeout) and continue if the reread credential expires in the future; otherwise pause as without it (default false).", "type": "boolean"},
+        "min_lifetime_minutes": {"description": "Launch preflight fails when the OAuth credential in credentials_file expires sooner than this (default 0: off; Codex refreshes the credential only after it has expired).", "type": "integer", "minimum": 0},
+        "warn_lifetime_minutes": {"description": "Launch preflight warns when the OAuth credential in credentials_file expires sooner than this (default 720).", "type": "integer", "minimum": 0}
       }
     },
-    "assignee": {
-      "description": "\"me\" or an exact Linear user name/display name/email; resolved to an ID at dry-run/preflight.",
-      "type": "string",
-      "minLength": 1
-    },
+    "assignee": {"description": "\"me\" or an exact Linear user name/display name/email; resolved to an ID at dry-run/preflight.", "type": "string", "minLength": 1},
     "states": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "in_progress": {
-          "$ref": "#/$defs/state"
-        },
-        "review": {
-          "$ref": "#/$defs/state"
-        },
-        "done": {
-          "$ref": "#/$defs/state"
-        }
+        "in_progress": {"$ref": "#/$defs/state"},
+        "review": {"$ref": "#/$defs/state"},
+        "done": {"$ref": "#/$defs/state"}
       }
     },
     "attention": {
@@ -74,26 +35,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "owner_mention": {
-          "type": "string"
-        },
+        "owner_mention": {"type": "string"},
         "needs_input": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "mechanism": {
-              "enum": [
-                "label",
-                "state",
-                "mention"
-              ]
-            },
-            "label": {
-              "$ref": "#/$defs/state"
-            },
-            "state": {
-              "$ref": "#/$defs/state"
-            }
+            "mechanism": {"enum": ["label", "state", "mention"]},
+            "label": {"$ref": "#/$defs/state"},
+            "state": {"$ref": "#/$defs/state"}
           }
         }
       }
@@ -102,30 +51,15 @@
       "description": "The Linear issue template \"Runner issue contract\" recorded by runner.py sync-linear-template; not part of the batch configuration.",
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "name",
-        "id"
-      ],
+      "required": ["name", "id"],
       "properties": {
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "id": {
-          "type": "string",
-          "minLength": 1
-        }
+        "name": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1}
       }
     }
   },
   "$defs": {
-    "slug": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-    },
-    "state": {
-      "type": "string",
-      "pattern": "^\\S(.*\\S)?$"
-    }
+    "slug": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"},
+    "state": {"type": "string", "pattern": "^\\S(.*\\S)?$"}
   }
 }

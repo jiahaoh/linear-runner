@@ -53,6 +53,15 @@ its tier. The release procedure is in the README ("Releases").
   docstrings keep their invariants and point to the README for procedures, which drops two
   stale statements (append-only queue changes, `blocks` in the contract). Project impact:
   none. Canary tier: first-issue checkpoint (documentation only) (`W-495`).
+* `registry/pools.json` has one pool entry per line, and the batch, site, workspace and
+  registry schemas use the compact style of the project schema; `batch.schema.json` defines the
+  model selection and the per-issue phase limit once (`$defs`) instead of six and three times.
+  The eleven files shrink from 1,498 to 641 lines. Every file parses to the same JSON (the
+  batch schema once its two references are expanded), and validation and its messages are
+  unchanged. The pool notes no longer call the Claude canary pending or restate the pools in
+  prose. Project impact: none; the parsed policy without its notes is unchanged, so only the
+  new runner commit changes a batch's fingerprint, as any commit does. Canary tier:
+  first-issue checkpoint (formatting and notes only) (`W-496`).
 
 ### Removed
 

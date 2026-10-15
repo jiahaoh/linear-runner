@@ -4,146 +4,48 @@
   "description": "Profile order, review floors, phase overrides and the single escalation target (models come from registry pools).",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "routing_version",
-    "order",
-    "escalation_profile",
-    "review_floors",
-    "phase_overrides"
-  ],
+  "required": ["routing_version", "order", "escalation_profile", "review_floors", "phase_overrides"],
   "properties": {
-    "notes": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "routing_version": {
-      "type": "string",
-      "minLength": 1
-    },
-    "order": {
-      "description": "Profiles from least to most capable; floors and escalation compare positions in this list.",
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/label"
-      }
-    },
-    "escalation_profile": {
-      "$ref": "#/$defs/label"
-    },
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "routing_version": {"type": "string", "minLength": 1},
+    "order": {"description": "Profiles from least to most capable; floors and escalation compare positions in this list.", "type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/label"}},
+    "escalation_profile": {"$ref": "#/$defs/label"},
     "review_floors": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "default",
-        "by_task_kind",
-        "by_profile"
-      ],
+      "required": ["default", "by_task_kind", "by_profile"],
       "properties": {
-        "default": {
-          "$ref": "#/$defs/label"
-        },
-        "by_task_kind": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/label"
-          }
-        },
-        "by_profile": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/label"
-          }
-        }
+        "default": {"$ref": "#/$defs/label"},
+        "by_task_kind": {"type": "object", "additionalProperties": {"$ref": "#/$defs/label"}},
+        "by_profile": {"type": "object", "additionalProperties": {"$ref": "#/$defs/label"}}
       }
     },
-    "phase_overrides": {
-      "type": "object",
-      "propertyNames": {
-        "enum": [
-          "implement",
-          "repair",
-          "review"
-        ]
-      },
-      "additionalProperties": {
-        "$ref": "#/$defs/label"
-      }
-    },
+    "phase_overrides": {"type": "object", "propertyNames": {"enum": ["implement", "repair", "review"]}, "additionalProperties": {"$ref": "#/$defs/label"}},
     "review_routing": {
       "description": "Low-risk review rule; a batch opts in with context_controls.low_risk_review. Review floors still apply.",
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "light_review"
-      ],
+      "required": ["light_review"],
       "properties": {
         "light_review": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "profile",
-            "issue_profiles",
-            "task_kinds",
-            "max_changed_files",
-            "max_changed_lines",
-            "max_repairs",
-            "opt_out_labels",
-            "gate_labels"
-          ],
+          "required": ["profile", "issue_profiles", "task_kinds", "max_changed_files", "max_changed_lines", "max_repairs", "opt_out_labels", "gate_labels"],
           "properties": {
-            "profile": {
-              "$ref": "#/$defs/label"
-            },
-            "issue_profiles": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/label"
-              }
-            },
-            "task_kinds": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/label"
-              }
-            },
-            "max_changed_files": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "max_changed_lines": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "max_repairs": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 2
-            },
-            "opt_out_labels": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/label"
-              }
-            },
-            "gate_labels": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/label"
-              }
-            }
+            "profile": {"$ref": "#/$defs/label"},
+            "issue_profiles": {"type": "array", "items": {"$ref": "#/$defs/label"}},
+            "task_kinds": {"type": "array", "items": {"$ref": "#/$defs/label"}},
+            "max_changed_files": {"type": "integer", "minimum": 0},
+            "max_changed_lines": {"type": "integer", "minimum": 0},
+            "max_repairs": {"type": "integer", "minimum": 0, "maximum": 2},
+            "opt_out_labels": {"type": "array", "items": {"$ref": "#/$defs/label"}},
+            "gate_labels": {"type": "array", "items": {"$ref": "#/$defs/label"}}
           }
         }
       }
     }
   },
   "$defs": {
-    "label": {
-      "type": "string",
-      "pattern": "^\\S(.*\\S)?$"
-    }
+    "label": {"type": "string", "pattern": "^\\S(.*\\S)?$"}
   }
 }
