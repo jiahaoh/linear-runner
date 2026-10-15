@@ -5,10 +5,21 @@ from pathlib import Path
 import re
 import sys
 
+from linear_runner.engine.runner import git
 from linear_runner.linear.client import append_comment
 
 # The runner checkout (runner.py, registry/, schema/, templates/, examples/, testdata/).
 CHECKOUT = Path(__file__).resolve().parent.parent
+
+
+def make_repo(repo, files=None):
+    """A Git repository on branch ``runner/test`` with one baseline commit of ``files``
+    (name to text; default a README)."""
+    git(repo, "init", "-q"); git(repo, "checkout", "-q", "-b", "runner/test")
+    git(repo, "config", "user.name", "Test"); git(repo, "config", "user.email", "test@example.invalid")
+    for name, text in (files or {"README.md": "fixture"}).items():
+        (Path(repo) / name).write_text(text)
+    git(repo, "add", "."); git(repo, "commit", "-qm", "baseline")
 
 
 def write(path, value):

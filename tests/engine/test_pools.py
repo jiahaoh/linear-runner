@@ -10,9 +10,9 @@ import unittest
 
 from linear_runner import config as config_module
 from linear_runner.config import ConfigError, load_config, pin_resolution
-from linear_runner.engine.runner import Runner, git, resolve_profile
+from linear_runner.engine.runner import Runner, resolve_profile
 from linear_runner.linear.attention import classify_stop
-from tests.fixtures import TEST_REGISTRY, FakeLinear, make_home, set_pools
+from tests.fixtures import TEST_REGISTRY, FakeLinear, make_home, make_repo, set_pools
 
 PHASES = ("implement", "repair", "review")
 ASTRA_MEDIUM = {"backend": "codex", "model": "astra", "effort": "medium"}
@@ -124,9 +124,7 @@ class PoolResolutionTests(unittest.TestCase):
         self.fails(config, ["Implementation", "Standard", "validate-model:astra"], "implement", "unknown model label")
 
     def test_out_of_pool_name_fails_preflight_before_claim_or_model(self):
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
-        git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
-        (self.repo / "README.md").write_text("fixture"); git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "base")
+        make_repo(self.repo)
         config, _ = pin_resolution(self.load(), self.linear)
         runner = Runner(config, self.linear)
         calls = []

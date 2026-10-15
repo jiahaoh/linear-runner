@@ -21,7 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from linear_runner.config import ConfigError, load_config, pin_resolution, write_resolved
-from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, fake_codex, fake_codex_calls, make_home
+from tests.fixtures import CHECKOUT, TEST_REGISTRY, FakeLinear, fake_codex, fake_codex_calls, make_home, make_repo
 from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch, preflight
 from linear_runner.supervision import launcher as launcher_module
 from linear_runner.supervision import recovery
@@ -51,10 +51,7 @@ class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
-        git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
-        (self.repo / "README.md").write_text("fixture")
-        git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")
+        make_repo(self.repo)
         batch = dict({"issues": ["DEV-1", "DEV-2", "DEV-3"], "terminal_issue": "DEV-3"}, **self.BATCH)
         self.home, self.batch = make_home(self.root, self.repo, batch=batch, site=self.SITE or None,
                                           project=self.PROJECT or None, registry=self.REGISTRY)
@@ -94,6 +91,22 @@ class Harness(unittest.TestCase):
                 if state["left"] is not None:
                     state["left"] -= 1
         return hook
+
+    def systemd_fake(self, unit_state="active", start_supervisor=True):
+        """A systemd user backend whose units start (or report ``unit_state``) and whose
+        supervisor reports running; returns it and the argv list it records."""
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "systemd-run":
+                if start_supervisor and "supervise" in argv:
+                    launch_id = argv[argv.index("--launch-id") + 1]
+                    write_json(self.state_dir / "supervisor.json", {"launch_id": launch_id, "pid": 4242, "status": "running"})
+                return subprocess.CompletedProcess(argv, 0, "", "Running as unit: fixture.service\n")
+            return subprocess.CompletedProcess(argv, 0, f"MainPID=4242\nActiveState={unit_state}\nSubState=running\n"
+                                                        "ExecMainStatus=0\nResult=success\n", "")
+        clock = iter(range(0, 100))
+        return SystemdUserBackend(run=run, sleep=lambda s: None, clock=lambda: next(clock)), calls
 
     def make_runner(self):
         config, fresh = pin_resolution(load_config(self.batch, self.home), self.linear)
@@ -289,22 +302,8 @@ class SystemdBackendTests(Harness):
     SITE = {"launcher": {"backend": "systemd-user", "python": "${python}", "cpu_list": "0",
                          "environment": {"PATH": "/usr/bin:/bin"}, "startup_timeout_seconds": 5}}
 
-    def fake(self, unit_state="active", start_supervisor=True):
-        calls = []
-        def run(argv, **kwargs):
-            calls.append(argv)
-            if argv[0] == "systemd-run":
-                if start_supervisor and "supervise" in argv:
-                    launch_id = argv[argv.index("--launch-id") + 1]
-                    write_json(self.state_dir / "supervisor.json", {"launch_id": launch_id, "pid": 4242, "status": "running"})
-                return subprocess.CompletedProcess(argv, 0, "", "Running as unit: fixture.service\n")
-            return subprocess.CompletedProcess(argv, 0, f"MainPID=4242\nActiveState={unit_state}\nSubState=running\n"
-                                                        "ExecMainStatus=0\nResult=success\n", "")
-        clock = iter(range(0, 100))
-        return SystemdUserBackend(run=run, sleep=lambda s: None, clock=lambda: next(clock)), calls
-
     def test_systemd_argv_inherits_credentials_by_name_and_confirms_startup(self):
-        backend, calls = self.fake()
+        backend, calls = self.systemd_fake()
         runner = self.make_runner()
         with patch.dict(os.environ, {"TEST_LINEAR_TOKEN": "secret-token-value"}):
             entry = launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None,
@@ -331,7 +330,7 @@ class SystemdBackendTests(Harness):
         self.assertFalse(self.calls)  # nothing was dispatched by the launcher itself
 
     def test_launch_starts_a_watchdog_timer_first_and_records_it(self):
-        backend, calls = self.fake()
+        backend, calls = self.systemd_fake()
         runner = self.make_runner()
         entry = launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None)
         timer_argv = calls[0]
@@ -356,7 +355,7 @@ class SystemdBackendTests(Harness):
         # A later launch stops the earlier timer and records it.
         write_json(self.state_dir / "supervisor.json", dict(json.loads((self.state_dir / "supervisor.json").read_text()),
                                                             status="exited", outcome="stopped"))
-        second, calls2 = self.fake()
+        second, calls2 = self.systemd_fake()
         entry2 = launch(runner.config, self.linear, backend=second, runner=self.make_runner(), out=lambda text: None)
         self.assertEqual(calls2[0], ["systemctl", "--user", "stop", unit + ".timer"])
         self.assertEqual(entry2["stopped_earlier_timers"], [unit + ".timer"])
@@ -391,7 +390,7 @@ class SystemdBackendTests(Harness):
                    runner=runner, out=lambda text: None)
 
     def test_failed_unit_is_reported_and_holds_the_batch(self):
-        backend, calls = self.fake(unit_state="failed", start_supervisor=False)
+        backend, calls = self.systemd_fake(unit_state="failed", start_supervisor=False)
         runner = self.make_runner()
         with self.assertRaisesRegex(LaunchError, "stopped before the supervisor started"):
             launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None)

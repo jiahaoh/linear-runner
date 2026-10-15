@@ -13,7 +13,7 @@ from linear_runner.config import load_config, pin_resolution, write_resolved
 from linear_runner.engine.runner import Runner, git
 from linear_runner.supervision.launcher import LaunchError, preflight
 from linear_runner.version import RELEASE, describe, pin_problem
-from tests.fixtures import CHECKOUT, FakeLinear, make_home
+from tests.fixtures import CHECKOUT, FakeLinear, make_home, make_repo
 
 HEADING = re.compile(r"^## (Unreleased|v(\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2}))$", re.M)
 TIERS = ("first-issue checkpoint", "canary batch")
@@ -75,9 +75,7 @@ class PinTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
-        git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
-        (self.repo / "result.txt").write_text("ready"); git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "base")
+        make_repo(self.repo, {"result.txt": "ready"})
         self.linear = FakeLinear()
         self.identity = {"release": RELEASE, "commit": "a" * 40, "dirty": False}
         patcher = patch("linear_runner.config.runner_identity", side_effect=lambda *a: dict(self.identity))

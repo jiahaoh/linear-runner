@@ -36,6 +36,12 @@ its tier. The release procedure is in the README ("Releases").
   option of the other commands. Figures, comments and messages are unchanged. Project impact:
   none. Canary tier: canary batch (the engine's attempt usage and evidence checks call the
   shared definitions) (`W-493`).
+* Tests only: six tests of pure functions no longer build the engine fixture (a Git repository,
+  a configuration home, a loaded configuration and a Runner) that they did not use; the Git
+  repository setup that six test modules repeated comes from `tests.fixtures.make_repo`; and
+  the systemd backend fake that launches succeed with is one method of the supervisor test
+  harness instead of two copies. The same 480 tests run with the same assertions. Project
+  impact: none. Canary tier: none needed (no runtime change) (`W-494`).
 
 ### Removed
 

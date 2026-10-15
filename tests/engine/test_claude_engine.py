@@ -14,7 +14,7 @@ from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import REPOSITORY_PRECEDENCE, Runner, git, resolve_profile, usage_totals
 from linear_runner.linear.attention import classify_stop
 from tests.fixtures import (TEST_REGISTRY, FakeLinear, fake_claude, fake_claude_log, fake_codex, fake_codex_calls,
-                            make_home, set_pools)
+                            make_home, make_repo, set_pools)
 from tests.linear.test_updates import GOOD_PROGRESS
 
 OPUS_MEDIUM = {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
@@ -35,10 +35,7 @@ class ClaudeEngineTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
-        git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
-        (self.repo / "README.md").write_text("fixture")
-        git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")
+        make_repo(self.repo)
         self.linear = FakeLinear()
 
     def runner(self, steps, registry=None, check="ready"):

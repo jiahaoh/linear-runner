@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from linear_runner.config import (RUNNER_ROOT, config_fingerprint, load_config, load_registry, pin_resolution,
                                   write_resolved)
-from tests.fixtures import FakeLinear, make_home
+from tests.fixtures import FakeLinear, make_home, make_repo
 from linear_runner.linear.client import LinearClient
 from linear_runner import cli as cli_module
 from linear_runner.engine import runner as runner_module
@@ -33,10 +33,7 @@ class EngineTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.repo = self.root / "repo"; self.repo.mkdir()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
-        git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
-        (self.repo / "README.md").write_text("fixture")
-        git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")
+        make_repo(self.repo)
         self.home, self.batch = make_home(self.root, self.repo)
         self.linear = FakeLinear()
         self.config, _ = pin_resolution(load_config(self.batch, self.home), self.linear)
@@ -663,16 +660,6 @@ class EngineTests(unittest.TestCase):
         from linear_runner.config import ConfigError
         with self.assertRaisesRegex(ConfigError, "allow_empty: expected boolean"):
             load_config(self.batch, self.home)
-
-    def test_delivery_integrity_accepts_only_evidenced_empty_outcomes(self):
-        from linear_runner.engine.delivery import check_outcome, check_passed
-        self.assertEqual([check_outcome(0), check_outcome(5), check_outcome(5, True), check_outcome(1, True)],
-                         ["passed", "failed", "empty", "failed"])
-        self.assertTrue(check_passed({"exit_code": 0}))  # records written before the status field
-        self.assertTrue(check_passed({"exit_code": 5, "status": "empty", "allow_empty": True}))
-        self.assertFalse(check_passed({"exit_code": 5, "status": "empty", "allow_empty": False}))
-        self.assertFalse(check_passed({"exit_code": 5, "status": "failed", "allow_empty": True}))
-        self.assertFalse(check_passed({"exit_code": 1, "status": "empty", "allow_empty": True}))
 
     def test_report_and_measure_name_empty_outcomes(self):
         from linear_runner.reporting import measure
@@ -1305,17 +1292,6 @@ class EngineTests(unittest.TestCase):
 
     # --- Evidence, usage and reports ----------------------------------------------
 
-    def test_usage_deduplicates_resumed_counters(self):
-        records = [{"session_id": s, "execution_evidence": {"usage_events": [{"usage": {"input_tokens": i, "cached_input_tokens": c}}]}}
-                   for s, i, c in [("a", 100, 80), ("a", 160, 130), ("b", 50, 30)]]
-        self.assertEqual(usage_totals(records)["totals"]["input_tokens"], 210)
-        self.assertEqual(usage_totals(records)["totals"]["cached_input_tokens"], 160)
-
-    def test_missing_telemetry_is_unknown_not_zero(self):
-        totals = usage_totals([{"session_id": "missing", "execution_evidence": {}}])
-        self.assertIsNone(totals["totals"]["input_tokens"])
-        self.assertEqual(totals["covered"], 0)
-
     # --- Resumed-phase budget: the W-193 replay ---------------------------------------
     # A Codex implement turn failed before any completed turn (no usage counter); the resumed
     # turn completed with a cumulative counter of 1,602,748 input and 39,173 output tokens.
@@ -1508,15 +1484,6 @@ class EngineTests(unittest.TestCase):
         [recorded] = self.implement_usage()
         self.assertNotIn("budget_note", recorded)
 
-    def test_budget_figures_judge_uncached_input_when_it_is_known(self):
-        from linear_runner.engine.runner import budget_figures
-        usage = {"input_tokens": 6_250_000, "cached_input_tokens": 6_210_000, "output_tokens": 20_000}
-        self.assertEqual(budget_figures(usage), dict(usage, input_tokens=40_000))
-        self.assertEqual(usage["input_tokens"], 6_250_000)  # the usage itself is unchanged
-        for missing in ({"cached_input_tokens": None}, {"input_tokens": None}):
-            self.assertEqual(budget_figures(dict(usage, **missing))["input_tokens"],
-                             dict(usage, **missing)["input_tokens"])
-
     def test_current_attempt_without_a_counter_is_unavailable_never_zero(self):
         self.canary_budget()
         self.replay_implement([(self.W193, False), (None, True)])
@@ -1555,40 +1522,6 @@ class EngineTests(unittest.TestCase):
                          {"input_tokens": 40, "output_tokens": 4, "basis": "invocation"})
         empty = attempt_usage(attempt("implement-7", "d", "2026-01-01T00:50:00", None))
         self.assertEqual((empty["input_tokens"], empty["basis"]), (None, "unavailable"))
-
-    def test_report_snapshots_escape_content_and_preserve_versions(self):
-        from linear_runner.reporting.report import render_report
-        session = {"session_id": "s1", "execution_evidence": {"usage_events": [{"usage": {
-            "input_tokens": 1200, "cached_input_tokens": 800, "output_tokens": 300, "reasoning_output_tokens": 100}}]}}
-        summary = {"outcome": "blocked", "history": [], "scope": "fixture", "error": "<script>alert(1)</script>",
-                   "usage": usage_totals([session])}
-        path = self.root / "report.html"
-        first = render_report(path, summary, [])
-        summary["outcome"] = "complete"
-        second = render_report(path, summary, [])
-        self.assertNotEqual(first["report"], second["report"])
-        self.assertTrue(Path(first["report"]).exists())
-        html = path.read_text()
-        self.assertNotIn("<script>", html)
-        self.assertNotIn(second["evidence_sha256"], html.split("Reproducibility appendix")[0])
-        self.assertIn("<tr><td>Runner sessions</td><td>1,200</td><td>800</td><td>300</td></tr>", html)
-
-    def test_execution_evidence_uses_only_cli_metadata(self):
-        events = [
-            {"type": "thread.started", "model": "reported-model"},
-            {"type": "item.completed", "item": {"type": "agent_message", "model": "fake", "text": "I used model fake"}},
-            {"type": "item.completed", "item": {"type": "mcp_tool_call", "status": "completed", "result": {"isError": True}}},
-            {"type": "item.completed", "item": {"type": "command_execution", "exit_code": 1}},
-            {"type": "item.completed", "item": {"type": "mcp_tool_call", "status": "completed"}},
-            {"type": "turn.failed"},
-        ]
-        evidence = execution_evidence(events)
-        self.assertEqual(evidence["observed_models"], [{"event_index": 0, "event_type": "thread.started", "model": "reported-model"}])
-        self.assertEqual(evidence["completed_tool_calls"], 3)
-        self.assertEqual(evidence["failed_tool_calls"], 2)
-        self.assertEqual(evidence["error_events"], 1)
-        self.assertIsNone(evidence["usage_events"])
-        self.assertIsNone(evidence["billed_cost"])
 
     # W-437: the controller's record of a run has a name of its own. In s210-impl-c-20261007 the worker of
     # W-382 wrote its record to manifest.json at the top of the run directory and the controller replaced it.
@@ -1863,6 +1796,78 @@ class ControllerTests(unittest.TestCase):
             with self.subTest(argv=argv[0]), patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
                 main(argv)
             self.assertEqual(raised.exception.code, 2)
+
+
+class PureFunctionTests(unittest.TestCase):
+    """Pure functions and a report in a temporary directory: no repository, home or Runner (W-494)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_delivery_integrity_accepts_only_evidenced_empty_outcomes(self):
+        from linear_runner.engine.delivery import check_outcome, check_passed
+        self.assertEqual([check_outcome(0), check_outcome(5), check_outcome(5, True), check_outcome(1, True)],
+                         ["passed", "failed", "empty", "failed"])
+        self.assertTrue(check_passed({"exit_code": 0}))  # records written before the status field
+        self.assertTrue(check_passed({"exit_code": 5, "status": "empty", "allow_empty": True}))
+        self.assertFalse(check_passed({"exit_code": 5, "status": "empty", "allow_empty": False}))
+        self.assertFalse(check_passed({"exit_code": 5, "status": "failed", "allow_empty": True}))
+        self.assertFalse(check_passed({"exit_code": 1, "status": "empty", "allow_empty": True}))
+
+    def test_usage_deduplicates_resumed_counters(self):
+        records = [{"session_id": s, "execution_evidence": {"usage_events": [{"usage": {"input_tokens": i, "cached_input_tokens": c}}]}}
+                   for s, i, c in [("a", 100, 80), ("a", 160, 130), ("b", 50, 30)]]
+        self.assertEqual(usage_totals(records)["totals"]["input_tokens"], 210)
+        self.assertEqual(usage_totals(records)["totals"]["cached_input_tokens"], 160)
+
+    def test_missing_telemetry_is_unknown_not_zero(self):
+        totals = usage_totals([{"session_id": "missing", "execution_evidence": {}}])
+        self.assertIsNone(totals["totals"]["input_tokens"])
+        self.assertEqual(totals["covered"], 0)
+
+    def test_budget_figures_judge_uncached_input_when_it_is_known(self):
+        from linear_runner.engine.runner import budget_figures
+        usage = {"input_tokens": 6_250_000, "cached_input_tokens": 6_210_000, "output_tokens": 20_000}
+        self.assertEqual(budget_figures(usage), dict(usage, input_tokens=40_000))
+        self.assertEqual(usage["input_tokens"], 6_250_000)  # the usage itself is unchanged
+        for missing in ({"cached_input_tokens": None}, {"input_tokens": None}):
+            self.assertEqual(budget_figures(dict(usage, **missing))["input_tokens"],
+                             dict(usage, **missing)["input_tokens"])
+
+    def test_report_snapshots_escape_content_and_preserve_versions(self):
+        from linear_runner.reporting.report import render_report
+        session = {"session_id": "s1", "execution_evidence": {"usage_events": [{"usage": {
+            "input_tokens": 1200, "cached_input_tokens": 800, "output_tokens": 300, "reasoning_output_tokens": 100}}]}}
+        summary = {"outcome": "blocked", "history": [], "scope": "fixture", "error": "<script>alert(1)</script>",
+                   "usage": usage_totals([session])}
+        path = self.root / "report.html"
+        first = render_report(path, summary, [])
+        summary["outcome"] = "complete"
+        second = render_report(path, summary, [])
+        self.assertNotEqual(first["report"], second["report"])
+        self.assertTrue(Path(first["report"]).exists())
+        html = path.read_text()
+        self.assertNotIn("<script>", html)
+        self.assertNotIn(second["evidence_sha256"], html.split("Reproducibility appendix")[0])
+        self.assertIn("<tr><td>Runner sessions</td><td>1,200</td><td>800</td><td>300</td></tr>", html)
+
+    def test_execution_evidence_uses_only_cli_metadata(self):
+        events = [
+            {"type": "thread.started", "model": "reported-model"},
+            {"type": "item.completed", "item": {"type": "agent_message", "model": "fake", "text": "I used model fake"}},
+            {"type": "item.completed", "item": {"type": "mcp_tool_call", "status": "completed", "result": {"isError": True}}},
+            {"type": "item.completed", "item": {"type": "command_execution", "exit_code": 1}},
+            {"type": "item.completed", "item": {"type": "mcp_tool_call", "status": "completed"}},
+            {"type": "turn.failed"},
+        ]
+        evidence = execution_evidence(events)
+        self.assertEqual(evidence["observed_models"], [{"event_index": 0, "event_type": "thread.started", "model": "reported-model"}])
+        self.assertEqual(evidence["completed_tool_calls"], 3)
+        self.assertEqual(evidence["failed_tool_calls"], 2)
+        self.assertEqual(evidence["error_events"], 1)
+        self.assertIsNone(evidence["usage_events"])
+        self.assertIsNone(evidence["billed_cost"])
 
 
 if __name__ == "__main__":

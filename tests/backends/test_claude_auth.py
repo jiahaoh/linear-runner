@@ -6,7 +6,6 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,14 +14,14 @@ from unittest.mock import patch
 from linear_runner.backends.claude import ClaudeBackend, check_token_file, read_token
 from linear_runner.cli import main
 from linear_runner.config import ConfigError, _effective, config_fingerprint, load_config, pin_resolution, write_resolved
-from linear_runner.engine.runner import Runner, git, write_json
+from linear_runner.engine.runner import Runner
 from linear_runner.linear import messages
 from linear_runner.linear.attention import classify_stop
-from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, SystemdUserBackend, launch
+from linear_runner.supervision.launcher import ForegroundBackend, LaunchError, launch
 from linear_runner.supervision import backend_start
 from linear_runner.supervision.supervisor import supervise
 from tests.engine.test_claude_engine import claude_registry
-from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home, fake_codex
+from tests.fixtures import FakeLinear, fake_claude, fake_claude_log, make_home, make_repo, fake_codex
 from tests.supervision.test_supervisor import Harness
 
 TOKEN = "fake-oauth-token-never-recorded"
@@ -281,10 +280,7 @@ class TokenReachesOnlyTheChildTests(Fixture):
 
     def setUp(self):
         super().setUp()
-        git(self.repo, "init", "-q"); git(self.repo, "checkout", "-q", "-b", "runner/test")
-        git(self.repo, "config", "user.name", "Test"); git(self.repo, "config", "user.email", "test@example.invalid")
-        (self.repo / "README.md").write_text("fixture")
-        git(self.repo, "add", "."); git(self.repo, "commit", "-qm", "baseline")
+        make_repo(self.repo)
         self.linear = FakeLinear()
 
     def launch(self, auth, check_script=None, **plan):
@@ -375,19 +371,8 @@ class SystemdTokenVariableTests(Harness):
     SITE = {"claude": {"auth": {"oauth_token_env": VARIABLE}},
             "launcher": {"backend": "systemd-user", "environment": {"PATH": "/usr/bin:/bin"}, "startup_timeout_seconds": 5}}
 
-    def systemd(self):
-        calls = []
-
-        def run(argv, **kwargs):
-            calls.append(argv)
-            if argv[0] == "systemd-run" and "supervise" in argv:
-                write_json(self.state_dir / "supervisor.json",
-                           {"launch_id": argv[argv.index("--launch-id") + 1], "pid": 4242, "status": "running"})
-            return subprocess.CompletedProcess(argv, 0, "MainPID=4242\nActiveState=active\n", "")
-        return SystemdUserBackend(run=run, sleep=lambda s: None), calls
-
     def test_the_unit_copies_the_variable_by_name_only(self):
-        backend, calls = self.systemd()
+        backend, calls = self.systemd_fake()
         runner = self.make_runner()
         with patch.dict(os.environ, {VARIABLE: TOKEN, "TEST_LINEAR_TOKEN": "fake-linear-token"}):
             entry = launch(runner.config, self.linear, backend=backend, runner=runner, out=lambda text: None)
@@ -400,7 +385,7 @@ class SystemdTokenVariableTests(Harness):
         self.assertNotIn(TOKEN, json.dumps(entry))
 
     def test_preflight_fails_when_the_variable_is_unset(self):
-        backend, calls = self.systemd()
+        backend, calls = self.systemd_fake()
         runner = self.make_runner()
         with patch.dict(os.environ, {}):
             os.environ.pop(VARIABLE, None)
