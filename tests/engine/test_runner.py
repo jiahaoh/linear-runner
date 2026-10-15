@@ -1865,8 +1865,15 @@ class ControllerTests(unittest.TestCase):
             main(["stop", *self.args])
             self.assertEqual(marker.read_text(), "Held by the owner.\n")
             main(["status", *self.args])
-            main(["clear-stop", *self.args])
-        self.assertFalse((self.root / "state" / "fixture" / "STOP").exists())
+        self.assertEqual(marker.read_text(), "Held by the owner.\n")
+
+    def test_retired_paths_are_unknown(self):
+        # W-490: `launch --clear-stop` clears STOP with a record, and a paused issue continues
+        # through a recorded recovery (`recover resume`) and a launch.
+        for argv in (["clear-stop", *self.args], ["run", "--resume", *self.args]):
+            with self.subTest(argv=argv[0]), patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
+                main(argv)
+            self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

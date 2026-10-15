@@ -67,12 +67,11 @@ import tempfile
 
 from linear_runner.config import write_json
 from linear_runner.engine import intake as intake_module
-from linear_runner.engine.runner import (CONTRACT_RELATIONS, IssueBlocked, contract_fields, git, fingerprint,
+from linear_runner.engine.runner import (CONTRACT_RELATIONS, contract_fields, git, fingerprint,
                                          issue_contract, now, publication_form, published_issue, review_criteria,
                                          review_repair_waiting, run_id, validate_review_result)
 
 LOG_NAME = "recovery-log.jsonl"
-KINDS = ("resume", "revalidate", "review", "repair", "budget", "publish", "defer", "cancel", "repin-config")
 # What repin-config may never change: these define the batch; changing them needs a new batch.
 REPIN_FIXED = (("batch_id", "the batch id"), ("issues", "the issue allowlist and its order"),
                ("project_name", "the Linear project"), ("linear_workspace", "the Linear workspace"),
@@ -877,9 +876,3 @@ def block_record(runner, active, error, launch_id):
     blocks.append(entry)
     runner.save()
     return entry
-
-
-__all__ = ["IssueBlocked", "KINDS", "RecoveryError", "append_log", "verify_log", "expected_state", "park", "unpark",
-           "defer", "block_record", "repair_outcome", "recover_resume", "recover_revalidate", "recover_review", "recover_repair", "recover_budget",
-           "recover_publish", "blocked_review",
-           "recover_defer", "recover_cancel", "recover_repin_config"]

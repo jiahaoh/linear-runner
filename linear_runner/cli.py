@@ -68,9 +68,7 @@ def build_parser():
                        ("dry-run", "resolve names, check gates and select the next issue without dispatch"),
                        ("wait", "block until the launched batch stops, then print how (complete, checkpoint, "
                                 "paused); reads the state directory only, no model, no Linear"),
-                       ("stop", "write the STOP marker (stops between issues)"),
-
-                       ("clear-stop", "remove the STOP marker")):
+                       ("stop", "write the STOP marker (stops between issues)")):
         commands.add_parser(name, parents=[common], help=text)
     status = commands.add_parser("status", parents=[common],
                                  help="a short summary of the batch: phase, active issue and step, repairs, done and "
@@ -90,7 +88,6 @@ def build_parser():
     watch_progress.add_argument("--interval", type=float, default=10.0, metavar="SECONDS", help="poll interval (10)")
     run = commands.add_parser("run", parents=[common], help="run in this process (no supervisor)")
     run.add_argument("--max-issues", type=int, default=1)
-    run.add_argument("--resume", action="store_true")
     watch = commands.add_parser("watchdog", parents=[common],
                                 help="model-free check for a vanished or stalled supervisor (run by the launch timer)")
     watch.add_argument("--launch-id", help="the launch whose timer runs this check (set by launch)")
@@ -505,16 +502,13 @@ def main(argv=None):
                                               "configuration files differ from it: " + differs)
         print(json.dumps(report, indent=2))
         return
-    if args.command in ("stop", "clear-stop"):
+    if args.command == "stop":
         root.mkdir(parents=True, exist_ok=True)
         marker = root / "STOP"
-        if args.command == "clear-stop":
-            marker.unlink(missing_ok=True)
-        elif not marker.exists():
+        if not marker.exists():
             # A reason for the launch refusal to show; an existing marker keeps its own.
             marker.write_text(f"Stop requested with `runner.py stop` at {now()}.\n")
-        if args.command == "stop":
-            print(json.dumps({"stop_marker": str(marker), "watchdog_timer": stop_watchdog_timer(root)}, indent=2))
+        print(json.dumps({"stop_marker": str(marker), "watchdog_timer": stop_watchdog_timer(root)}, indent=2))
         return
     if args.command == "run" and (args.max_issues < 1 or args.max_issues > len(config["issues"]) + 1):
         parser.error("max-issues must be between 1 and the issue count plus one completion check")
@@ -538,8 +532,7 @@ def main(argv=None):
             raise KeyboardInterrupt(f"Signal {signum}")
         signal.signal(signal.SIGTERM, interrupted)
         try:
-            runner.execute(dry_run=args.command == "dry-run", limit=args.max_issues if args.command == "run" else 1,
-                           resume=getattr(args, "resume", False))
+            runner.execute(dry_run=args.command == "dry-run", limit=args.max_issues if args.command == "run" else 1)
             if args.command == "dry-run":
                 # A batch that is only dry-run has no state: its titles are kept for `status --board` (W-442).
                 runner.record_titles()

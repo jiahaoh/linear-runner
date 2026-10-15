@@ -15,6 +15,22 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Removed
+
+* `runner.py clear-stop` and `runner.py run --resume`. Both continued a batch without a
+  record: `clear-stop` deleted the STOP marker that `launch --clear-stop` clears and records in
+  the launch record, and `run --resume` continued a paused issue in the calling process without
+  the recorded recovery that `recover resume` writes. Use `launch --clear-stop`, or record a
+  recovery (`recover resume` or another kind) and launch. A bare `run` on a batch with a saved
+  or paused issue now names those commands in its refusal. `run --max-issues` stays. Also
+  removed are names nothing read (`Runner.model_backend`, `Runner.check_key`,
+  `attention.MECHANISMS`, `attention.NOTIFIER_BACKENDS`, `recovery.KINDS` and the `__all__`
+  of `recovery`) and the `url` setting of the Linear client, which no workspace file could
+  supply because the workspace schema has no such key. Project impact: none for configuration;
+  an operator or script that called either path uses its replacement. Canary tier: canary
+  batch (the engine changes, though only by two deleted methods and two reworded refusals)
+  (`W-490`).
+
 ## v2.8.0 — 2026-10-14
 
 A progress board for batches: a compact `status --board` record, optional lineage keys in a

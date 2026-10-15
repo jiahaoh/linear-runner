@@ -30,7 +30,7 @@ the checkout root, which is also `${runner_root}`.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `wait`, `stop`, `clear-stop`, `watchdog`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
+| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `wait`, `stop`, `watchdog`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
 | `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |

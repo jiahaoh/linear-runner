@@ -34,8 +34,6 @@ DECISION_PATTERNS = ("changed outside", "scope", "Human approval", "is not Done"
                      "requires a clean worktree", "interrupted; inspect", "Validation modified source",
                      "Source changed after validation", "Duplicate", "decision rules", "STOP marker",
                      "model pool", "model: label", "model_overrides")
-MECHANISMS = ("label", "state", "mention")
-NOTIFIER_BACKENDS = ("none", "command", "linear-mention-only")
 
 
 def classify_stop(error):

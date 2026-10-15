@@ -86,9 +86,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class LinearClient:
     def __init__(self, config):
         self.config = config
-        self.url = config.get("url", "https://mcp.linear.app/mcp")
-        if self.url != "https://mcp.linear.app/mcp":
-            raise ValueError("Only the official Linear MCP endpoint is supported")
+        self.url = "https://mcp.linear.app/mcp"  # the official endpoint; the workspace schema allows no other
         self.session = None
         self.protocol = "2025-06-18"
         self.sequence = 0

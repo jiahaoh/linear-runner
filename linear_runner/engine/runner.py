@@ -798,10 +798,6 @@ class Runner:
             self.model_backends[name] = backends.create(self.config, name)
         return self.model_backends[name]
 
-    @property
-    def model_backend(self):
-        return self.backend()
-
     def run_session(self, prompt, directory, *, phase, model, effort, writable=False, resume=None, schema=None,
                     watch=None, compact_limit=None, backend=None):
         """Run one model session through the model backend ``backend`` (default Codex); the
@@ -1759,9 +1755,6 @@ class Runner:
                 update(path.read_bytes() if path.is_file() else b"<deleted>")
         return full.hexdigest(), launch.hexdigest()
 
-    def check_key(self, spec):
-        return self.check_keys(spec)[0]
-
     def run_parity_check(self, subdir, spec, base_commit):
         """A ``base_parity`` check (W-344): the command in the exported base revision and in the
         worktree, then its outputs compared byte for byte. Writes ``checks.json`` (one record,
@@ -2491,6 +2484,8 @@ class Runner:
         return stop
 
     def execute(self, dry_run=False, limit=1, resume=False):
+        """Select and work up to ``limit`` issues in this process. ``resume`` continues a saved
+        active or paused issue; only tests pass it, since an operator records a recovery and launches."""
         self.verify_config()
         self.verify_repo()
         pid = self.state.get("child_pid")
@@ -2522,11 +2517,13 @@ class Runner:
             self.clear_watchdog_marks()
         if self.state.get("active"):
             if not resume:
-                raise RuntimeError("An unfinished issue is saved. Inspect it, then use run --resume")
+                raise RuntimeError("An unfinished issue is saved. Inspect it, record a recovery "
+                                   "(`runner.py recover resume ...`) and launch the batch")
             self.work(self.state["active"]["issue_id"], resume=True)
             limit -= 1
         elif self.state["phase"] == "paused" and not resume:
-            raise RuntimeError("Controller is paused; inspect state then use --resume")
+            raise RuntimeError("Controller is paused; inspect the state, record a recovery "
+                               "(`runner.py recover ...`) and launch the batch")
         for index in range(limit + 1):
             if self.stop_requested():
                 self.log("STOP marker present; stopping between issues")
