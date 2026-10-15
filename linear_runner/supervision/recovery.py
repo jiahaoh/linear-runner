@@ -8,52 +8,11 @@ STOP marker existed when the recovery was recorded, its hash is recorded too, an
 launch clears exactly that marker without ``--clear-stop``. ``--then continue`` (default)
 continues the batch after the recovered issue; ``--then stop`` stops after it.
 No command accepts work, deletes history or resets usage, repair or escalation counters.
+``repin-config`` is the exception to the pending rule: it is applied when recorded. ``cancel``
+checks no configuration, so it never deadlocks with ``repin-config``.
 
-* ``resume``  - continue the saved active issue from its saved step (or restore a
-  deferred, parked issue with ``--issue``). Optional ``--note-file`` (owner text given to
-  later model phases) and ``--repin-contract`` (adopt an edited live issue before acceptance).
-  At a repair that finished ``blocked`` it needs ``--note-file``: the worker then gets the
-  next repair slot with the note. An interrupted repair cannot be resumed.
-* ``revalidate`` - at a ``repair`` or ``validate`` stop after checks ran (a repair that
-  finished blocked or was interrupted, or checks still failing): re-run the checks on the
-  current worktree source with no model call and without using a repair slot. Passing
-  checks continue to commit, delivery, review and publication; failing checks enter the
-  normal repair loop with the remaining repair budget.
-* ``review``  - re-run only the independent review of the frozen commit, optionally after
-  re-running delivery (``--redeliver``, the previous packet is kept).
-* ``repair``  - at a ``review`` stop after a blocked review: send the reviewer's findings (each
-  unmet criterion with its evidence, the summary and limitations, plus an optional
-  ``--note-file``) back to the worker as a repair in its issue session. It uses the next slot
-  of the shared repair budget. After it the checks run in full, the repair is committed as a
-  new controller commit on top of the earlier one (never amended), delivery runs again and a
-  fresh independent review assesses the whole issue diff from the starting commit.
-  ``--repin-contract`` first adopts the edited live issue (a clarified criterion), so the
-  repair and the fresh review use it without a separate review round.
-* ``budget``  - reconcile a soft-budget checkpoint with an explicitly recorded new allowance.
-  When the stopped implement or repair phase had returned ``ready`` (only the budget stopped
-  it), that result is kept: the next launch validates it without running the phase again.
-* ``publish`` - reconcile publication of an already accepted review; no model may run.
-  ``--accept-contract-drift`` (at ``publish`` or ``done``) also re-pins the issue contract
-  when the live issue changed only outside what the reviewer accepted: the acceptance
-  criteria and every scope field (description, project, assignee, milestone, and the issue
-  IDs of ``blocks``, ``blockedBy``, ``duplicateOf``) must be byte-identical to the accepted snapshot up
-  to publication's ticks and Linear's emphasis markers and issue-mention markup (``publication_form``), otherwise it refuses and names the changed fields. It records the old and new contract hashes and
-  the changed field names; it never runs a model.
-* ``defer``   - set an issue aside and let the queue continue with independent issues.
-* ``cancel``  - withdraw a pending recovery that has not been launched (recorded too). It
-  checks no configuration: it runs against the pinned one even when the configuration files
-  changed since, so it never deadlocks with ``repin-config``.
-* ``repin-config`` - adopt a changed configuration and/or a newer runner commit for a paused
-  or stopped batch. Unlike the others it is applied when recorded and is never pending: it
-  re-pins ``resolved-config.json`` (the previous file is kept), records the old and new
-  fingerprints, the runner commit and the changed keys, and invalidates reused check
-  evidence whose definition changed. Record it first, then the recovery the paused state
-  needs (for example ``revalidate``), then launch. It refuses while a recovery is pending
-  and never changes the batch identity (issue allowlist and order, project, workspace,
-  assignee, worktree, branch, state directory, resolved Linear IDs), with one exception:
-  with ``--append-issues`` it adopts an allowlist that is the pinned one plus further issues
-  at its end. The earlier issues, their order, history, usage and evidence are untouched; the
-  new last issue and ``terminal_issue`` take over the last-issue and reporting rules.
+What each kind does and when to use it: README "Stop, recovery and continuation";
+``runner.py recover <kind> --help`` lists its options.
 """
 from __future__ import annotations
 

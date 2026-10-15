@@ -42,6 +42,17 @@ its tier. The release procedure is in the README ("Releases").
   the systemd backend fake that launches succeed with is one method of the supervisor test
   harness instead of two copies. The same 480 tests run with the same assertions. Project
   impact: none. Canary tier: none needed (no runtime change) (`W-494`).
+* Documentation describes the runner as it is. README "Layout" is the one module map: it now
+  lists `engine/lint.py`, `engine/parity.py` and the `watch` and `insert-issues` commands, and
+  AGENTS.md keeps the rules that come with the layout and points to it. AGENTS.md states the
+  exception the runner already had: its own usage tables in the run-summary and batch-finished
+  comments. README sentences that told release history or incidents ("before 2.6.1", "until
+  W-444", the figures of past batches) state current behaviour instead; the history stays in
+  this file. The pool table, a copy of `registry/pools.json` that still called the Claude
+  canary pending, gives way to a pointer to that file. The recovery and launcher module
+  docstrings keep their invariants and point to the README for procedures, which drops two
+  stale statements (append-only queue changes, `blocks` in the contract). Project impact:
+  none. Canary tier: first-issue checkpoint (documentation only) (`W-495`).
 
 ### Removed
 

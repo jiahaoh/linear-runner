@@ -30,7 +30,7 @@ the checkout root, which is also `${runner_root}`.
 
 | Path | Contents |
 | --- | --- |
-| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `wait`, `stop`, `watchdog`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
+| `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `watch`, `wait`, `stop`, `watchdog`, `insert-issues`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
 | `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |
@@ -40,6 +40,8 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/engine/runner.py` | The per-issue state machine: gates, model phases, checks and validation, the controller commit, delivery, review, publication and terminal reporting |
 | `linear_runner/engine/delivery.py` | Check outcomes and the generic, config-driven delivery integrity step |
 | `linear_runner/engine/intake.py` | Worker intake packets (compact, schema 2) |
+| `linear_runner/engine/lint.py` | Criterion wording a project lists as ambiguous (`criterion_lint`, see "Writing issues") |
+| `linear_runner/engine/parity.py` | Base-parity checks: one command on the issue's base revision and on the result |
 | `linear_runner/backends/__init__.py` | The model-backend interface (`SessionRequest`, `Backend`) and the backend registry |
 | `linear_runner/backends/codex.py` | Everything Codex-specific: the `codex exec` argv, its JSONL events, execution evidence and the host model catalog |
 | `linear_runner/backends/claude.py` | Everything Claude Code-specific: the `claude -p` argv and isolation flags, its stream-json events, execution evidence and the probe-verified model list |
@@ -210,7 +212,7 @@ migration entry and names it in its CHANGELOG project impact.
 Codex, so the Linear project and assignee remain unresolved names in its report. `dry-run`
 selects the next issue as the supervisor does: it skips done and deferred issues, logs each
 issue that waits for an unfinished prerequisite ("Dry run: W-9 waits for W-8"), and writes
-no batch state (before 2.6.1 it stopped on a first issue that waits, `W-351`). It does keep
+no batch state. It does keep
 the title and link of every allowlisted issue in `<state dir>/titles.json`, as each `launch`
 does, so that `status --board` can name an issue before the batch claims it. `dry-run`,
 `run` and `launch` resolve the exact project name and the assignee to IDs (no match or more than one
@@ -226,9 +228,7 @@ The pin binds once the batch has state. A batch that was only dry-run has `resol
 and no `state.json`: it has claimed nothing. When its batch file, its guidance or the runner
 changed since that dry-run, the next `dry-run`, `run` or `launch` resolves the names again,
 replaces the pin and says so in one line ("This batch has not run yet, so the configuration
-pinned at ... is replaced by the configuration files as they are now."). Before `W-378` such a
-batch was stuck: `dry-run` refused the change, and `recover repin-config` refused a batch with
-no state to re-pin.
+pinned at ... is replaced by the configuration files as they are now.").
 
 The configuration fingerprint in `state.json` and `resolved-config.json` covers the whole
 resolved configuration: guidance text, commands, environment, policy, IDs and the runner
@@ -263,7 +263,7 @@ every batch state names the runner it ran with. A batch may pin a release with
 runner checkout is exactly the clean, tagged release (`The batch pins runner_version 2.1.0,
 but this checkout is release 2.0.0 at commit ...`). `validate-config` reports the same
 problem under `runner_version` without failing, and `recover repin-config` refuses with it.
-Without `runner_version` any checkout runs, as before.
+Without `runner_version` any checkout runs.
 
 Every CHANGELOG entry states its **project impact** (`none`, or the exact configuration change
 and the `validate-config` message that asks for it) and its **canary tier**: `first-issue
@@ -286,7 +286,7 @@ are committed. To cut a release:
 Each model phase runs one entry of a **pool**: `registry/pools.json` maps a task kind (or `*`
 for every kind), a profile and a phase to an ordered list of `{backend, model, effort}`.
 A task-kind pool replaces the `*` pool of the same profile and phase; `*` must cover every
-profile and phase. The profile comes from `profiles.json` as before (issue label, phase
+profile and phase. The profile comes from `profiles.json` (issue label, phase
 override, review floor, low-risk review, escalation).
 
 Every phase (implement, repair, review) has its own pool and default, and the same override
@@ -307,17 +307,10 @@ mechanism. `<name>` is `<model>` or `<model>@<effort>`:
 * A worker session cannot move between CLIs: when repair or escalation selects another
   backend, the next phase starts a fresh session seeded with a handoff.
 
-Settled pools (first entry is the default; Claude runs only when named until the W-191 canary):
-
-| Profile | Implement / repair | Review |
-| --- | --- | --- |
-| Deep | gpt-6-astra high, claude-opus-5-5 high | gpt-6-astra high, claude-opus-5-5 high |
-| Standard (Validation) | gpt-6-astra medium, claude-opus-5-5 medium | gpt-6-astra medium, claude-opus-5-5 medium |
-| Standard (Implementation, Maintenance) | gpt-6-luna max, claude-opus-5-5 medium | gpt-6-astra medium, claude-opus-5-5 medium |
-| Economy | gpt-6-luna max, claude-opus-5-5 medium | gpt-6-luna max, claude-sonnet-5 medium (low-risk review only) |
-| Every profile (Research) | gpt-6-astra high, claude-opus-5-5 high, claude-opus-5-5 medium | gpt-6-astra high, claude-opus-5-5 high, claude-opus-5-5 medium |
-
-Review floors still apply (Research, Validation and Deep issues are reviewed from the Deep
+The pools themselves are in `registry/pools.json`, with the reasons for them in its `notes`.
+The first entry of each pool is its default; another entry runs only when it is named as
+above, or when an escalation keeps it. The Economy review pool is reached only by the
+low-risk review rule. Review floors still apply (Research, Validation and Deep issues are reviewed from the Deep
 pool). Claude needs `site.executables.claude` when a default entry or a batch override uses it;
 an issue label naming Claude on a site without it fails preflight. Adding the executable to a
 site changes the configuration fingerprint of its batches, so a paused batch then needs
@@ -459,11 +452,9 @@ nothing and never creates a second template.
   evidence.
 * A criterion that asks for existing tests to pass unchanged names the edits it allows, or
   says that a test which pins a layout the issue changes (a column list, a file list, a
-  schema) may get a named edit that the worker proposes and the reviewer assesses. `W-294`
-  required one test file to pass unchanged while its accepted design added columns to a table
-  whose exact column list that file pins; the worker stopped and the owner approved one named
-  edit. It was the fifth pause of this kind (`W-282` recorded four). The rule is part of
-  `templates/issue-contract.md`.
+  schema) may get a named edit that the worker proposes and the reviewer assesses. Without
+  either, a deliverable that changes such a layout contradicts the criterion and the worker
+  stops. The rule is part of `templates/issue-contract.md`.
 * Never write the identifier of an issue that does not exist yet (for example "the amendment
   will be W-242"). Once it exists, Linear links the plain text in the description the runner
   writes. The publication read-back tolerates that link, but a wrong identifier ends up linking
@@ -482,9 +473,7 @@ nothing and never creates a second template.
   lists each match in an issue the batch has not claimed as a warning ("W-9 criterion 3 says
   \"complete suite\": ..."), and `dry-run` logs the same as `Criterion lint:` lines. Warnings
   never stop a launch; `validate-config` refuses a pattern that is not a regular expression.
-  In s29-amend-20261005 "the controller's complete suite" passed two reviews and blocked a
-  third, and "A19 hash lists unchanged" blocked one (`W-345`). The example project has two
-  rules.
+  The example project has two rules.
 
 ## Running a batch
 
@@ -523,8 +512,7 @@ python3 runner.py watch --batch $B --timeout 1800            # one line per chan
 `status` prints a short summary (at most 15 lines, no issue text): the phase, the active
 issue with its step and the repairs it used, the done, remaining, deferred and waiting
 issues, the supervisor's status and outcome, the STOP marker and a pending recovery.
-`status --json` prints the full saved state, supervisor status, launch and watchdog record,
-as `status` did before 2.6.0.
+`status --json` prints the full saved state, supervisor status, launch and watchdog record.
 
 `status --board` prints one JSON object on one line for a program that draws the batch, for
 example a progress board that asks every few seconds. `status --json` carries the full text of
@@ -683,9 +671,7 @@ appears in them.
 `mods/runner-board/` is a Claude Code mod: a plugin whose code draws a pane in the Claude
 desktop app and in the terminal. It shows the batches you put on it and only reads. For each
 batch it runs `runner.py status --board` (see "Running a batch") and draws that record; it
-runs no other runner command, keeps no cache and writes no file. Until `W-444` it lived in the
-operator's own plugin folder, named that host's paths in its code and read `status --json`,
-`report` and a file of its own.
+runs no other runner command, keeps no cache and writes no file.
 
 * **Board**: one card for each batch, with the `purpose` its batch file states, its state, how
   many issues are done, and whether a STOP marker or a recovery is pending. Under it the
@@ -799,7 +785,7 @@ elsewhere stops the batch for reconciliation.
    counts as passing, and the validation comment lists it under "Not applicable". Use it for
    a long check that concerns one module, so that batches which never touch that module do
    not pay for it; a skipped check is no evidence for `delivery_integrity.required_checks`. Without
-   the option (or with `"always"`) the last issue runs the check as before. A check may also
+   the option (or with `"always"`) the last issue always runs the check. A check may also
    set `base_parity: {"outputs": [...]}` to compare a result with the issue's base revision:
    the controller exports the issue's starting commit with `git archive` to a temporary
    directory outside the worktree, runs the command there with the worktree's path replaced
@@ -929,8 +915,7 @@ later reader) does not stop the batch: later launches do not read it again, and 
 checks only that the issue is still Done in Linear. Its read-back (`lifecycle/<issue>/readback.json`, with the
 contract hash it had) stays the record of what was accepted. Edit the issue when the
 correction belongs in its text, and say in a comment what changed and why; reopening it (a
-status other than Done) stops the batch at its end. In s29-amend-20261005 a wrong number in
-the accepted W-334 was corrected by a comment, because this was not written down (`W-348`).
+status other than Done) stops the batch at its end.
 
 Each phase records requested and observed model/effort, usage, prompt and tool-output
 bytes and elapsed time. Exceeding a phase's soft budget (or missing usage telemetry)
@@ -950,19 +935,17 @@ under budget passes and one over budget checkpoints (the stop says "an upper bou
 The input budget judges uncached input: whenever the backend reports a cached figure, the
 `input_tokens` limit is compared with `input_tokens` minus `cached_input_tokens`, whatever the
 phase returned (`ready` or `blocked`); without a cached figure it is compared with the total
-input. A resumed long session rereads its whole context as cached input on every turn: `W-249`
-implement read 22.2M input tokens, 21.8M of them cached, and the `W-245` (ready), `W-255` and
-`W-256` (both blocked) implement phases read 20.2M, 15.9M and 31.1M with at most 0.41M uncached,
-against a 15M budget (`W-263`). When the total input is over the limit but the uncached input is
+input. A resumed long session rereads its whole context as cached input on every turn, so its
+total input can exceed the budget many times over while its uncached input stays small. When
+the total input is over the limit but the uncached input is
 not, `phase-usage.json` records a `budget_note`; the supervisor log has no line for it, because
 every long phase is in this case and the line never led to an action. Uncached input,
 output or tool calls over budget, or a missing figure, still checkpoint (the stop names the
 uncached figure); `recover budget --input-tokens` then sets the limit on the same basis. A phase
 that returned `blocked` within budget stops for its own block, not for the budget.
 
-The repair phase may write 150,000 output tokens (50,000 before `W-440`). Five repairs of the
-fifteen §2.10 batches finished `ready` with 66,138 to 134,258 output tokens, each rewriting long
-specification pages as its findings asked, and each stopped its batch for `recover budget`.
+The repair phase may write 150,000 output tokens, enough for a repair that rewrites long
+specification pages as its findings ask.
 
 **Phase timeouts per issue.** Each model phase has a hard timeout (`phases.json`,
 `timeout_seconds`). A batch can raise it for a named issue and phase when that phase is
@@ -989,7 +972,7 @@ are off unless a batch opts in:
 "context_controls": {"bounded_sessions": false, "low_risk_review": false, "compact_token_limit": null}
 ```
 
-The two switches default to `false` and `compact_token_limit` to `null`; all are schema-validated and and are part of the pinned, fingerprinted batch
+The two switches default to `false` and `compact_token_limit` to `null`; all are schema-validated and are part of the pinned, fingerprinted batch
 configuration (turning one on for a running batch refuses a resume like any other change).
 The thresholds and the rule itself stay in the registry.
 
@@ -1114,8 +1097,7 @@ lists, under "Files to review", the deliverables inside each done issue's run di
 (figures, tables, notes: files outside the diff) that no earlier batch comment listed; files
 in the worktree, and the worker's outbox drafts (its comments, already in Linear), stay in the
 Done comment. The terminal report lists every deliverable with
-its hash. In s29-amend-20261005 the figures of the planned checkpoint were listed only among
-ten source files in W-332's Done comment (`W-347`).
+its hash.
 
 **Issue mentions.** Linear links a bare issue identifier (`TEAM-123`) or issue URL in a
 comment to that issue and adds a "related" link between the two issues. Where a runner
@@ -1252,10 +1234,7 @@ recovery whose expected state still matches exactly. Then it:
    file is the controller's, when it is written, and that a worker keeps its records under
    other names. A file at that path that the controller
    did not write is kept as `controller-manifest.replaced-<id>.json` with a line in the log.
-   Until `W-437` the record was `manifest.json`: a worker's own record of that name was
-   replaced without a message, and a criterion that kept workers off the name then caught the
-   controller's file in review. Run directories from before the change are read by the old
-   name;
+   Run directories written while the record was named `manifest.json` are read by that name;
 5. stops at a planned checkpoint (`supervision.stop_after` or `--stop-after`), on STOP,
    when nothing more is ready (`partial`, listing deferred and waiting issues) or when the
    queue is complete, writes the terminal report and posts a new `batch-finished` comment on
@@ -1274,7 +1253,7 @@ pause itself fails, so a systemd unit ends `failed` only for real failures. `sta
 for a pause, `stop` and `classification`), never the exit code.
 
 A batch-level failure (gates, ownership, Linear errors, changed configuration, lost
-read-back) pauses the batch as before. An issue-level block (worker or repair blocked,
+read-back) pauses the batch. An issue-level block (worker or repair blocked,
 repair limit, delivery failure, rejected review, soft budget) is recorded in
 `state.blocks`; then the first matching decision rule decides, otherwise
 `supervision.on_block`: `stop` (the default) pauses the batch, `continue_independent`
@@ -1361,9 +1340,7 @@ writes `state.json`.
 The watchdog checks with the configuration the batch pinned. When the configuration files
 differ from the pin (a guidance file corrected for a later `recover repin-config`, a commit in
 the runner checkout), it still checks, alerts and stops its timer, and its output names the
-difference under `pinned_configuration`. Before `W-441` such a tick ended with
-"Configuration/guidance changed since ... was pinned" and exit status 2, so a running batch
-had no watchdog until it was re-pinned.
+difference under `pinned_configuration`.
 
 `launch` (systemd backend) starts it automatically: before the supervisor unit it starts a
 transient user timer `<prefix>-<batch>-<launch id>-watchdog.timer` (with a matching
@@ -1435,7 +1412,7 @@ it posts the stop comments, so `recover` waits up to 60 s for the lock; if it is
 The supervisor may still be exiting ...", exit 2) and records nothing: check `status`, then
 run the same command again. `launch` waits the same 60 s for the lock when the saved state says
 the batch is paused, so `launch --clear-stop` given right after a pause needs no polling
-either (`W-438`); a batch that is not paused is refused at once, as before, since the lock is
+either; a batch that is not paused is refused at once, since the lock is
 then held by a running supervisor.
 
 Every recovery requires `--reason` and `--authorized-by`, runs offline except
@@ -1596,7 +1573,7 @@ python3 runner.py launch --batch $B --clear-stop
 ```
 
 `--append-issues` accepts only the pinned allowlist followed by further, distinct issues.
-An inserted, reordered, removed or replaced issue is refused as before, and so is an
+An inserted, reordered, removed or replaced issue is refused, and so is an
 appended issue without the flag (the message names the flag). The record names the appended
 issues with its reason and authorizer. Earlier issues keep their history, usage, repairs and
 evidence. The added issues run on the same branch, on top of the accepted commits. The issue

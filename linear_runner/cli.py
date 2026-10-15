@@ -76,7 +76,7 @@ def build_parser():
                                       "remaining issues, supervisor, STOP marker, pending recovery")
     views = status.add_mutually_exclusive_group()
     views.add_argument("--json", action="store_true",
-                       help="the full saved state, supervisor status, launch and watchdog record (as before 2.6.0)")
+                       help="the full saved state, supervisor status, launch and watchdog record")
     views.add_argument("--board", action="store_true",
                        help="one compact JSON record for a progress board: the batch and, per issue in queue order, "
                             "title, stage, repairs, blocks, result summary, acceptance, time and tokens as `report` "

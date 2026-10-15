@@ -1,6 +1,6 @@
 """Launch: preflight, start the host supervisor, confirm startup, exit (no outer model session).
 
-``runner.py launch`` replaces the outer-LLM launch procedure. Preflight steps:
+Preflight steps and what each one's reuse depends on:
 
 ========================  =====================================  ==========================
 step                      identity it depends on                 reused when unchanged?
@@ -20,37 +20,11 @@ backend_start.<backend>   backend:<backend> (executable, CLI     yes
                           selection, environment overrides)
 ========================  =====================================  ==========================
 
-Every step records whether it was reused or rerun and why. ``baseline_checks`` never runs over
-an active issue's own uncommitted work (the worktree step has checked that the active issue
-owns it): it reuses the last passing result while configuration, environment and fixtures are
-unchanged, and records ``skipped`` (with the reason) otherwise.
-``claude_auth`` runs only when
-``site.claude.auth`` names a token file or variable: the token must be readable (a file of
-mode 600 or stricter, non-empty; a set variable) and ``claude auth status`` must show the CLI
-uses it. It records the mode and the path or name, never the token. ``linear_credential``
-records how long the Codex-owned Linear OAuth credential has left (when its file records an
-expiry), warns below the workspace's ``auth.warn_lifetime_minutes`` (720) and, when set, fails
-below ``auth.min_lifetime_minutes`` (off by default), naming the expiry and the refresh command
-(and, with ``auth.auto_refresh``, that the runner runs it itself). The ``linear`` step reads
-every allowlisted issue (proving authentication), checks gates, ownership, dependencies,
-decision-rule blocks and model/effort availability for each pending issue, and performs
-the dry-run selection (or, for a saved active issue, the resume-specific checks).
-
-``backend_start.<backend>`` runs once for each model backend the pending issues can select
-(any phase, escalation or lighter review): the worker command a session would run, in the
-batch worktree, with a tiny fixed request (see ``backend_start``). It is the only preflight
-step that calls a model, so it is reused while the backend's identity is unchanged. A backend
-that cannot start fails the launch here, before any issue is claimed.
-
-Backends are pluggable: ``systemd-user`` (a transient ``systemd-run --user`` unit with
-Restart=no, KillMode=control-group and a STOP marker written by ExecStopPost) and
-``foreground`` (runs the supervisor in this process, for tests and debugging).
-
-The ``systemd-user`` backend also starts a transient user timer,
-``<prefix>-<batch>-<launch id>-watchdog.timer``, that runs ``runner.py watchdog`` every
-``attention.watchdog.interval_minutes`` (10). The watchdog stops its own timer once the
-supervisor has reached an outcome and any alert is posted; a later launch stops earlier
-timers. The foreground backend starts no timer.
+Every step records whether it was reused or rerun and why. ``backend_start.<backend>`` is the
+only step that calls a model, so it is reused while the backend's identity is unchanged; a
+backend that cannot start fails the launch before any issue is claimed. What each step checks,
+the host backends (``systemd-user``, ``foreground``) and the watchdog timer a launch starts:
+README "Running a batch" and "Watchdog".
 """
 from __future__ import annotations
 

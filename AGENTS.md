@@ -4,7 +4,7 @@ This repository owns the reusable Linear-to-model issue runner, configuration ex
 
 Follow your own configured workflow for tracking changes: record substantive changes in a matching issue with the executing session and validation evidence, and keep related guidance in sync.
 
-After changing `templates/` or `linear_runner/linear/messages.py`, run `python3 render_samples.py` and commit `docs/template-samples.md` (a test checks it is current). Linear comments are for people: plain sentences, no JSON or tables.
+After changing `templates/` or `linear_runner/linear/messages.py`, run `python3 render_samples.py` and commit `docs/template-samples.md` (a test checks it is current). Linear comments are for people: plain sentences, no JSON or tables, except the usage tables the runner itself writes into the run-summary and batch-finished comments (`templates/README.md`); worker and reviewer drafts follow the plain rule.
 
 Run `python3 -m unittest -v` from the checkout root, plus offline `validate-config` for affected batches (at least `python3 runner.py validate-config --home examples/home --batch examples/home/batches/example.json`), before committing. Live issue dispatch is not a unit test; do not launch unrelated work to verify controller changes. Preserve existing state/logs and unrelated work. Keep run reports, prompts from executed sessions and private artifacts outside this source repository. Record commit/push/merge state and limitations in the issue handoff.
 
@@ -19,14 +19,10 @@ workers continue their dispatched issue.
 
 ## Where things live
 
+README "Layout" maps every file and module. The rules that come with the layout:
+
 - `runner.py` (checkout root): the command entry point; systemd units, the watchdog timer and `attention.command_prefix` run it by path, so keep it at the root and keep it a thin shim over `linear_runner/cli.py`. `render_samples.py` is the same kind of shim.
-- `linear_runner/cli.py`: argument parsing and command dispatch.
-- `linear_runner/config.py`: layered configuration, schemas, `${runner_root}` (the checkout root, not the package), fingerprint and runner identity.
-- `linear_runner/engine/`: the per-issue state machine (`runner.py`), check outcomes and delivery integrity (`delivery.py`), intake packets (`intake.py`).
-- `linear_runner/backends/`: the model-backend interface and registry (`__init__.py`), all Codex-specific code (`codex.py`: argv, JSONL events, evidence, model catalog) and all Claude Code-specific code (`claude.py`: argv and isolation flags, stream-json events, evidence, known models). The engine reaches a model CLI only through this interface; keep CLI flags and event names out of the engine.
-- `linear_runner/linear/`: the Linear client, comment templates and ledger (`updates.py`), comment builders (`messages.py`), stops and notifier (`attention.py`).
-- `linear_runner/supervision/`: launch and preflight, supervisor, recoveries, watchdog, wait, decision rules.
-- `linear_runner/reporting/`: offline records, trajectory, measurement, terminal report, the board record (`status --board`), template samples.
-- `registry/`, `schema/`, `templates/`, `prompts/`, `examples/`, `testdata/`: data at the checkout root; code finds them through `linear_runner.config.RUNNER_ROOT`. Editing `registry/` or guidance changes configuration fingerprints.
+- `${runner_root}` is the checkout root, not the package. Data stays there (`registry/`, `schema/`, `templates/`, `prompts/`, `examples/`, `testdata/`), and code finds it through `linear_runner.config.RUNNER_ROOT`. Editing `registry/` or guidance changes configuration fingerprints.
+- `linear_runner/backends/`: all Codex-specific code (`codex.py`) and all Claude Code-specific code (`claude.py`) behind one model-backend interface (`__init__.py`). The engine reaches a model CLI only through this interface; keep CLI flags and event names out of the engine.
 - `mods/runner-board/`: the progress board, a Claude Code mod (README "Progress board"); the root `.claude-plugin/marketplace.json` lists it. It reads the runner only through `status --board`, and no worker session loads it. Its tests are not part of the unit suite: run `claude plugin validate mods/runner-board` and `claude plugin test mods/runner-board` after changing it or the board record. `hooks/status-board.fixture.ts` is written by `tests/reporting/test_board.py`, never by hand.
-- `tests/`: mirrors the package; shared fixtures (fake Linear, temporary private home, `CHECKOUT`) in `tests/fixtures.py`.
+- `tests/`: mirrors the package; shared fixtures (fake Linear, temporary private home, Git repository, `CHECKOUT`) in `tests/fixtures.py`.
