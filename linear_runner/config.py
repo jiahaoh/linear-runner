@@ -734,8 +734,6 @@ def load_config(batch_path, home=None):
             texts.append(text)
     config["guidance_files"] = guidance
     sources["guidance_files"] = project_label if not batch.get("guidance_files") else f"{project_label} + {batch_label}"
-    config["_worker_instructions"] = "\n\n".join(texts)
-    sources["_worker_instructions"] = sources["guidance_files"]
     config["_guidance_parts"] = texts
     sources["_guidance_parts"] = sources["guidance_files"]
 
@@ -750,7 +748,6 @@ def load_config(batch_path, home=None):
         contract = {"path": str(path), "sha256": hashlib.sha256(body.encode()).hexdigest(),
                     "bytes": len(body.encode())}
     put("contract", contract, project_label)
-    put("intake_mode", project.get("intake_mode", "compact"), project_label)
 
     # Site: host executables, storage roots and the model catalog.
     builtins = {name: variables[name] for name in ("home", "runner_root")}

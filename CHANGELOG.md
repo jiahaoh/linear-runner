@@ -17,6 +17,20 @@ its tier. The release procedure is in the README ("Releases").
 
 ### Removed
 
+* The full intake packet and the code kept for contracts pinned before 2.4.0. Compact intake
+  has been the default since `W-181` (2026-09-23): `intake_mode` now accepts only `"compact"`,
+  so a project that still states `"full"` fails `validate-config` with `project <name>.intake_mode:
+  must be one of ['compact']`; remove the key or set `"compact"`. `measure --replay-compact`, which
+  rebuilt saved schema-1 intakes with the compact builder to estimate the saving, goes with it,
+  and the measurement drops its `compact_replay` figures and column; `measure` and `report` still
+  read schema-1 intakes in saved records. A pinned contract must now match its intake snapshot
+  under the current formula; the three earlier formulas (before `W-194`, the intermediate `W-194`
+  form, and runners 2.1.0 to 2.3.0 with `blocks`) are gone, and an active issue without
+  `repair_blocked` counts its last repair as interrupted instead of reading the latest stop. A
+  read-only scan of all saved batch states on 2026-10-15 found none that needs them. Project
+  impact: a project that sets `intake_mode: "full"` must remove the key or set `"compact"`; no
+  private project sets it. `validate-config` no longer prints `intake_mode`. Canary tier: canary
+  batch (the engine builds the intake and checks the contract) (`W-491`).
 * `runner.py clear-stop` and `runner.py run --resume`. Both continued a batch without a
   record: `clear-stop` deleted the STOP marker that `launch --clear-stop` clears and records in
   the launch record, and `run --resume` continued a paused issue in the calling process without

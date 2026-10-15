@@ -80,36 +80,6 @@ class CompactIntakeTests(Harness):
         return self.root / "state" / "fixture"
 
 
-class FullIntakeTests(Harness):
-    PROJECT = {"intake_mode": "full", "context_files": ["../notes.md"]}
-
-    def setUp(self):
-        super().setUp()
-        (self.home / "notes.md").write_text("Background notes.")
-
-    def test_full_mode_keeps_the_schema_1_packet(self):
-        self.make_runner().execute(limit=1)
-        run = next(p for p in (self.root / "runs" / "DEV-1").iterdir() if p.is_dir())
-        packet = json.loads((run / "intake.json").read_text())
-        self.assertNotIn("schema", packet)
-        self.assertEqual(list(packet["references"].values())[0]["text"], "Background notes.")
-        self.assertFalse((run / "issue.json").exists())
-        self.assertEqual(self.linear.data["statusType"], "completed")
-
-
-class ReplayTests(unittest.TestCase):
-    def test_compact_replay_of_a_saved_schema_1_intake(self):
-        path = FIXTURE / "root-b" / "TEAM-2" / "20260101T020000Z-0000001a" / "intake.json"
-        saved = json.loads(path.read_text())
-        replay = intake.compact_from_saved(saved)
-        self.assertEqual(replay["contract"]["bytes"], 6000)
-        self.assertEqual(replay["acceptance_criteria"], ["Produce TEAM-2 output"])
-        self.assertNotIn("stateHistory", replay["issue"])
-        before = measure.intake_components(saved, path.stat().st_size)["total"]
-        after = len(json.dumps(replay, indent=2).encode())
-        self.assertLess(after, before / 2)
-
-
 def bounded_registry(**settings):
     registry = copy.deepcopy(TEST_REGISTRY)
     registry["phases"]["bounded_sessions"] = dict({"input_threshold_tokens": 1000,

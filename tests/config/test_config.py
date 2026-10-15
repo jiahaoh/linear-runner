@@ -171,14 +171,20 @@ class LayeredConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "file not found"):
             self.load(batch={"guidance_files": ["../missing.md"]})
         loaded = self.load(batch={"guidance_files": ["../batch-guidance.md"]})
-        self.assertTrue(loaded["_worker_instructions"].endswith("Batch authorization text."))
+        self.assertTrue(loaded["_guidance_parts"][-1].endswith("Batch authorization text."))
         self.assertEqual(loaded["worktree"], str(self.repo))
+
+    def test_only_the_compact_intake_is_accepted(self):
+        # W-491: the schema-1 full packet was retired; a project may still state the one mode.
+        with self.assertRaisesRegex(ConfigError, r"intake_mode: must be one of \['compact'\]"):
+            self.load(project={"intake_mode": "full"})
+        self.assertNotIn("intake_mode", self.load(project={"intake_mode": "compact"}))
 
     def test_guidance_substitutes_known_variables_only(self):
         write(self.root / "home" / "vars.md", "Run ${python} in ${worktree} for ${batch}; keep shell ${HOME} literal.")
         loaded = self.load(project={"guidance_files": ["../vars.md"]})
-        self.assertEqual(loaded["_worker_instructions"],
-                         f"Run {sys.executable} in {self.repo} for fixture; keep shell ${{HOME}} literal.")
+        self.assertEqual(loaded["_guidance_parts"],
+                         [f"Run {sys.executable} in {self.repo} for fixture; keep shell ${{HOME}} literal."])
 
     def test_substitution_rejects_undefined_or_redefined_variables(self):
         with self.assertRaisesRegex(ConfigError, "undefined variable"):
@@ -420,7 +426,7 @@ class LayeredConfigTests(unittest.TestCase):
         self.assertTrue(fresh)
         baseline = config_fingerprint(resolved)
         self.assertNotEqual(baseline, config_fingerprint(dict(resolved, project_id="other")))
-        self.assertNotEqual(baseline, config_fingerprint(dict(resolved, _worker_instructions="changed")))
+        self.assertNotEqual(baseline, config_fingerprint(dict(resolved, _guidance_parts=["changed"])))
         changed = copy.deepcopy(resolved); changed["policy"]["phases"]["max_repairs"] = 1
         self.assertNotEqual(baseline, config_fingerprint(changed))
         self.assertEqual(baseline, config_fingerprint(dict(resolved, _sources={}, _layers={})))

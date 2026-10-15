@@ -228,18 +228,11 @@ def _repin(runner, active, identifier):
 
 def repair_outcome(state):
     """How the active issue's last dispatched repair ended: ``blocked`` (it finished and
-    reported blocked) or ``interrupted`` (no result: killed, timed out, Codex failed).
-
-    New state records ``active.repair_blocked`` (the repair number that ended blocked); state
-    written before that field falls back to the issue's latest stop.
+    reported blocked, recorded as ``active.repair_blocked``) or ``interrupted`` (no result:
+    killed, timed out, Codex failed).
     """
-    active = state["active"]
-    if active.get("repair_blocked") is not None:
-        return "blocked" if active["repair_blocked"] == active.get("repairs") else "interrupted"
-    stops = [s for s in state.get("stops", []) if s.get("issue") == active["issue_id"]]
-    if stops and stops[-1].get("step") == "repair" and stops[-1].get("event") == "worker_blocked":
-        return "blocked"
-    return "interrupted"
+    blocked = state["active"].get("repair_blocked")
+    return "blocked" if blocked is not None and blocked == state["active"].get("repairs") else "interrupted"
 
 
 def _repairs_left(runner, active):

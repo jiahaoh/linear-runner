@@ -32,7 +32,7 @@ def summarize(config):
             "runner_version": {"pinned": pinned, "problem": pin_problem(config, RUNNER_ROOT)} if pinned else None,
             "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
-            "delivery_integrity": bool(config["delivery_integrity"]), "intake_mode": config["intake_mode"],
+            "delivery_integrity": bool(config["delivery_integrity"]),
             "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
             "variable_overrides": variable_overrides(config),
             "lineage": config["lineage"], "warnings": lineage_warnings(config),
@@ -127,8 +127,6 @@ def build_parser():
                          help="Codex session-log directory for per-call context growth (read only; default "
                               "$CODEX_HOME/sessions, else ~/.codex/sessions, when it exists)")
     measure.add_argument("--no-rollouts", action="store_true", help="do not read Codex session logs")
-    measure.add_argument("--replay-compact", action="store_true",
-                         help="also rebuild each saved intake with the compact builder and report its size")
     measure.add_argument("--json", metavar="PATH", help="also write the full measurement as JSON")
     insert = commands.add_parser("insert-issues",
                                  help="edit the batch file: insert issues into its allowlist (before an issue, or at "
@@ -375,15 +373,11 @@ def offline_report(args):
 def offline_measure(args):
     """``measure``: model-free context-cost measurement from saved records."""
     from linear_runner.reporting import measure
-    compact = None
-    if args.replay_compact:
-        from linear_runner.engine import intake
-        compact = intake.compact_from_saved
     status = measure.rollout_location(args.rollouts, disabled=args.no_rollouts)
     if status["note"]:
         print(status["note"], file=sys.stderr)
     result = measure.measure(args.runs, issues=args.issues, rollouts=status["location"] if status["found"] else None,
-                             compact=compact, rollout_status=status)
+                             rollout_status=status)
     if args.json:
         write_json(Path(args.json), result)
     print(measure.render_markdown(result))

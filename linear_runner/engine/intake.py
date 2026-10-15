@@ -1,6 +1,6 @@
 """Worker intake packets.
 
-Schema 2 (``compact``, the default) keeps the packet to what is specific to the issue:
+Schema 2 keeps the packet to what is specific to the issue:
 
 * the issue's own fields a worker needs (id, title, url, labels, milestone, relations and the
   description holding its deliverables and criteria) and the exact unchecked acceptance
@@ -16,8 +16,9 @@ Schema 2 (``compact``, the default) keeps the packet to what is specific to the 
 The full Linear issue pinned at intake is written next to the packet as ``issue.json``; it
 remains the identity and contract record (``active["issue"]`` in state holds the same data).
 
-Schema 1 (``full``) is the previous packet: the full issue, all guidance as ``constraints``
-and every context file's text in ``references``.
+Schema 1 was the earlier full packet: the whole issue, all guidance as ``constraints`` and
+every context file's text in ``references``. The runner no longer writes it; ``measure`` still
+reads it in saved records.
 """
 from __future__ import annotations
 
@@ -94,12 +95,8 @@ def compact_packet(*, issue, starting_commit, guidance, contract, context_files,
 
 
 def build(config, active, selection, notes, snapshot=None):
-    """The intake packet for the configured ``intake_mode`` (``snapshot``: the issue.json reference)."""
+    """The intake packet (``snapshot``: the issue.json reference)."""
     issue = active["issue"]
-    if config.get("intake_mode", "compact") == "full":
-        return {"issue": issue, "starting_commit": active["starting_commit"],
-                "constraints": config["_worker_instructions"], "references": config["_context"],
-                "checks": config["checks"], "selection": selection, "operator_notes": notes}
     contract = config.get("contract")
     guidance = "\n\n".join(text for path, text in zip(config["guidance_files"], config["_guidance_parts"])
                            if not contract or path != contract["path"])
@@ -109,30 +106,3 @@ def build(config, active, selection, notes, snapshot=None):
                           contract=dict(contract) if contract else None, context_files=context,
                           checks=config["checks"], selection=selection, operator_notes=notes,
                           issue_snapshot=snapshot)
-
-
-def compact_from_saved(packet, contract_names=("contract",)):
-    """Replay the compact builder on a saved schema-1 intake (offline measurement).
-
-    A saved context file whose name contains one of ``contract_names`` stands in for the
-    shared contract (referenced by hash); other context files become references; guidance
-    stays inline; run-specific extra keys written by recoveries are kept.
-    """
-    if packet.get("schema") == SCHEMA:
-        return packet
-    references = packet.get("references") or {}
-    contract, context = None, []
-    for path, entry in references.items():
-        reference = {"path": path, "bytes": len(entry.get("text", "").encode()),
-                     "sha256": entry.get("sha256") or hashlib.sha256(entry.get("text", "").encode()).hexdigest()}
-        if contract is None and any(name in Path(path).name for name in contract_names):
-            contract = reference
-        else:
-            context.append(reference)
-    known = {"issue", "starting_commit", "constraints", "references", "checks", "selection", "operator_notes"}
-    return compact_packet(issue=packet.get("issue") or {}, starting_commit=packet.get("starting_commit"),
-                          guidance=packet.get("constraints", ""), contract=contract, context_files=context,
-                          checks=packet.get("checks", []), selection=packet.get("selection"),
-                          operator_notes=packet.get("operator_notes", []),
-                          issue_snapshot={"path": "issue.json"},
-                          extra={k: v for k, v in packet.items() if k not in known})

@@ -30,7 +30,7 @@
       }
     },
     "contract_file": {"$ref": "#/$defs/text", "description": "Shared contract every issue follows; the intake references it by path and SHA-256 instead of inlining it."},
-    "intake_mode": {"enum": ["compact", "full"], "description": "compact (default): issue-specific intake with file references; full: the schema-1 packet with every context file inlined."},
+    "intake_mode": {"enum": ["compact"], "description": "compact: issue-specific intake with file references, the only packet the runner writes (the schema-1 full packet was retired in W-491)."},
     "identity_files": {"type": "array", "items": {"$ref": "#/$defs/text"}},
     "check_environment": {
       "type": "object",

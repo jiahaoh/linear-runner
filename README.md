@@ -39,7 +39,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning, the configuration fingerprint and runner identity |
 | `linear_runner/engine/runner.py` | The per-issue state machine: gates, model phases, checks and validation, the controller commit, delivery, review, publication and terminal reporting |
 | `linear_runner/engine/delivery.py` | Check outcomes and the generic, config-driven delivery integrity step |
-| `linear_runner/engine/intake.py` | Worker intake packets: compact schema 2 (default) and the full schema 1 |
+| `linear_runner/engine/intake.py` | Worker intake packets (compact, schema 2) |
 | `linear_runner/backends/__init__.py` | The model-backend interface (`SessionRequest`, `Backend`) and the backend registry |
 | `linear_runner/backends/codex.py` | Everything Codex-specific: the `codex exec` argv, its JSONL events, execution evidence and the host model catalog |
 | `linear_runner/backends/claude.py` | Everything Claude Code-specific: the `claude -p` argv and isolation flags, its stream-json events, execution evidence and the probe-verified model list |
@@ -109,7 +109,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, `intake_mode` (`compact` default, or `full`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -919,12 +919,8 @@ mentions another issue, and re-creates them from description mentions after remo
 say nothing about scope. `blocks` is not part of it either: it is the mirror of another
 issue's `blockedBy`, so it changes whenever someone creates an issue that waits for this one
 (a later human review, for example). The check before a review logs such a change and
-continues. Title, labels and status are outside the contract too. State pinned
-by an earlier runner version stored a hash that included the related links, relation
-titles or the `blocks` relation; the runner checks that stored hash against the intake
-snapshot (under the current or an earlier formula) and then
-compares the snapshot and the live issue with the current field set, so a paused batch
-continues without a new batch.
+continues. Title, labels and status are outside the contract too. The stored hash must match
+the intake snapshot; otherwise the snapshot is not the one that was pinned and the batch stops.
 
 **Editing an issue after its acceptance.** The contract is compared until the lifecycle
 read-back right after acceptance, never again. A later edit of an accepted issue's
@@ -1010,20 +1006,21 @@ when the configuration loads.
 **Compact intake and shared contract.** A project may name a `contract_file`: one versioned
 file with the rules every issue follows. Its SHA-256 is part of the pinned configuration,
 so editing it refuses a resume, and the runner re-checks it before and after review and at
-publication. The default `intake_mode: "compact"` writes `intake.json` schema
+publication. The runner writes `intake.json` schema
 `linear-runner.intake/2`: the issue's own fields and description, the exact unchecked
 criteria, the contract as `{path, sha256, bytes}`, the other guidance inline, context files as
 `{path, bytes, sha256}` (read on demand, not inlined), checks, selection and operator notes.
 The full pinned Linear issue is written to `issue.json` and remains the identity record for
 review and lifecycle read-back. The reviewer is told the exact contract version.
-`intake_mode: "full"` keeps the previous packet. `templates/issue-contract.md` is the shape
+Packets of the earlier schema 1 (the full issue, guidance and context text inlined) are no
+longer written; `measure` still reads them in saved records. `templates/issue-contract.md` is the shape
 for writing issue descriptions against the shared contract (purpose, deliverables, 5 to 10
 verifiable criteria, optional decision rules, exclusions); `examples/issue-contract-example.md`
 is a fictional example and `examples/home/contracts/shared-contract.md` an example contract.
 The runner also writes `intake-components.json` (bytes per component) for later measurement.
 
 **Measurement.** `runner.py measure --runs <dir>... [--issues ...] [--rollouts DIR | --no-rollouts]
-[--replay-compact] [--json out.json]` reads saved records only. Codex session logs are read from
+[--json out.json]` reads saved records only. Codex session logs are read from
 `--rollouts`, else `$CODEX_HOME/sessions`, else `~/.codex/sessions`; when that directory is
 missing, the output says so and omits the per-call growth instead of failing. Claude invocations need no
 session logs: their per-call context comes from the invocation's own `events.jsonl`. It reports intake bytes by
@@ -1032,7 +1029,6 @@ tool-output bytes and the input it added to its session. With `--rollouts` it re
 rollout of each session and splits each invocation's input into the re-sent starting context
 and the growth charged to what added it (intake/context reads, test runs, file reads, other
 commands, turns without tools, compaction); the parts add up to the recorded input exactly.
-`--replay-compact` rebuilds each saved intake with the compact builder and reports its size.
 
 **Trajectory report.** `runner.py report --runs <dir>... [--issues ...] [--until <ISO time>]
 [--group "LABEL=ID,ID"] [--out DIR] [--check-trajectory recorded.json] [--check-comparison

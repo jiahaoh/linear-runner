@@ -561,16 +561,11 @@ class RecoveryScenarioTests(Harness):  # on_block defaults to stop
         self.linear.call = original
         self.assertEqual(self.state()["active"]["step"], "publish")
 
-    def test_paused_batch_pinned_with_related_links_publishes_without_a_new_batch(self):
-        # The canary shape: state pinned by an older runner, whose contract hash covered the
-        # related links, then Linear added a related link while the batch was paused.
+    def test_paused_batch_with_a_new_related_link_publishes_without_a_new_batch(self):
+        # The canary shape: Linear added a related link while the batch was paused at publication.
         self.linear.data["relations"] = {"blocks": [], "blockedBy": [], "duplicateOf": None,
                                          "relatedTo": [{"id": "DEV-3", "title": "Terminal issue"}]}
         self.pause_at_publish()
-        path = self.state_dir / "state.json"
-        state = json.loads(path.read_text())
-        state["active"]["contract"] = runner_module.legacy_issue_contract(state["active"]["issue"])
-        path.write_text(json.dumps(state))
         self.linear.data["relations"]["relatedTo"].append({"id": "DEV-9", "title": "Filed later, mentions DEV-1"})
         self.recover("publish", then="stop")
         before = list(self.calls)
@@ -821,14 +816,6 @@ class RevalidateTests(Harness):
                                                    r"\(1 of 2 repairs left\)"):
             self.recover("resume")
         self.assertIsNone(self.state().get("pending_recovery"))
-        # State written before ``repair_blocked`` existed is read from the issue's latest stop.
-        path = self.state_dir / "state.json"
-        state = json.loads(path.read_text()); del state["active"]["repair_blocked"]; path.write_text(json.dumps(state))
-        self.assertEqual(recovery.repair_outcome(state), "blocked")
-        with self.assertRaisesRegex(RecoveryError, "finished with status blocked"):
-            self.recover("resume")
-        state["stops"][-1]["event"] = None
-        self.assertEqual(recovery.repair_outcome(state), "interrupted")
 
     def test_revalidate_after_fixing_the_environment_uses_no_model_and_no_repair_slot(self):
         self.pause_at_blocked_repair()

@@ -221,9 +221,8 @@ def context_growth(calls, markers):
 
 # --- Measurement ----------------------------------------------------------------------------
 
-def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=None):
-    """Per issue: intake components and per-invocation usage/growth. ``compact`` is an optional
-    ``callable(packet) -> packet`` replaying a new intake builder on each saved intake."""
+def measure(roots, *, issues=None, rollouts=None, rollout_status=None):
+    """Per issue: intake components and per-invocation usage/growth."""
     invocations = [i for i in records.find_invocations(roots) if not issues or i["issue"] in issues]
     intakes = {(e["issue"], e["run_id"]): e for e in records.find_intakes(roots)
                if not issues or e["issue"] in issues}
@@ -241,10 +240,6 @@ def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=N
                   "components": intake_components(packet, size),
                   "recorded_components": records.read_json(recorded) if recorded.is_file() else None,
                   **description_facts((packet.get("issue") or {}).get("description") or "")}
-        if compact is not None:
-            replay = compact(packet)
-            encoded = json.dumps(replay, indent=2) + "\n"
-            record["compact_replay"] = intake_components(replay, len(encoded.encode()))
         issue["intakes"].append(record)
     for item in invocations:
         issue = report["issues"].setdefault(item["issue"], {"intakes": [], "invocations": []})
@@ -293,15 +288,13 @@ def measure(roots, *, issues=None, rollouts=None, compact=None, rollout_status=N
 
 def totals(report):
     """Batch-level sums: intake components, invocation input and the growth split."""
-    components, replay = {}, {}
+    components = {}
     rollout = dict({"input": 0, "prefix": 0, "invocations": 0}, **{kind: 0 for kind in GROWTH_KINDS})
     added, bounded = {}, set()
     for issue in report["issues"].values():
         for intake in issue["intakes"]:
             for key, value in intake["components"].items():
                 components[key] = components.get(key, 0) + value
-            for key, value in (intake.get("compact_replay") or {}).items():
-                replay[key] = replay.get(key, 0) + value
         for row in issue["invocations"]:
             if row["input_added"] is not None:
                 added[row["phase"]] = added.get(row["phase"], 0) + row["input_added"]
@@ -314,7 +307,7 @@ def totals(report):
                 rollout["prefix"] += growth["prefix"]
                 for key in GROWTH_KINDS:
                     rollout[key] += growth["growth"][key]
-    return {"intake_components": components, "compact_replay": replay or None, "input_added_by_phase": added,
+    return {"intake_components": components, "input_added_by_phase": added,
             "input_added_upper_bound_phases": sorted(bounded),
             "rollout": rollout if rollout["invocations"] else None}
 
@@ -327,15 +320,13 @@ def render_markdown(report):
     lines = ["# Context-cost measurement", "", "Offline, from saved runner records; no model was used. " + logs, "",
              "## Intake packets", "",
              "| Issue | Run | Total | Description | Other issue fields | Guidance | Context files | Checks | Other "
-             "| Criteria | Link markup | Compact replay |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| Criteria | Link markup |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for name, issue in report["issues"].items():
         for intake in issue["intakes"]:
             c = intake["components"]
-            replay = intake.get("compact_replay")
             cells = [name, intake["run_id"], c["total"], c["issue_description"], c["issue_other_fields"],
                      c.get("guidance", 0), c.get("context_files", 0), c.get("checks", 0), c["other"],
-                     intake["unchecked_criteria"], intake["issue_link_markup_bytes"],
-                     replay["total"] if replay else "n/a"]
+                     intake["unchecked_criteria"], intake["issue_link_markup_bytes"]]
             lines.append("| " + " | ".join(f"{v:,}" if isinstance(v, int) else str(v) for v in cells) + " |")
     lines += ["", "## Invocations", "",
               "| Issue | Attempt | Phase | Compact limit | Prompt bytes | Tool output bytes | Session input after "

@@ -986,27 +986,23 @@ class EngineTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertNotEqual(issue_contract(other), pinned)
 
-    def test_old_pinned_forms_verify_and_a_renamed_blocker_passes(self):
-        from linear_runner.engine.runner import (blocks_issue_contract, contract_matches, legacy_issue_contract,
-                                                 pinned_contract, titled_issue_contract)
+    def test_a_renamed_blocker_passes_and_a_mismatched_snapshot_stops(self):
+        from linear_runner.engine.runner import contract_matches, pinned_contract
         snapshot = dict(copy.deepcopy(self.linear.data), relations={
             "blocks": [], "blockedBy": [{"id": "PRE-1", "title": "Prerequisite"}], "duplicateOf": None,
             "relatedTo": list(self.RELATED)})
         live = dict(copy.deepcopy(snapshot), relations=dict(copy.deepcopy(snapshot["relations"]),
                                                             blockedBy=[{"id": "PRE-1", "title": "Renamed"}], relatedTo=[]))
-        for form in (issue_contract, blocks_issue_contract, titled_issue_contract, legacy_issue_contract):
-            with self.subTest(form=form.__name__):
-                active = {"issue": snapshot, "contract": form(snapshot), "step": "review"}
-                self.assertEqual(pinned_contract(active), issue_contract(snapshot))
-                self.assertTrue(contract_matches(live, active))
-                blocked = dict(live, relations=dict(live["relations"], blockedBy=[{"id": "PRE-2", "title": "New"}]))
-                self.assertFalse(contract_matches(blocked, active))
+        active = {"issue": snapshot, "contract": issue_contract(snapshot), "step": "review"}
+        self.assertEqual(pinned_contract(active), issue_contract(snapshot))
+        self.assertTrue(contract_matches(live, active))
+        blocked = dict(live, relations=dict(live["relations"], blockedBy=[{"id": "PRE-2", "title": "New"}]))
+        self.assertFalse(contract_matches(blocked, active))
         with self.assertRaisesRegex(RuntimeError, "does not match its pinned contract hash"):
             pinned_contract({"issue": snapshot, "contract": issue_contract(live | {"id": "DEV-2"}), "step": "review"})
 
-    def test_state_pinned_with_related_links_verifies_against_the_snapshot(self):
-        # State written by an older runner: the stored hash covered the whole relations object.
-        from linear_runner.engine.runner import legacy_issue_contract, pinned_contract
+    def test_a_related_link_added_while_paused_is_not_scope(self):
+        from linear_runner.engine.runner import pinned_contract
         self.linear.data["relations"] = {"blocks": [], "blockedBy": [], "relatedTo": list(self.RELATED),
                                          "duplicateOf": None}
         original = self.linear.call
@@ -1020,13 +1016,10 @@ class EngineTests(unittest.TestCase):
         self.linear.call = original
         active = self.runner.state["active"]
         self.assertEqual(active["step"], "publish")
-        active["contract"] = legacy_issue_contract(active["issue"])
-        self.runner.save()
         # Linear adds a related link (a new issue or a comment mentions this one).
         self.linear.data["relations"]["relatedTo"].append({"id": "OTHER-8", "title": "Filed later"})
-        self.assertNotEqual(legacy_issue_contract(self.linear.data), active["contract"])  # the old check failed here
         self.assertEqual(pinned_contract(active), issue_contract(self.linear.data))
-        # A snapshot that matches neither formula is not trusted.
+        # A snapshot that does not match its stored hash is not trusted.
         tampered = dict(active, issue=dict(active["issue"], description="- [ ] Something else"))
         with self.assertRaisesRegex(RuntimeError, "does not match its pinned contract hash"):
             pinned_contract(tampered)
@@ -1091,7 +1084,6 @@ class EngineTests(unittest.TestCase):
 
     def test_a_new_blocks_relation_after_the_pin_does_not_pause_the_review(self):
         # W-282 (W-270): an issue created while this one ran declared itself blocked by it.
-        from linear_runner.engine.runner import blocks_issue_contract
         original = self.runner.run_session
         def relate_during_implement(prompt, directory, **kwargs):
             value = original(prompt, directory, **kwargs)
@@ -1107,13 +1099,6 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([line for line in logged if "blocks relation" in line],
                          ["DEV-1: the blocks relation changed after the contract was pinned (added NEXT-9); "
                           "it is not part of the contract, so the review proceeds"])
-        # State pinned by runner 2.3.0, whose hash covered blocks, still verifies and still matches.
-        snapshot = dict(copy.deepcopy(self.linear.data), relations={"blocks": [], "blockedBy": [], "duplicateOf": None})
-        active = {"issue": snapshot, "contract": blocks_issue_contract(snapshot), "step": "review"}
-        live = dict(snapshot, relations=dict(snapshot["relations"], blocks=[{"id": "NEXT-9"}]))
-        from linear_runner.engine.runner import contract_changes, contract_matches
-        self.assertTrue(contract_matches(live, active))
-        self.assertEqual(contract_changes(snapshot, live), [])
 
     def test_an_edit_before_a_resumed_review_pauses_before_the_model_call(self):
         original = self.runner.run_session
