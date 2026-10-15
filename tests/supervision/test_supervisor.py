@@ -1814,7 +1814,8 @@ class DeliveryIntegrityTests(Harness):
         self.assertNotIn(("DEV-1", "review"), self.calls)
 
     def test_verify_delivery_rejects_each_integrity_failure(self):
-        from linear_runner.engine.delivery import DeliveryError, sha256, verify_delivery
+        from linear_runner.config import file_sha256 as sha256
+        from linear_runner.engine.delivery import DeliveryError, verify_delivery
         directory = self.root / "delivery"; (directory / "packet").mkdir(parents=True)
         log = self.root / "check.log"; log.write_text("ok")
         records = [{"name": "output", "exit_code": 0, "log": str(log), "sha256": sha256(log)}]

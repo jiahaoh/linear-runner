@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import shlex
 
+from linear_runner.reporting.trajectory import MARKS
 from linear_runner.linear.updates import (first_sentence, issue_mentions, neutralize_issue_mentions, plain, quote,
                                           render, variant)
 
@@ -433,7 +434,6 @@ def issues_prose(*, done=(), paused=None, deferred=(), waiting=None, pending=())
 # Figures come from reporting.trajectory (``run_summary``/``batch_summary``), the same
 # accounting as ``runner.py report``; this part only formats them.
 
-MARKS = {"upper-bound": "≤ ", "lower-bound": "≥ "}
 UNKNOWN = "—"
 
 

@@ -28,14 +28,16 @@ import uuid
 from linear_runner import backends
 from linear_runner.linear import attention
 from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
-                                  match_entry, pool_for, read_json, write_json)
-from linear_runner.engine.delivery import EMPTY_NOTE, SKIPPED_NOTE, check_outcome, check_passed, check_skipped
+                                  match_entry, pid_alive, pool_for, read_json, write_json)
+from linear_runner.engine.delivery import (EMPTY_NOTE, SKIPPED_NOTE, check_outcome, check_passed, check_skipped,
+                                           evidence_intact)
 from linear_runner.engine import intake
 from linear_runner.engine import parity
 from linear_runner.engine import lint as criterion_lint
 from linear_runner.linear.client import LinearClient, read_back
 from linear_runner.linear import messages
 from linear_runner.linear import updates
+from linear_runner.reporting.records import USAGE_KEYS, last_counter
 
 
 # In every model prompt: repositories keep their own agent instructions (AGENTS.md, CLAUDE.md),
@@ -123,14 +125,6 @@ def evidence_environment(config):
 
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
-
-
-def evidence_intact(record):
-    """A saved check record is passing evidence (passed, or an allowed empty selection) and its
-    log is still the file that was hashed."""
-    log = Path(record["log"]) if record.get("log") else None
-    return bool(check_passed(record) and log and log.is_file()
-                and hashlib.sha256(log.read_bytes()).hexdigest() == record["sha256"])
 
 
 def fingerprint(repo):
@@ -347,14 +341,6 @@ def usage_totals(records):
             "coverage": "runner sessions only; outer launch/reporting excluded unless imported separately; not billed cost"}
 
 
-USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
-
-
-def _last_counter(events):
-    usage = [e.get("usage") for e in events or [] if isinstance(e, dict) and isinstance(e.get("usage"), dict)]
-    return {k: v for k, v in usage[-1].items() if isinstance(v, int) and not isinstance(v, bool)} if usage else None
-
-
 def attempt_usage(directory):
     """Token usage of one model attempt (``<run dir>/<phase>-<id>/``) for its phase budget.
 
@@ -373,10 +359,10 @@ def attempt_usage(directory):
     meta = read_json(path) if path.is_file() else {}
     evidence = meta.get("execution_evidence") or {}
     unknown = {k: None for k in USAGE_KEYS}
-    own = _last_counter(evidence.get("invocation_usage_events"))
+    own = last_counter(evidence.get("invocation_usage_events"))
     if own is not None:
         return dict(unknown, **{k: own.get(k) for k in USAGE_KEYS}, basis="invocation")
-    current = _last_counter(evidence.get("usage_events"))
+    current = last_counter(evidence.get("usage_events"))
     if current is None:
         return dict(unknown, basis="unavailable")
     session, started = meta.get("session_id"), meta.get("started_at") or ""
@@ -387,7 +373,7 @@ def attempt_usage(directory):
         other = read_json(sibling)
         if other.get("session_id") != session or (started and (other.get("started_at") or "") > started):
             continue
-        counter = _last_counter((other.get("execution_evidence") or {}).get("usage_events"))
+        counter = last_counter((other.get("execution_evidence") or {}).get("usage_events"))
         if counter is None:
             missing.append(other.get("started_at") or "")
         elif previous is None or counter.get("input_tokens", 0) >= previous.get("input_tokens", 0):
@@ -2445,7 +2431,7 @@ class Runner:
         self.verify_config()
         self.verify_repo()
         pid = self.state.get("child_pid")
-        if pid and Path(f"/proc/{pid}").exists():
+        if pid_alive(pid):
             raise RuntimeError(f"Previous worker PID {pid} may still be alive; inspect before resuming")
         if dry_run:
             # The supervisor's dependency-aware selection, read-only (W-351): an issue that waits for

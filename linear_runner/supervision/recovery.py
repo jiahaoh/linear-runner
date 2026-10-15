@@ -65,7 +65,7 @@ import re
 import subprocess
 import tempfile
 
-from linear_runner.config import write_json
+from linear_runner.config import pid_alive, write_json
 from linear_runner.engine import intake as intake_module
 from linear_runner.engine.runner import (CONTRACT_RELATIONS, contract_fields, git, fingerprint,
                                          issue_contract, now, publication_form, published_issue, review_criteria,
@@ -161,7 +161,7 @@ def _preflight(runner, reason, authorized_by, *, check_config=True):
     if check_config:
         runner.verify_config()
     pid = runner.state.get("child_pid")
-    if pid and Path(f"/proc/{pid}").exists():
+    if pid_alive(pid):
         raise RecoveryError(f"Previous worker PID {pid} may still be alive; inspect before recovery")
     if not runner.state_path.exists():
         raise RecoveryError("This batch has no saved state to recover")
@@ -661,11 +661,11 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
                             "pinned configuration; cancel it (recover cancel), re-pin, then record it again")
     status_path = root / "supervisor.json"
     status = read_json(status_path) if status_path.exists() else {}
-    if status.get("status") == "running" and status.get("pid") and Path(f"/proc/{status['pid']}").exists():
+    if status.get("status") == "running" and pid_alive(status.get("pid")):
         raise RecoveryError(f"Supervisor {status.get('launch_id')} (PID {status['pid']}) is still running; "
                             "the configuration can be re-pinned only while the batch is paused or stopped")
     pid = state.get("child_pid")
-    if pid and Path(f"/proc/{pid}").exists():
+    if pid_alive(pid):
         raise RecoveryError(f"Previous worker PID {pid} may still be alive; inspect before recovery")
     if state.get("phase") != "paused" and not (root / "STOP").exists():
         raise RecoveryError(f"The batch is {state.get('phase')!r} without a STOP marker; the configuration can be "

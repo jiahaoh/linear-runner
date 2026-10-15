@@ -28,8 +28,8 @@ import os
 from pathlib import Path
 import time
 
-from linear_runner.config import read_json
-from linear_runner.supervision.supervisor import STATUS_NAME, pid_alive
+from linear_runner.config import pid_alive, read_json
+from linear_runner.supervision.supervisor import STATUS_NAME
 
 POLL_SECONDS = 10
 EXIT_CODES = {"complete": 0, "failed": 1, "checkpoint": 3, "paused": 4, "partial": 5}

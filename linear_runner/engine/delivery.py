@@ -16,9 +16,10 @@ scientific content of the packet.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
+
+from linear_runner.config import file_sha256
 
 
 class DeliveryError(RuntimeError):
@@ -65,8 +66,11 @@ def check_passed(record):
             and record.get("allow_empty") is True)
 
 
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def evidence_intact(record):
+    """A saved check record is passing evidence (passed, or an allowed empty selection) and its
+    log is still the file that was hashed."""
+    log = Path(record["log"]) if record.get("log") else None
+    return bool(check_passed(record) and log and log.is_file() and file_sha256(log) == record.get("sha256"))
 
 
 def _inside(base, relative, where):
@@ -84,8 +88,7 @@ def _intact(records, where):
         name = record.get("name") or " ".join(record.get("command", [])[:3])
         if not check_passed(record):
             raise DeliveryError(f"{where} {name!r} did not pass")
-        log = Path(record.get("log", ""))
-        if not log.is_file() or sha256(log) != record.get("sha256"):
+        if not evidence_intact(record):
             raise DeliveryError(f"{where} {name!r} log is missing or altered")
 
 
@@ -120,7 +123,7 @@ def verify_delivery(spec, delivery_dir, commit, validation_records):
         path = _inside(manifest_path.parent, relative, f"file_hashes.{field}")
         if not path.is_file():
             raise DeliveryError(f"delivered file for {field!r} is missing: {relative}")
-        digest = sha256(path)
+        digest = file_sha256(path)
         if manifest.get(field) != digest:
             raise DeliveryError(f"manifest {field!r} does not match the SHA-256 of {relative}")
         files[relative] = digest
@@ -129,8 +132,8 @@ def verify_delivery(spec, delivery_dir, commit, validation_records):
         value = _json(path, "flag file")
         if not isinstance(value, dict) or value.get(item["field"]) is not True:
             raise DeliveryError(f"{item['file']} field {item['field']!r} is not true")
-        files[item["file"]] = sha256(path)
-    return {"commit": commit, "manifest": str(manifest_path), "manifest_sha256": sha256(manifest_path),
+        files[item["file"]] = file_sha256(path)
+    return {"commit": commit, "manifest": str(manifest_path), "manifest_sha256": file_sha256(manifest_path),
             "files_sha256": files, "validation_checks": sorted(n for n in names if n),
             "delivery_checks": len(delivery_records),
             "scope": "Structural integrity only; the independent reviewer assesses the delivered content."}

@@ -29,14 +29,13 @@ import subprocess
 import time
 
 from linear_runner import backends
-from linear_runner.config import PHASES, write_json
+from linear_runner.config import LAUNCHER_DEFAULTS, PHASES, write_json
 from linear_runner.engine.runner import inherited_environment, resolve_profile
 
 PROMPT = ("linear-runner launch preflight: start check. Do not read files, run commands or use any tool. "
           "Reply only with the JSON object {\"ok\": true}.")
 SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"],
           "additionalProperties": False}
-DEFAULT_TIMEOUT_SECONDS = 180
 DETAIL_CHARS = 500
 
 
@@ -166,7 +165,8 @@ def run(config, name, check, directory, *, timeout=None):
     """Start backend ``name`` once in the worktree with the tiny request; return the record.
     StartError names the backend and quotes its own error text (trimmed)."""
     backend = backends.create(config, name)
-    timeout = timeout or config["launcher"].get("backend_start_timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
+    timeout = (timeout or config["launcher"].get("backend_start_timeout_seconds")
+               or LAUNCHER_DEFAULTS["backend_start_timeout_seconds"])
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "prompt.txt").write_text(PROMPT)

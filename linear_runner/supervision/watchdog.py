@@ -34,15 +34,11 @@ import subprocess
 import time
 
 from linear_runner.linear import attention
-from linear_runner.config import read_json, write_json
+from linear_runner.config import pid_alive, read_json, write_json
 from linear_runner.linear import messages
 from linear_runner.linear import updates
 
 LEDGER_NAME = "watchdog.json"
-
-
-def pid_alive(pid):
-    return bool(pid) and Path(f"/proc/{pid}").exists()
 
 
 def _epoch(value):

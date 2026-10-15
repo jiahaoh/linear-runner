@@ -19,10 +19,11 @@ bound (``delta_basis``). No model, network or Linear access.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 from pathlib import Path
 import re
+
+from linear_runner.config import file_sha256
 
 RUN_ID = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
 ATTEMPT = re.compile(r"^(implement|repair|review)-(\d{8}T\d{6}Z-[0-9a-f]{8})$")
@@ -49,10 +50,6 @@ def read_json(path):
         return None
 
 
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
 def locate(path):
     """``(issue, run id, run dir)`` for a path below ``<issue>/<run id>/``, else ``None``."""
     parts = Path(path).parts
@@ -75,13 +72,16 @@ def _walk(roots, name):
 
 # --- Invocations ------------------------------------------------------------------
 
+def last_counter(events):
+    """The last usage counter in ``events``: its integer fields, booleans excluded (``None``
+    when no event carries a usage dictionary)."""
+    usage = [e.get("usage") for e in events or [] if isinstance(e, dict) and isinstance(e.get("usage"), dict)]
+    return {k: v for k, v in usage[-1].items() if isinstance(v, int) and not isinstance(v, bool)} if usage else None
+
+
 def counter_of(meta):
     """The latest cumulative usage counter of one invocation (``None`` when not emitted)."""
-    events = ((meta.get("execution_evidence") or {}).get("usage_events")) or []
-    usage = [e.get("usage") for e in events if isinstance(e, dict) and isinstance(e.get("usage"), dict)]
-    if not usage:
-        return None
-    return {k: v for k, v in usage[-1].items() if isinstance(v, int) and not isinstance(v, bool)}
+    return last_counter((meta.get("execution_evidence") or {}).get("usage_events"))
 
 
 UPPER_BOUND = "cumulative-upper-bound"
@@ -135,7 +135,7 @@ def read_invocation(path):
         "invocation_scoped": bool((meta.get("execution_evidence") or {}).get("invocation_usage_events")),
         "tool_calls": _count((meta.get("execution_evidence") or {}).get("completed_tool_calls")),
         "failed_tool_calls": _count((meta.get("execution_evidence") or {}).get("failed_tool_calls")),
-        "source": str(path), "sha256": sha256(path), "copies": [],
+        "source": str(path), "sha256": file_sha256(path), "copies": [],
     }
 
 
@@ -236,7 +236,7 @@ def find_checks(roots):
                 "seconds": (end - start).total_seconds() if start and end and not reused else None,
                 "rss_kib": rss, "log": str(log) if log else record.get("log"),
                 "log_found": log is not None,
-                "hash_matches": (sha256(log) == recorded_hash) if log is not None and recorded_hash else None,
+                "hash_matches": (file_sha256(log) == recorded_hash) if log is not None and recorded_hash else None,
                 "source": str(path), "copies": [],
             }
     return sorted(unique.values(), key=lambda c: (c["issue"], c["run_id"], c["stage"], c["started_at"] or ""))
@@ -254,7 +254,7 @@ def find_intakes(roots):
         key = located[:2]
         entry = latest.setdefault(key, {"issue": located[0], "run_id": located[1], "paths": [], "hashes": set()})
         entry["paths"].append(path)
-        entry["hashes"].add(sha256(path))
+        entry["hashes"].add(file_sha256(path))
     for entry in latest.values():
         entry["path"] = max(entry["paths"], key=lambda p: p.stat().st_mtime)
         entry["versions"] = len(entry.pop("hashes"))

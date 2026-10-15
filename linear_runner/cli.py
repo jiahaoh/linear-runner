@@ -12,8 +12,8 @@ import signal
 import subprocess
 import sys
 
-from linear_runner.config import (PHASES, ConfigError, lineage_warnings, load_config, pin_resolution, pinned_config,
-                                  read_json, variable_overrides, write_json, write_resolved)
+from linear_runner.config import (PHASES, ConfigError, lineage_warnings, load_config, pid_alive, pin_resolution,
+                                  pinned_config, read_json, variable_overrides, write_json, write_resolved)
 from linear_runner.engine.runner import LockBusy, Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
 
@@ -58,9 +58,10 @@ class VersionAction(argparse.Action):
 
 
 def build_parser():
-    common = argparse.ArgumentParser(add_help=False)
+    home = argparse.ArgumentParser(add_help=False)
+    home.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
+    common = argparse.ArgumentParser(add_help=False, parents=[home])
     common.add_argument("--batch", required=True, help="batch file (issue allowlist, gates, project name)")
-    common.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action=VersionAction)
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -128,21 +129,19 @@ def build_parser():
                               "$CODEX_HOME/sessions, else ~/.codex/sessions, when it exists)")
     measure.add_argument("--no-rollouts", action="store_true", help="do not read Codex session logs")
     measure.add_argument("--json", metavar="PATH", help="also write the full measurement as JSON")
-    insert = commands.add_parser("insert-issues",
+    insert = commands.add_parser("insert-issues", parents=[home],
                                  help="edit the batch file: insert issues into its allowlist (before an issue, or at "
                                       "the end), with their implement timeout and a new terminal_issue; adopt the "
                                       "edit with `recover repin-config`")
     insert.add_argument("--batch", required=True, help="batch file, or the id of one in <home>/batches")
-    insert.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
     insert.add_argument("--issues", nargs="+", required=True, metavar="ISSUE", help="the issues to insert, in order")
     insert.add_argument("--before", metavar="ISSUE", help="insert before this issue (default: at the end)")
     insert.add_argument("--implement-timeout", type=int, metavar="SECONDS",
                         help="phase_overrides.<issue>.implement.timeout_seconds for each inserted issue")
     insert.add_argument("--terminal-issue", metavar="ISSUE", help="the new terminal_issue")
-    template = commands.add_parser("sync-linear-template",
+    template = commands.add_parser("sync-linear-template", parents=[home],
                                    help="render templates/issue-contract.md as the Linear issue template \"Runner "
                                         "issue contract\", check the workspace's copy and record its ID")
-    template.add_argument("--home", help="private configuration home (default: $LINEAR_RUNNER_HOME, then ~/.config/linear-runner)")
     template.add_argument("--workspace", help="workspace slug (workspaces/<slug>.json); required unless --dry-run")
     template.add_argument("--team", help="Linear team whose templates to search (default: all the user can see)")
     template.add_argument("--dry-run", action="store_true", help="print the rendered template; no Linear access, no writes")
@@ -261,7 +260,7 @@ def stop_watchdog_timer(root, run=subprocess.run):
         return None
     if watchdog.timer_stopped(root, timer):
         return {"timer": timer, "state": "already stopped"}
-    if status.get("status") == "running" and watchdog.pid_alive(status.get("pid")):
+    if status.get("status") == "running" and pid_alive(status.get("pid")):
         return {"timer": timer, "state": "left running until the supervisor exits between issues"}
     watchdog.record_timer_stop(root, timer, "runner.py stop", watchdog.systemctl_stop(timer, run))
     return {"timer": timer, "state": "stopped"}

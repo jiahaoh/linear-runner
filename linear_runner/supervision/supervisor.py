@@ -30,12 +30,11 @@ pause itself fails. Status and the watchdog read ``supervisor.json``, never the 
 """
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 import signal
 
-from linear_runner.config import config_fingerprint, read_json, write_json
+from linear_runner.config import config_fingerprint, file_sha256, pid_alive, read_json, write_json
 from linear_runner.linear import messages
 from linear_runner.supervision.recovery import append_log, block_record, defer, expected_state, park
 from linear_runner.supervision.rules import RuleError, evaluate, parse_rules
@@ -50,14 +49,6 @@ LIFECYCLE_DIR = "lifecycle"
 
 class SupervisorRefused(RuntimeError):
     """Refused before any dispatch; nothing is written to Linear."""
-
-
-def sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def pid_alive(pid):
-    return bool(pid) and Path(f"/proc/{pid}").exists()
 
 
 class Supervisor:
@@ -237,11 +228,11 @@ class Supervisor:
             raise RuntimeError(f"{issue}: post-run checklist read-back mismatch")
         # The controller's record under its name, or under the name it had before W-437.
         manifest = MANIFEST_NAME if (run / MANIFEST_NAME).is_file() else LEGACY_MANIFEST_NAME
-        files = {name: sha256(run / name) for name in ("final-result.json", "intake.json", "issue.json", manifest)
+        files = {name: file_sha256(run / name) for name in ("final-result.json", "intake.json", "issue.json", manifest)
                  if (run / name).is_file()}
         integrity = run / "delivery" / "integrity.json"
         if integrity.is_file():
-            files["delivery/integrity.json"] = sha256(integrity)
+            files["delivery/integrity.json"] = file_sha256(integrity)
         record = {"at": now(), "launch_id": self.launch_id, "issue": issue, "commit": entry["commit"],
                   "run_dir": str(run), "accepted_criteria": len(accepted["acceptance"]),
                   "live": {"status": live.get("status"), "statusType": live.get("statusType"),
@@ -255,7 +246,7 @@ class Supervisor:
         if path.exists():
             path.rename(directory / f"readback-superseded-{run_id()}.json")
         write_json(path, record)
-        digest = sha256(path)
+        digest = file_sha256(path)
         self.state.setdefault("lifecycle", {})[issue] = {"path": str(path), "sha256": digest, "synced_at": None}
         self.r.save()
         self.state["lifecycle"][issue]["synced_at"] = now()

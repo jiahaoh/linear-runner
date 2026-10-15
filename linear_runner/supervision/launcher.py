@@ -68,7 +68,8 @@ import time
 
 from linear_runner import backends
 from linear_runner.backends.codex import catalog_sha256
-from linear_runner.config import RUNNER_ROOT, batch_argument, config_fingerprint, read_json, write_json
+from linear_runner.config import (BUILTIN_VARIABLES, RUNNER_ROOT, batch_argument, config_fingerprint, pid_alive,
+                                  read_json, write_json)
 from linear_runner.supervision import backend_start, wait
 from linear_runner.engine import lint as criterion_lint
 from linear_runner.version import pin_problem
@@ -76,7 +77,7 @@ from linear_runner.supervision.recovery import expected_state
 from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, evidence_intact,
                                          LockBusy, fingerprint, git, now, project_lock, resolve_profile, run_id)
 from linear_runner.linear import messages
-from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor, pid_alive
+from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor
 
 PREFLIGHT_NAME = "preflight.json"
 
@@ -100,7 +101,7 @@ def identities(config):
     repo = Path(config["worktree"])
     executables = {}
     for name, value in sorted(config["variables"].items()):
-        if name in ("home", "runner_root", "batch", "worktree"):
+        if name in BUILTIN_VARIABLES:
             continue
         resolved = shutil.which(value) if not os.path.isabs(value) else value
         if resolved and Path(resolved).is_file():

@@ -152,6 +152,15 @@ def read_json(path):
     return json.loads(Path(path).read_text())
 
 
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def pid_alive(pid):
+    """Whether process ``pid`` exists on this host; no PID is not alive."""
+    return bool(pid) and Path(f"/proc/{pid}").exists()
+
+
 # --- Minimal JSON Schema subset (no third-party dependency) -----------------
 
 def _is_type(value, kind):

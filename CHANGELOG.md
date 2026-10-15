@@ -25,6 +25,17 @@ its tier. The release procedure is in the README ("Releases").
   named usage groups it also accepted had no caller. Both outputs are unchanged: the board
   record of the test fixture and the terminal report HTML are byte-identical. Project impact:
   none. Canary tier: first-issue checkpoint (reporting only) (`W-492`).
+* Rules that existed in several copies have one definition each: when a PID counts as alive
+  (`config.pid_alive`, before two functions and four inline checks), the SHA-256 of a file
+  (`config.file_sha256`, before three functions), the last usage counter of an invocation
+  (`records.last_counter`, which `counter_of` and the engine's attempt usage both call, with
+  `USAGE_KEYS` declared once), what passing and intact check evidence is
+  (`delivery.evidence_intact`, which delivery integrity now uses too), the built-in variable
+  names, the backend start timeout default (`LAUNCHER_DEFAULTS`, with the same fallback) and the
+  bound marks of the usage tables. `insert-issues` and `sync-linear-template` share the `--home`
+  option of the other commands. Figures, comments and messages are unchanged. Project impact:
+  none. Canary tier: canary batch (the engine's attempt usage and evidence checks call the
+  shared definitions) (`W-493`).
 
 ### Removed
 
