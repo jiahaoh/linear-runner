@@ -2360,14 +2360,10 @@ class Runner:
         and never blocks the terminal report or the batch comment.
         """
         try:
-            from linear_runner.reporting import trajectory
-            runs = [h["run_dir"] for h in self.state["history"]]
-            runs += [p["active"]["run_dir"] for p in (self.state.get("parked") or {}).values()
-                     if isinstance(p, dict) and (p.get("active") or {}).get("run_dir")]
-            if self.state.get("active"):
-                runs.append(self.state["active"]["run_dir"])
+            from linear_runner.reporting import records, trajectory
+            runs = [run for _, run in records.claimed_runs(self.state)]
             at = now()
-            result = trajectory.from_roots([r for r in dict.fromkeys(runs) if Path(r).is_dir()],
+            result = trajectory.from_roots([r for r in dict.fromkeys(runs) if r and Path(r).is_dir()],
                                            issues=self.config["issues"], until=at, captured_at=at,
                                            groups={self.config["batch_id"]: self.config["issues"]})
             return trajectory.write(self.root, result, stem="terminal-trajectory"), result

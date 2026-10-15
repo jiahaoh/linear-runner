@@ -31,18 +31,6 @@ from linear_runner.reporting.records import USAGE_KEYS
 SCHEMA = "linear-runner.board/1"
 
 
-def run_directories(state):
-    """``{issue: run directory}`` of every issue the batch has claimed: done, set aside
-    (parked) or active; the directories the terminal trajectory report reads."""
-    runs = {entry["issue_id"]: entry.get("run_dir") for entry in state.get("history", [])}
-    for issue, parked in (state.get("parked") or {}).items():
-        if isinstance(parked, dict) and (parked.get("active") or {}).get("run_dir"):
-            runs[issue] = parked["active"]["run_dir"]
-    if state.get("active"):
-        runs[state["active"]["issue_id"]] = state["active"]["run_dir"]
-    return runs
-
-
 def launch_times(root):
     """``(first, last)`` launch time of the batch from its launch records, or ``(None, None)``.
     The state names the latest launch only, so a batch launched again would change its place."""
@@ -62,7 +50,8 @@ def record(config, report):
     pending = report.get("pending_recovery") or {}
     titles = (records.read_json(root / TITLES_NAME) or {}).get("issues") or {}
     first, last = launch_times(root)
-    runs = [run for run in dict.fromkeys(run_directories(report).values()) if run and Path(run).is_dir()]
+    latest = dict(records.claimed_runs(report))  # the last run of each issue
+    runs = [run for run in dict.fromkeys(latest.values()) if run and Path(run).is_dir()]
     usage = {s["issue"]: s for s in trajectory.from_roots(runs, issues=config["issues"])["summaries"]}
     issues = []
     for identifier in config["issues"]:

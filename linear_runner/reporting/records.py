@@ -260,3 +260,15 @@ def find_intakes(roots):
         entry["versions"] = len(entry.pop("hashes"))
         entry["copies"] = len(entry.pop("paths"))
     return sorted(latest.values(), key=lambda e: (e["issue"], e["run_id"]))
+
+
+def claimed_runs(state):
+    """``(issue, run directory)`` of every run a batch state has claimed, in order: done
+    (history), set aside (parked), then active. The terminal trajectory report reads every
+    directory; the progress board keeps the last one of each issue."""
+    runs = [(entry["issue_id"], entry.get("run_dir")) for entry in state.get("history", [])]
+    runs += [(issue, parked["active"]["run_dir"]) for issue, parked in (state.get("parked") or {}).items()
+             if isinstance(parked, dict) and (parked.get("active") or {}).get("run_dir")]
+    if state.get("active"):
+        runs.append((state["active"]["issue_id"], state["active"]["run_dir"]))
+    return runs

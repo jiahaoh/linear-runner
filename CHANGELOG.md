@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Changed
+
+* The progress board and the terminal trajectory report take a batch's run directories from
+  one function (`records.claimed_runs`: history, then parked, then active), instead of two
+  copies that had to stay in step for the board's figures to match the report. Each keeps its
+  own reading: the report reads every directory, the board the last one of each issue. The
+  terminal report's renderer takes only the usage summary the engine builds; the mapping of
+  named usage groups it also accepted had no caller. Both outputs are unchanged: the board
+  record of the test fixture and the terminal report HTML are byte-identical. Project impact:
+  none. Canary tier: first-issue checkpoint (reporting only) (`W-492`).
+
 ### Removed
 
 * The full intake packet and the code kept for contracts pinned before 2.4.0. Compact intake

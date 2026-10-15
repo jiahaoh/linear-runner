@@ -1558,7 +1558,10 @@ class EngineTests(unittest.TestCase):
 
     def test_report_snapshots_escape_content_and_preserve_versions(self):
         from linear_runner.reporting.report import render_report
-        summary = {"outcome": "blocked", "history": [], "scope": "fixture", "error": "<script>alert(1)</script>", "usage": {}}
+        session = {"session_id": "s1", "execution_evidence": {"usage_events": [{"usage": {
+            "input_tokens": 1200, "cached_input_tokens": 800, "output_tokens": 300, "reasoning_output_tokens": 100}}]}}
+        summary = {"outcome": "blocked", "history": [], "scope": "fixture", "error": "<script>alert(1)</script>",
+                   "usage": usage_totals([session])}
         path = self.root / "report.html"
         first = render_report(path, summary, [])
         summary["outcome"] = "complete"
@@ -1568,6 +1571,7 @@ class EngineTests(unittest.TestCase):
         html = path.read_text()
         self.assertNotIn("<script>", html)
         self.assertNotIn(second["evidence_sha256"], html.split("Reproducibility appendix")[0])
+        self.assertIn("<tr><td>Runner sessions</td><td>1,200</td><td>800</td><td>300</td></tr>", html)
 
     def test_execution_evidence_uses_only_cli_metadata(self):
         events = [

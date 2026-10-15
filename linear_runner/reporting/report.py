@@ -32,12 +32,10 @@ def render_report(path, summary, records):
                            + escape(d.get('description') or '') + '</td><td>' + escape(d.get('sha256', '')[:16])
                            + '</td></tr>' for issue, d in files) + '</table>')
     html += '<h2>Usage</h2><table><tr><th>Scope</th><th>Input tokens</th><th>Cached input</th><th>Output tokens</th></tr>'
-    arms = {"Runner sessions": usage} if "totals" in usage else usage
-    for name, values in arms.items():
-        totals = values.get("usage", values).get("totals", {})
-        html += '<tr><td>' + escape(name) + '</td>' + ''.join(
-            '<td>' + (f"{totals[key]:,}" if isinstance(totals.get(key), int) else "unknown") + '</td>'
-            for key in ("input_tokens", "cached_input_tokens", "output_tokens")) + '</tr>'
+    totals = usage.get("totals", {})
+    html += '<tr><td>Runner sessions</td>' + ''.join(
+        '<td>' + (f"{totals[key]:,}" if isinstance(totals.get(key), int) else "unknown") + '</td>'
+        for key in ("input_tokens", "cached_input_tokens", "output_tokens")) + '</tr>'
     html += '</table><p>Cached input is part of total input. Missing telemetry is unknown. These counters are not billed cost; outer launch/reporting is excluded unless separately imported.</p>' 
     html += '<h2>Reproducibility appendix</h2><p>Evidence SHA-256: ' + digest + '</p><pre>' + escape(payload) + '</pre></html>'
     version = path.with_name(f"report-{digest}.html")
