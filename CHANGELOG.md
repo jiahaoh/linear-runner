@@ -15,6 +15,23 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.0.0 — 2026-10-16
+
+Runner housekeeping after a two-agent audit of 2.8.0 (`W-489`: `W-490` to `W-497`) and two
+fixes for problems the s212-impl-a-20261015 batch met (`W-506`, `W-507`). The major version is
+for what is removed: the `clear-stop` command, the `run --resume` and `measure
+--replay-compact` options and the `"full"` value of `intake_mode`. The tracked tree is about
+1,100 lines smaller, mostly duplicated definitions, code kept for finished migrations and
+verbose registry and schema files.
+
+**Project impact:** a project file that sets `intake_mode: "full"` fails `validate-config` with
+`project <name>.intake_mode: must be one of ['compact']`; remove the key or set `"compact"`. No
+other configuration key changes. Operators and scripts use `launch --clear-stop` in place of
+`clear-stop`, and record a recovery (`recover resume`) and launch in place of `run --resume`.
+
+**Canary tier:** canary batch; the engine's intake, contract check, publication write
+(`W-506`) and check-evidence reuse at the last issue (`W-507`) change.
+
 ### Changed
 
 * The progress board and the terminal trajectory report take a batch's run directories from
