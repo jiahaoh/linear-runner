@@ -804,7 +804,17 @@ elsewhere stops the batch for reconciliation.
    is stopped and fails with exit code 124. `validate-config` lists each check's tier, time
    limit and last-issue rule under `checks`. Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured
-   environment, the executable and `identity_files`. Only successful records with intact
+   environment, the executable and `identity_files`. At the batch's last issue the key of an
+   extended check also covers the whole worktree: the content of every tracked and untracked,
+   non-ignored file (`fingerprint`), and its records say `reuse_scope: "worktree"`. There it
+   is the batch's final word, while its `inputs` are what selects it at other issues and need
+   not name every file it runs (a check that runs the whole suite in another environment is
+   selected by the environment files, for example; `W-507`). So at the last issue a change to any file,
+   a repair's for example, runs every extended check that runs there again, and evidence
+   recorded at an earlier issue is not reused there; a round with no file changed (a
+   revalidation after a timeout, say) still reuses it. Default checks and extended checks at
+   other issues are keyed on their `inputs` alone, so those should name every file the check
+   runs, its tests included. Only successful records with intact
    log hashes are reused; failures are never reused. Validation that changes source stops.
    Two things are deliberately not part of that key. The variables the service manager sets
    anew for every unit (`INVOCATION_ID`, `JOURNAL_STREAM`, `SYSTEMD_EXEC_PID` and the like)
@@ -812,7 +822,8 @@ elsewhere stops the batch for reconciliation.
    them no evidence survived one. And the key is taken after a round of checks has run, so
    ignored files that the checks write and their `inputs` match (a test cache, generated
    documentation sources) belong to the recorded state. A repair or resume that changes
-   none of the inputs therefore reuses the evidence, shown as `reused` in `checks.json`.
+   none of the inputs (at the last issue, for an extended check: no file of the worktree)
+   therefore reuses the evidence, shown as `reused` in `checks.json`.
    **Empty checks:** a check may set `"allow_empty": true`. Its exit code 5 (pytest's "no
    tests collected", for example when a marker selects nothing after the tests moved) is then
    recorded as `status: "empty"` with the note "no tests selected; not applicable" and counts
@@ -871,7 +882,12 @@ elsewhere stops the batch for reconciliation.
    repair committed on top of the earlier controller commit (see "Stop, recovery and
    continuation").
 9. **Publish.** The controller ticks the checklist, sets the `done` state and reads the
-   issue back. The description is compared as Linear re-serializes it: `[x]` and `[X]` are
+   issue back. It writes every issue mention of the description as the plain identifier it
+   shows (`updates.plain_mentions`), and Linear links it again: the intake snapshot holds
+   Linear's mention markup, and when Linear re-saves its own markup it can move the backticks
+   of a code span in the same paragraph, a change the comparison below rightly refuses
+   (`W-506`).
+   The description is compared as Linear re-serializes it: `[x]` and `[X]` are
    equivalent (Linear writes `[X]`), emphasis markers (`*`) outside code spans are
    ignored (Linear may move or drop them next to an issue mention), and Linear's mention
    markup for an issue (`<issue id="…" href="…/issue/W-242/…">W-242</issue>`, or a Markdown
@@ -1103,7 +1119,9 @@ its hash.
 comment to that issue and adds a "related" link between the two issues. Where a runner
 comment quotes someone's words (a recovery reason, an owner note, a worker or reviewer
 summary, criteria and evidence, error text), those mentions are shown as inline code
-(`` `TEAM-123` ``) by one helper, `updates.neutralize_issue_mentions`. This assumes Linear does
+(`` `TEAM-123` ``) by one helper, `updates.neutralize_issue_mentions`; Linear's mention markup in
+quoted text (a criterion holds it as read from the issue) is shown the same way, as its
+identifier. This assumes Linear does
 not link text inside a code span, which cannot be tested offline; related links are also not
 part of the issue contract (see "Lifecycle"), so a link that does appear no longer stops a
 batch. Worker and reviewer drafts are posted unchanged, and the runner's own issue lists (the

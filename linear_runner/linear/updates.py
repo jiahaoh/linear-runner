@@ -360,11 +360,36 @@ def neutralize_issue_mentions(text):
                    for index, part in enumerate(parts))
 
 
+_MENTION_MARKUP = re.compile(r'<issue\b(?P<attrs>[^>]*)>(?P<id>[A-Z][A-Z0-9]{0,9}-\d+)</issue>'
+                             r'|\[(?P<link>[A-Z][A-Z0-9]{0,9}-\d+)\]\((?P<url>https://linear\.app/[^)\s]*)\)')
+
+
+def plain_mentions(text):
+    """``text`` with Linear's markup for an issue mention replaced by the identifier it shows.
+
+    Linear links a plain identifier it knows when it saves a description: ``W-242`` comes
+    back as ``<issue id="…" href="https://linear.app/<workspace>/issue/W-242/<slug>">W-242</issue>``
+    (W-242, written before that issue existed), or as a Markdown link to the issue. Markup
+    whose ``href`` or URL names a different issue than its text is left as it is. Text read
+    from Linear is written back in this form: re-saving its own markup, Linear misplaced the
+    backticks of code spans in the same paragraph (W-483, W-484).
+    """
+    def plain(match):
+        identifier = match.group("id") or match.group("link")
+        target = re.search(r'href="([^"]*)"', match.group("attrs") or "")
+        url = match.group("url") or (target.group(1) if target else None)
+        if url is not None and not re.search(rf"/issue/{re.escape(identifier)}(?:[/?#]|$)", url, re.I):
+            return match.group(0)
+        return identifier
+    return _MENTION_MARKUP.sub(plain, text or "")
+
+
 def plain(text, limit=700):
     """Model or owner text quoted in a runner comment: no fences, tables, markers; bounded
-    length; issue mentions neutralized (see neutralize_issue_mentions)."""
+    length; Linear's mention markup as its identifier (a pinned criterion holds it as read
+    from the issue), then issue mentions neutralized (see neutralize_issue_mentions)."""
     lines = []
-    for line in str(text or "").splitlines():
+    for line in plain_mentions(str(text or "")).splitlines():
         stripped = line.strip()
         if stripped.startswith(("```", "~~~", "<!--")) or _TABLE.match(line) or _HASH.search(stripped):
             continue

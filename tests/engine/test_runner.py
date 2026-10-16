@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -471,6 +472,52 @@ class EngineTests(unittest.TestCase):
             verify_delivery({"required_checks": ["slow"], "manifest": "m.json", "revision_field": "revision"},
                             self.root, "0" * 40, [skipped])
 
+    def test_last_issue_reuses_extended_evidence_only_for_the_same_worktree(self):
+        # W-507: at W-486, the last issue, a repair changed test files that two extended checks run
+        # but their inputs omit, and their logs of the earlier state were reused.
+        marker = self.root / "runs.txt"
+        def recording(name):  # each run appends the check's name and the tests.txt it ran
+            return [sys.executable, "-c", f"open({str(marker)!r}, 'a').write({name!r} + ' ' + open('tests.txt').read() + '\\n')"]
+        self.config["checks"] = [
+            {"name": "fast", "kind": "code", "tier": "default", "inputs": ["lib/*"], "cwd": ".", "command": recording("fast")},
+            {"name": "slow", "kind": "code", "tier": "extended", "inputs": ["lib/*"], "cwd": ".", "command": recording("slow")}]
+        self.config["issues"] = ["DEV-1", "DEV-2"]
+        self.linear.add_issue("DEV-2")
+        base = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "lib").mkdir(); (self.repo / "lib" / "code.txt").write_text("code")
+        (self.repo / "tests.txt").write_text("v1")  # run by both checks, named by neither
+        (self.root / "runs").mkdir()
+        def run(issue):
+            active = {"run_dir": str(self.root / "runs" / f"{issue}-{len(list((self.root / 'runs').iterdir()))}"),
+                      "issue_id": issue, "starting_commit": base}
+            Path(active["run_dir"]).mkdir()
+            self.assertTrue(self.runner.run_checks(active))
+            records = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+            return {r["name"]: (r["reused"], r.get("reuse_scope")) for r in records}
+        def runs():
+            return marker.read_text().splitlines() if marker.exists() else []
+
+        # DEV-1 is not the last issue: both checks are keyed on their inputs, as before.
+        self.assertEqual(run("DEV-1"), {"fast": (False, None), "slow": (False, None)})
+        (self.repo / "tests.txt").write_text("v2")
+        self.assertEqual(run("DEV-1"), {"fast": (True, None), "slow": (True, None)})
+        self.assertEqual(runs(), ["fast v1", "slow v1"])
+        # DEV-1 is Done, so DEV-2 is the last issue: the extended check does not reuse DEV-1's
+        # evidence of another worktree; the default check still reuses on its inputs.
+        self.linear.data.update(status="Done", statusType="completed")
+        self.assertEqual(run("DEV-2"), {"fast": (True, None), "slow": (False, "worktree")})
+        # A round with no file changed (a revalidation after a timeout, say) reuses it.
+        self.assertEqual(run("DEV-2"), {"fast": (True, None), "slow": (True, "worktree")})
+        # A repair changes a file outside its inputs: it runs again, on that file.
+        (self.repo / "tests.txt").write_text("v3")
+        self.assertEqual(run("DEV-2"), {"fast": (True, None), "slow": (False, "worktree")})
+        self.assertEqual(runs(), ["fast v1", "slow v1", "slow v2", "slow v3"])
+        cache = json.loads((self.runner.root / "check-cache.json").read_text())
+        self.assertEqual(cache["slow"]["reuse_scope"], "worktree")
+        self.assertEqual(cache["slow"]["key"], self.runner.check_keys(self.config["checks"][1], base=base,
+                                                                      worktree=fingerprint(self.repo))[0])
+        self.assertNotEqual(cache["slow"]["key"], self.runner.check_keys(self.config["checks"][1], base=base)[0])
+
     def parity_setup(self):
         """W-344: a command whose output is data.txt's content and the PROBE variable."""
         (self.repo / "data.txt").write_text("same\n"); (self.repo / "other.txt").write_text("1")
@@ -857,7 +904,10 @@ class EngineTests(unittest.TestCase):
         def serialize(name, **args):
             result = original(name, **args)
             if name == "save_issue" and "description" in args:
-                self.linear.data["description"] = (args["description"].replace("[x]", "[X]")
+                # Linear links the plain identifier the runner writes (W-506), then drops the pair.
+                self.assertNotIn("<issue", args["description"])
+                linked = args["description"].replace("DEV-2", '<issue id="fixture">DEV-2</issue>')
+                self.linear.data["description"] = (linked.replace("[x]", "[X]")
                                                    .replace(self.EMPHASIS, self.RESERIALIZED))
             return result
         self.linear.call = serialize
@@ -912,6 +962,48 @@ class EngineTests(unittest.TestCase):
                       link.replace("issue/DEV-42", "issue/DEV-43")]:
             with self.subTest(after=after):
                 self.assertFalse(published_contract_matches(dict(live, description=after), original))
+
+    # The W-483 shape (W-506): the intake snapshot holds Linear's mention markup; re-saving a
+    # description sent with it, Linear moved a backtick of a code span in the same paragraph.
+    @staticmethod
+    def mention(number):
+        return (f'<issue id="fixture-{number}" href="https://linear.app/example/issue/DEV-{number}/'
+                f'the-scene-page">DEV-{number}</issue>')
+
+    def linear_resave(self, text):
+        """Linear's re-save as seen on W-483 and W-484: in a line sent with mention markup the
+        first backtick after the markup moves two characters on; a plain identifier it knows
+        becomes markup; a checked item becomes ``[X]``."""
+        lines = [re.sub(r"(</issue>[^`]*)`(\w\w)", r"\1\2`", line, count=1) if "<issue" in line else line
+                 for line in text.split("\n")]
+        linked = re.sub(r"(?<![\w>/-])DEV-(42|43)(?![\w<-])", lambda m: self.mention(m.group(1)), "\n".join(lines))
+        return linked.replace("- [x] ", "- [X] ")
+
+    def test_publication_writes_plain_identifiers(self):
+        context = f"* `docs/scene.md` ({self.mention(42)}, corrected by {self.mention(43)}) and `docs/check.md`"
+        self.linear.data["description"] = context + "\n\n- [ ] Produce validated output"
+        intake = copy.deepcopy(self.linear.data)
+        # The fake reproduces the defect: the description written as before fails the read-back.
+        before = self.linear_resave(published_issue(intake)["description"])
+        self.assertIn("do`cs/check.md`", before)
+        self.assertFalse(published_contract_matches(dict(intake, description=before), intake))
+        sent = []
+        original = self.linear.call
+        def save(name, **args):
+            if name == "save_issue" and "description" in args:
+                sent.append(args["description"])
+                args = dict(args, description=self.linear_resave(args["description"]))
+            return original(name, **args)
+        self.linear.call = save
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+        self.assertEqual(sent, ["* `docs/scene.md` (DEV-42, corrected by DEV-43) and `docs/check.md`\n\n"
+                                "- [x] Produce validated output"])
+        self.assertEqual(self.linear.data["description"], context + "\n\n- [X] Produce validated output")
+        # Markup whose link names another issue than its text is written as it is.
+        crossed = self.mention(42).replace(">DEV-42<", ">DEV-43<")
+        self.assertEqual(runner_module.updates.plain_mentions(f"See {crossed} and {self.mention(43)}."),
+                         f"See {crossed} and DEV-43.")
 
     # --- The issue contract: scope fields only, related links excluded -------------
 

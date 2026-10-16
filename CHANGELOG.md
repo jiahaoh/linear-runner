@@ -97,6 +97,37 @@ its tier. The release procedure is in the README ("Releases").
   batch (the engine changes, though only by two deleted methods and two reworded refusals)
   (`W-490`).
 
+### Fixed
+
+* Publication writes the ticked description with every issue mention as its plain identifier
+  (`updates.plain_mentions`). It wrote the intake snapshot, which holds Linear's mention markup
+  (`<issue id="…" href="…">W-394</issue>`) as read at intake, and when Linear re-saved its own
+  markup it moved a backtick of a code span in the same paragraph. In s212-impl-a-20261015 the
+  read-back then failed with "Published checklist read-back mismatch" on W-483 (four lines)
+  and W-484 (one line), and each needed the description rewritten by hand and `recover
+  publish`. Linear links the plain identifiers again, and the read-back comparison, which
+  already equates the markup with its identifier, is unchanged. The one other place that sent
+  text read from Linear with that markup was a runner comment quoting a pinned criterion (or a
+  model's copy of it): `updates.plain` turned the URL inside the markup into inline code and
+  left the tags. It now shows the identifier, as inline code like every quoted mention.
+  The engine's other writes send states and labels only. Project impact: none. Canary tier:
+  canary batch (the engine's publication write changes) (`W-506`).
+* At the batch's last issue an extended check reuses evidence only for the same worktree: its
+  key also covers the content of every tracked and untracked, non-ignored file, and its records
+  say `reuse_scope: "worktree"`. The key covered only the files its `inputs` match, and
+  `inputs` also select an extended check at the other issues, so a check scoped by module or
+  by environment omits files it runs. In s212-impl-a-20261015 the last issue, W-486, was
+  validated after its second repair with the `pytest-slow-synthetic` log of W-485 (29 tests,
+  where the reviewed commit has 34) and a `pytest-ci-environment` log from before the repair,
+  since the repair changed only test files outside both checks' inputs; the review blocked,
+  and the operator ran both commands at the reviewed commit by hand. Default checks and
+  extended checks at the other issues are keyed on their `inputs` as before. The last issue
+  now pays for it: a repair there reruns every extended check that runs there, and evidence
+  from an earlier issue of the batch is not reused there. A per-check reuse list apart from
+  `inputs` was not taken, since every project would have to name each file a check runs and a
+  missing one would bring the defect back. Project impact: none; no configuration key changes.
+  Canary tier: canary batch (the engine's check evidence keys change) (`W-507`).
+
 ## v2.8.0 — 2026-10-14
 
 A progress board for batches: a compact `status --board` record, optional lineage keys in a

@@ -2163,9 +2163,11 @@ class WhenChangedBatchBaseTests(Harness):
         self.assertEqual(self.done(), ["DEV-1", "DEV-2", "DEV-3"])
         self.assertEqual(sorted(self.records("DEV-2")), ["output"])
         last = self.records("DEV-3")
-        # DEV-3 changed no matching file, but DEV-1 did: the check counts, here as reused evidence.
-        self.assertEqual((last["first-only"]["status"], last["first-only"]["reused"]), ("passed", True))
-        self.assertEqual((self.root / "first-only-runs.txt").read_text(), "run\n")
+        # DEV-3 changed no matching file, but DEV-1 did: the check counts. It runs again, since
+        # DEV-1's evidence is of another worktree (W-507).
+        self.assertEqual((last["first-only"]["status"], last["first-only"]["reused"], last["first-only"]["reuse_scope"]),
+                         ("passed", False, "worktree"))
+        self.assertEqual((self.root / "first-only-runs.txt").read_text(), "run\nrun\n")
         self.assertEqual({k: last["untouched"][k] for k in ("status", "exit_code", "last_issue", "note", "reused")},
                          {"status": "skipped", "exit_code": None, "last_issue": "when_changed", "note": SKIPPED_NOTE,
                           "reused": False})
