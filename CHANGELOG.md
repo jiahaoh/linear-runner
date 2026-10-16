@@ -15,6 +15,22 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+### Fixed
+
+* Publication writes the ticked description with every issue mention as its plain identifier
+  (`updates.plain_mentions`). It wrote the intake snapshot, which holds Linear's mention markup
+  (`<issue id="…" href="…">W-394</issue>`) as read at intake, and when Linear re-saved its own
+  markup it moved a backtick of a code span in the same paragraph. In s212-impl-a-20261015 the
+  read-back then failed with "Published checklist read-back mismatch" on W-483 (four lines)
+  and W-484 (one line), and each needed the description rewritten by hand and `recover
+  publish`. Linear links the plain identifiers again, and the read-back comparison, which
+  already equates the markup with its identifier, is unchanged. The one other place that sent
+  text read from Linear with that markup was a runner comment quoting a pinned criterion (or a
+  model's copy of it): `updates.plain` turned the URL inside the markup into inline code and
+  left the tags. It now shows the identifier, as inline code like every quoted mention.
+  The engine's other writes send states and labels only. Project impact: none. Canary tier:
+  canary batch (the engine's publication write changes) (`W-506`).
+
 ## v2.8.0 — 2026-10-14
 
 A progress board for batches: a compact `status --board` record, optional lineage keys in a

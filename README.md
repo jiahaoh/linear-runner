@@ -885,7 +885,12 @@ elsewhere stops the batch for reconciliation.
    repair committed on top of the earlier controller commit (see "Stop, recovery and
    continuation").
 9. **Publish.** The controller ticks the checklist, sets the `done` state and reads the
-   issue back. The description is compared as Linear re-serializes it: `[x]` and `[X]` are
+   issue back. It writes every issue mention of the description as the plain identifier it
+   shows (`updates.plain_mentions`), and Linear links it again: the intake snapshot holds
+   Linear's mention markup, and when Linear re-saves its own markup it can move the backticks
+   of a code span in the same paragraph, a change the comparison below rightly refuses
+   (`W-506`).
+   The description is compared as Linear re-serializes it: `[x]` and `[X]` are
    equivalent (Linear writes `[X]`), emphasis markers (`*`) outside code spans are
    ignored (Linear may move or drop them next to an issue mention), and Linear's mention
    markup for an issue (`<issue id="…" href="…/issue/W-242/…">W-242</issue>`, or a Markdown
@@ -1125,7 +1130,9 @@ ten source files in W-332's Done comment (`W-347`).
 comment to that issue and adds a "related" link between the two issues. Where a runner
 comment quotes someone's words (a recovery reason, an owner note, a worker or reviewer
 summary, criteria and evidence, error text), those mentions are shown as inline code
-(`` `TEAM-123` ``) by one helper, `updates.neutralize_issue_mentions`. This assumes Linear does
+(`` `TEAM-123` ``) by one helper, `updates.neutralize_issue_mentions`; Linear's mention markup in
+quoted text (a criterion holds it as read from the issue) is shown the same way, as its
+identifier. This assumes Linear does
 not link text inside a code span, which cannot be tested offline; related links are also not
 part of the issue contract (see "Lifecycle"), so a link that does appear no longer stops a
 batch. Worker and reviewer drafts are posted unchanged, and the runner's own issue lists (the

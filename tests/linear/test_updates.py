@@ -679,6 +679,19 @@ class MentionTests(unittest.TestCase):
         self.assertIn("Incomplete prerequisite `TEAM-11`", blocked)
         self.assertNotIn(" TEAM-11", blocked)
 
+    def test_quoted_criteria_show_linear_mention_markup_as_its_identifier(self):
+        # W-506: a pinned criterion holds Linear's markup as read at intake; quoting it used to
+        # wrap the URL inside the markup in backticks and leave the tags in the comment.
+        markup = '<issue id="fixture" href="https://linear.app/example/issue/TEAM-394/the-page">TEAM-394</issue>'
+        criterion = f"GN21 for the components of {markup} (every new component starts with `context.`)"
+        self.assertEqual(updates.plain(criterion),
+                         "GN21 for the components of `TEAM-394` (every new component starts with `context.`)")
+        result = {"acceptance": [{"criterion": criterion, "satisfied": False, "evidence": f"Not met; see {markup}."}]}
+        body = messages.own_words(who="reviewer", result=result)
+        self.assertIn("- GN21 for the components of `TEAM-394` (every new component starts with `context.`): "
+                      "Not met; see `TEAM-394`.", body)
+        self.assertNotIn("<issue", body)
+
     def test_recover_warns_when_the_reason_names_an_issue(self):
         self.assertIsNone(messages.mention_warning("An automatically created related link was removed"))
         warning = messages.mention_warning("Filing W-194 added a related link to W-193")

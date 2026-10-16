@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -870,7 +871,10 @@ class EngineTests(unittest.TestCase):
         def serialize(name, **args):
             result = original(name, **args)
             if name == "save_issue" and "description" in args:
-                self.linear.data["description"] = (args["description"].replace("[x]", "[X]")
+                # Linear links the plain identifier the runner writes (W-506), then drops the pair.
+                self.assertNotIn("<issue", args["description"])
+                linked = args["description"].replace("DEV-2", '<issue id="fixture">DEV-2</issue>')
+                self.linear.data["description"] = (linked.replace("[x]", "[X]")
                                                    .replace(self.EMPHASIS, self.RESERIALIZED))
             return result
         self.linear.call = serialize
@@ -925,6 +929,48 @@ class EngineTests(unittest.TestCase):
                       link.replace("issue/DEV-42", "issue/DEV-43")]:
             with self.subTest(after=after):
                 self.assertFalse(published_contract_matches(dict(live, description=after), original))
+
+    # The W-483 shape (W-506): the intake snapshot holds Linear's mention markup; re-saving a
+    # description sent with it, Linear moved a backtick of a code span in the same paragraph.
+    @staticmethod
+    def mention(number):
+        return (f'<issue id="fixture-{number}" href="https://linear.app/example/issue/DEV-{number}/'
+                f'the-scene-page">DEV-{number}</issue>')
+
+    def linear_resave(self, text):
+        """Linear's re-save as seen on W-483 and W-484: in a line sent with mention markup the
+        first backtick after the markup moves two characters on; a plain identifier it knows
+        becomes markup; a checked item becomes ``[X]``."""
+        lines = [re.sub(r"(</issue>[^`]*)`(\w\w)", r"\1\2`", line, count=1) if "<issue" in line else line
+                 for line in text.split("\n")]
+        linked = re.sub(r"(?<![\w>/-])DEV-(42|43)(?![\w<-])", lambda m: self.mention(m.group(1)), "\n".join(lines))
+        return linked.replace("- [x] ", "- [X] ")
+
+    def test_publication_writes_plain_identifiers(self):
+        context = f"* `docs/scene.md` ({self.mention(42)}, corrected by {self.mention(43)}) and `docs/check.md`"
+        self.linear.data["description"] = context + "\n\n- [ ] Produce validated output"
+        intake = copy.deepcopy(self.linear.data)
+        # The fake reproduces the defect: the description written as before fails the read-back.
+        before = self.linear_resave(published_issue(intake)["description"])
+        self.assertIn("do`cs/check.md`", before)
+        self.assertFalse(published_contract_matches(dict(intake, description=before), intake))
+        sent = []
+        original = self.linear.call
+        def save(name, **args):
+            if name == "save_issue" and "description" in args:
+                sent.append(args["description"])
+                args = dict(args, description=self.linear_resave(args["description"]))
+            return original(name, **args)
+        self.linear.call = save
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+        self.assertEqual(sent, ["* `docs/scene.md` (DEV-42, corrected by DEV-43) and `docs/check.md`\n\n"
+                                "- [x] Produce validated output"])
+        self.assertEqual(self.linear.data["description"], context + "\n\n- [X] Produce validated output")
+        # Markup whose link names another issue than its text is written as it is.
+        crossed = self.mention(42).replace(">DEV-42<", ">DEV-43<")
+        self.assertEqual(runner_module.updates.plain_mentions(f"See {crossed} and {self.mention(43)}."),
+                         f"See {crossed} and DEV-43.")
 
     # --- The issue contract: scope fields only, related links excluded -------------
 

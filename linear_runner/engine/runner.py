@@ -507,41 +507,19 @@ def published_issue(issue):
                                          issue.get("description", ""), flags=re.M))
 
 
-_MENTION_MARKUP = re.compile(r'<issue\b(?P<attrs>[^>]*)>(?P<id>[A-Z][A-Z0-9]{0,9}-\d+)</issue>'
-                             r'|\[(?P<link>[A-Z][A-Z0-9]{0,9}-\d+)\]\((?P<url>https://linear\.app/[^)\s]*)\)')
-
-
-def plain_mentions(text):
-    """``text`` with Linear's markup for an issue mention replaced by the identifier it shows.
-
-    Linear links a plain identifier it knows when it saves a description: ``W-242`` comes
-    back as ``<issue id="…" href="https://linear.app/<workspace>/issue/W-242/<slug>">W-242</issue>``
-    (W-242, written before that issue existed), or as a Markdown link to the issue. Markup
-    whose ``href`` or URL names a different issue than its text is left as it is.
-    """
-    def plain(match):
-        identifier = match.group("id") or match.group("link")
-        target = re.search(r'href="([^"]*)"', match.group("attrs") or "")
-        url = match.group("url") or (target.group(1) if target else None)
-        if url is not None and not re.search(rf"/issue/{re.escape(identifier)}(?:[/?#]|$)", url, re.I):
-            return match.group(0)
-        return identifier
-    return _MENTION_MARKUP.sub(plain, text or "")
-
-
 def publication_form(description):
     """``description`` as compared after the runner has written it to Linear.
 
     Linear re-serializes a written description: it writes checked items as ``[X]``, it may
     move or drop emphasis markers (``*``) next to an issue mention (W-229, where
     ``*Accepted (*<issue>…</issue>*, 2026-09-27, at* `…`*)*`` came back without the middle
-    pair), and it turns a plain issue identifier into mention markup (``plain_mentions``).
+    pair), and it turns a plain issue identifier into mention markup (``updates.plain_mentions``).
     None of these changes a word, link target or code span, so checked items become ``[x]``,
     mention markup becomes its identifier, and ``*`` outside code spans is dropped, except a
     line's ``* `` bullet.
     """
     lines = []
-    for line in re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", plain_mentions(description), flags=re.M).split("\n"):
+    for line in re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", updates.plain_mentions(description), flags=re.M).split("\n"):
         bullet = re.match(r"\s*(?:\* )?", line).group()
         parts = re.split(r"(`+[^`]*`+)", line[len(bullet):])
         lines.append(bullet + "".join(p if i % 2 else p.replace("*", "") for i, p in enumerate(parts)))
@@ -2173,9 +2151,12 @@ class Runner:
             published = published_issue(active["issue"])
             active["published_contract"] = issue_contract(published)
             self.save(active=active)
-            # Reconcile a successful prior write without rewriting its description.
+            # Reconcile a successful prior write without rewriting its description. The write
+            # names issues by plain identifier, which Linear links itself: re-saving the mention
+            # markup of the intake snapshot, it misplaced code-span backticks (W-506).
             if live.get("statusType") != "completed" or not published_contract_matches(live, active["issue"]):
-                self.linear.call("save_issue", id=issue, state=self.config["states"]["done"], description=published["description"])
+                self.linear.call("save_issue", id=issue, state=self.config["states"]["done"],
+                                 description=updates.plain_mentions(published["description"]))
             confirmed = read_back(lambda: self.linear.issue(issue),
                                   lambda i: i.get("statusType") == "completed"
                                   and published_contract_matches(i, active["issue"]))
