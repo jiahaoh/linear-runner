@@ -818,7 +818,17 @@ elsewhere stops the batch for reconciliation.
    is stopped and fails with exit code 124. `validate-config` lists each check's tier, time
    limit and last-issue rule under `checks`. Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured
-   environment, the executable and `identity_files`. Only successful records with intact
+   environment, the executable and `identity_files`. At the batch's last issue the key of an
+   extended check also covers the whole worktree: the content of every tracked and untracked,
+   non-ignored file (`fingerprint`), and its records say `reuse_scope: "worktree"`. There it
+   is the batch's final word, while its `inputs` are what selects it at other issues and need
+   not name every file it runs (a check that runs the whole suite in another environment is
+   selected by the environment files, for example; `W-507`). So at the last issue a change to any file,
+   a repair's for example, runs every extended check that runs there again, and evidence
+   recorded at an earlier issue is not reused there; a round with no file changed (a
+   revalidation after a timeout, say) still reuses it. Default checks and extended checks at
+   other issues are keyed on their `inputs` alone, so those should name every file the check
+   runs, its tests included. Only successful records with intact
    log hashes are reused; failures are never reused. Validation that changes source stops.
    Two things are deliberately not part of that key. The variables the service manager sets
    anew for every unit (`INVOCATION_ID`, `JOURNAL_STREAM`, `SYSTEMD_EXEC_PID` and the like)
@@ -826,7 +836,8 @@ elsewhere stops the batch for reconciliation.
    them no evidence survived one. And the key is taken after a round of checks has run, so
    ignored files that the checks write and their `inputs` match (a test cache, generated
    documentation sources) belong to the recorded state. A repair or resume that changes
-   none of the inputs therefore reuses the evidence, shown as `reused` in `checks.json`.
+   none of the inputs (at the last issue, for an extended check: no file of the worktree)
+   therefore reuses the evidence, shown as `reused` in `checks.json`.
    **Empty checks:** a check may set `"allow_empty": true`. Its exit code 5 (pytest's "no
    tests collected", for example when a marker selects nothing after the tests moved) is then
    recorded as `status: "empty"` with the note "no tests selected; not applicable" and counts

@@ -475,6 +475,52 @@ class EngineTests(unittest.TestCase):
             verify_delivery({"required_checks": ["slow"], "manifest": "m.json", "revision_field": "revision"},
                             self.root, "0" * 40, [skipped])
 
+    def test_last_issue_reuses_extended_evidence_only_for_the_same_worktree(self):
+        # W-507: at W-486, the last issue, a repair changed test files that two extended checks run
+        # but their inputs omit, and their logs of the earlier state were reused.
+        marker = self.root / "runs.txt"
+        def recording(name):  # each run appends the check's name and the tests.txt it ran
+            return [sys.executable, "-c", f"open({str(marker)!r}, 'a').write({name!r} + ' ' + open('tests.txt').read() + '\\n')"]
+        self.config["checks"] = [
+            {"name": "fast", "kind": "code", "tier": "default", "inputs": ["lib/*"], "cwd": ".", "command": recording("fast")},
+            {"name": "slow", "kind": "code", "tier": "extended", "inputs": ["lib/*"], "cwd": ".", "command": recording("slow")}]
+        self.config["issues"] = ["DEV-1", "DEV-2"]
+        self.linear.add_issue("DEV-2")
+        base = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "lib").mkdir(); (self.repo / "lib" / "code.txt").write_text("code")
+        (self.repo / "tests.txt").write_text("v1")  # run by both checks, named by neither
+        (self.root / "runs").mkdir()
+        def run(issue):
+            active = {"run_dir": str(self.root / "runs" / f"{issue}-{len(list((self.root / 'runs').iterdir()))}"),
+                      "issue_id": issue, "starting_commit": base}
+            Path(active["run_dir"]).mkdir()
+            self.assertTrue(self.runner.run_checks(active))
+            records = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+            return {r["name"]: (r["reused"], r.get("reuse_scope")) for r in records}
+        def runs():
+            return marker.read_text().splitlines() if marker.exists() else []
+
+        # DEV-1 is not the last issue: both checks are keyed on their inputs, as before.
+        self.assertEqual(run("DEV-1"), {"fast": (False, None), "slow": (False, None)})
+        (self.repo / "tests.txt").write_text("v2")
+        self.assertEqual(run("DEV-1"), {"fast": (True, None), "slow": (True, None)})
+        self.assertEqual(runs(), ["fast v1", "slow v1"])
+        # DEV-1 is Done, so DEV-2 is the last issue: the extended check does not reuse DEV-1's
+        # evidence of another worktree; the default check still reuses on its inputs.
+        self.linear.data.update(status="Done", statusType="completed")
+        self.assertEqual(run("DEV-2"), {"fast": (True, None), "slow": (False, "worktree")})
+        # A round with no file changed (a revalidation after a timeout, say) reuses it.
+        self.assertEqual(run("DEV-2"), {"fast": (True, None), "slow": (True, "worktree")})
+        # A repair changes a file outside its inputs: it runs again, on that file.
+        (self.repo / "tests.txt").write_text("v3")
+        self.assertEqual(run("DEV-2"), {"fast": (True, None), "slow": (False, "worktree")})
+        self.assertEqual(runs(), ["fast v1", "slow v1", "slow v2", "slow v3"])
+        cache = json.loads((self.runner.root / "check-cache.json").read_text())
+        self.assertEqual(cache["slow"]["reuse_scope"], "worktree")
+        self.assertEqual(cache["slow"]["key"], self.runner.check_keys(self.config["checks"][1], base=base,
+                                                                      worktree=fingerprint(self.repo))[0])
+        self.assertNotEqual(cache["slow"]["key"], self.runner.check_keys(self.config["checks"][1], base=base)[0])
+
     def parity_setup(self):
         """W-344: a command whose output is data.txt's content and the PROBE variable."""
         (self.repo / "data.txt").write_text("same\n"); (self.repo / "other.txt").write_text("1")

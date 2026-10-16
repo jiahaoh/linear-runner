@@ -1690,11 +1690,14 @@ class Runner:
         return sorted(set(git(self.repo, "diff", "--name-only", base).splitlines()
                           + git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()))
 
-    def check_keys(self, spec, base=None):
+    def check_keys(self, spec, base=None, worktree=None):
         """``(key, launch_key)``, the identity of one check's evidence.
 
         A ``base_parity`` check's evidence also depends on the base revision it compared with
-        (``base``, the issue's starting commit; W-344).
+        (``base``, the issue's starting commit; W-344). An extended check at the batch's last
+        issue depends on the whole worktree (``worktree``, its ``fingerprint``; W-507): there it
+        is the batch's final word, and its ``inputs``, which select it at other issues, need not
+        name every file it runs.
 
         ``key``: the check's definition, the configured and inherited environment (without the
         per-launch LAUNCH_VARIABLES), the executable, the ``identity_files`` and the bytes of
@@ -1707,6 +1710,8 @@ class Runner:
         identity = {"spec": spec, "environment": self.config["check_environment"]}
         if spec.get("base_parity"):
             identity["base_commit"] = base
+        if worktree:
+            identity["worktree"] = worktree
         definition = json.dumps(identity, sort_keys=True).encode()
         full, launch = hashlib.sha256(definition), hashlib.sha256(definition)
         # Explicit external manifests/executables and inherited environment are
@@ -1793,13 +1798,13 @@ class Runner:
         results = []
         ran = []
         before = fingerprint(self.repo)
-        last = None  # decided when an extended check needs it (W-342: by the queue)
+        last = None  # decided at the first extended check (W-342: by the queue)
         batch_changed = None
         for index, spec in enumerate(self.config["checks"]):
-            if spec["tier"] == "extended" and not any(
-                    fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
-                if last is None:
-                    last = self.is_last_issue(active["issue_id"])
+            extended = spec["tier"] == "extended"
+            if extended and last is None:
+                last = self.is_last_issue(active["issue_id"])
+            if extended and not any(fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
                 if not last:
                     continue
                 if spec.get("last_issue") == "when_changed":
@@ -1812,7 +1817,11 @@ class Runner:
                                         "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
                                         "model": None})
                         continue
-            key, launch_key = self.check_keys(spec, base=active["starting_commit"])
+            # At the last issue an extended check's evidence counts only for this worktree: at
+            # W-486 a repair changed test files two checks' inputs omit, and their logs of the
+            # earlier state were reused (W-507).
+            worktree = before if extended and last else None
+            key, launch_key = self.check_keys(spec, base=active["starting_commit"], worktree=worktree)
             previous = cache.get(spec["name"], {})
             # Only intact successful evidence (passed, or an allowed empty selection) is reused;
             # failures always rerun. ``key`` covers the whole check definition, allow_empty included.
@@ -1827,9 +1836,11 @@ class Runner:
                               self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
             result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False)
+            if worktree:
+                result["reuse_scope"] = "worktree"
             cache[spec["name"]] = result
             results.append(result)
-            ran.append((spec, result))
+            ran.append((spec, result, worktree))
             write_json(cache_path, cache)
         if fingerprint(self.repo) != before:
             raise RuntimeError("Validation modified source; reconcile before continuing")
@@ -1837,8 +1848,9 @@ class Runner:
         # cache, generated documentation sources). Key the evidence on the state they leave,
         # or the next round would see new inputs and rerun every check once more. Tracked and
         # unignored files cannot have changed: the fingerprint above is the same.
-        for spec, result in ran:
-            result["key"], result["launch_key"] = self.check_keys(spec, base=active["starting_commit"])
+        for spec, result, worktree in ran:
+            result["key"], result["launch_key"] = self.check_keys(spec, base=active["starting_commit"],
+                                                                  worktree=worktree)
         if ran:
             write_json(cache_path, cache)
         if not [r for r in results if not check_skipped(r)]:
