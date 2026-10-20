@@ -31,6 +31,17 @@ fingerprint, so a paused batch adopts this with `recover repin-config`.
 **Canary tier:** canary batch (a model change): stop the next batch after its first issue
 whose review uses the new model.
 
+The implement phase's default output budget is 300,000 tokens (was 250,000), and a project
+may give one check up to 10,800 s (`max_check_timeout_seconds`, was 7,200) (`W-525`). Four
+large §2.12 implementations stopped at the old budget while finishing ready, and two check
+selections came within reach of the old timeout. The repair and review budgets, the phase
+timeouts and the default `check_timeout_seconds` (1,800) are unchanged.
+
+**Project impact:** none in configuration files. Editing `registry/` changes every
+configuration fingerprint, so a paused batch adopts this with `recover repin-config`.
+
+**Canary tier:** canary batch (engine budgets), shared with the other changes of this release.
+
 ## v3.0.0 — 2026-10-16
 
 Runner housekeeping after a two-agent audit of 2.8.0 (`W-489`: `W-490` to `W-497`) and two

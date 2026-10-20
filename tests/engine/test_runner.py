@@ -1477,7 +1477,7 @@ class EngineTests(unittest.TestCase):
         self.assertFalse([line for line in logged if "uncached" in line])
 
     # W-263: implement checkpoints that stopped only for cached input or for output within the
-    # raised output budget (registry implement budget: 15M input, 250k output, 250 tool calls).
+    # raised output budget (registry implement budget: 15M input, 300k output, 250 tool calls).
     W245 = ({"input_tokens": 20_175_546, "cached_input_tokens": 19_801_428, "output_tokens": 166_709}, 98, "ready")
     W255 = ({"input_tokens": 15_946_775, "cached_input_tokens": 15_664_806, "output_tokens": 127_677}, 87, "blocked")
     W256 = ({"input_tokens": 31_131_630, "cached_input_tokens": 30_724_111, "output_tokens": 183_191}, 124, "blocked")
@@ -1485,7 +1485,7 @@ class EngineTests(unittest.TestCase):
     def registry_budget(self, **changes):
         policy, _, _ = load_registry(self.root / "no-home")
         budget = policy["phases"]["phases"]["implement"]["budget"]
-        self.assertEqual(budget, {"input_tokens": 15_000_000, "output_tokens": 250_000, "tool_calls": 250})
+        self.assertEqual(budget, {"input_tokens": 15_000_000, "output_tokens": 300_000, "tool_calls": 250})
         self.policy["phases"]["phases"]["implement"]["budget"] = dict(budget, **changes)
 
     def test_the_w263_implement_figures_no_longer_checkpoint_under_the_registry_budget(self):
@@ -1543,7 +1543,7 @@ class EngineTests(unittest.TestCase):
         # The other budgets are as before.
         policy, _, _ = load_registry(self.root / "no-home")
         phases = policy["phases"]
-        self.assertEqual(phases["phases"]["implement"]["budget"], {"input_tokens": 15_000_000, "output_tokens": 250_000, "tool_calls": 250})
+        self.assertEqual(phases["phases"]["implement"]["budget"], {"input_tokens": 15_000_000, "output_tokens": 300_000, "tool_calls": 250})
         self.assertEqual(phases["phases"]["review"]["budget"]["output_tokens"], 40_000)
         self.assertEqual(phases["max_repairs"], 2)
 

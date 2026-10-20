@@ -803,7 +803,7 @@ elsewhere stops the batch for reconciliation.
    baseline has no issue base). Use it for criteria such as "equal to the base revision": in
    s29-amend-20261005 each worker wrote that comparison itself and a review blocked when one
    did not (`W-344`). A check may also
-   set `timeout_seconds`, up to the registry's `max_check_timeout_seconds` (7200); without
+   set `timeout_seconds`, up to the registry's `max_check_timeout_seconds` (10800); without
    it the registry's `check_timeout_seconds` (1800) applies. A check that exceeds its limit
    is stopped and fails with exit code 124. `validate-config` lists each check's tier, time
    limit and last-issue rule under `checks`. Reuse is keyed on the check definition,
@@ -965,7 +965,9 @@ uncached figure); `recover budget --input-tokens` then sets the limit on the sam
 that returned `blocked` within budget stops for its own block, not for the budget.
 
 The repair phase may write 150,000 output tokens, enough for a repair that rewrites long
-specification pages as its findings ask.
+specification pages as its findings ask. The implement phase may write 300,000, enough for the
+large implementations that stopped under the earlier 250,000 and finished only after `recover
+budget --output-tokens 300000` (`W-525`).
 
 **Phase timeouts per issue.** Each model phase has a hard timeout (`phases.json`,
 `timeout_seconds`). A batch can raise it for a named issue and phase when that phase is

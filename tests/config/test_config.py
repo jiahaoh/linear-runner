@@ -40,6 +40,8 @@ class LayeredConfigTests(unittest.TestCase):
         self.assertTrue(loaded["guidance_files"][0].endswith("prompts/generic.md"))
         self.assertEqual(set(loaded["runner"]), {"release", "commit", "dirty"})
         self.assertFalse(Path(loaded["state_dir"]).exists())
+        # W-525: the example batch loads the settled implement output budget.
+        self.assertEqual(loaded["policy"]["phases"]["phases"]["implement"]["budget"]["output_tokens"], 300_000)
 
     def test_settled_registry_values(self):
         policy, sources, _ = config.load_registry(self.root / "no-home")
@@ -67,7 +69,7 @@ class LayeredConfigTests(unittest.TestCase):
         phases = policy["phases"]
         budgets = {name: (p["budget"]["input_tokens"], p["budget"]["output_tokens"], p["budget"]["tool_calls"], p["timeout_seconds"])
                    for name, p in phases["phases"].items()}
-        self.assertEqual(budgets, {"implement": (15_000_000, 250_000, 250, 5400), "repair": (5_000_000, 150_000, 100, 5400),
+        self.assertEqual(budgets, {"implement": (15_000_000, 300_000, 250, 5400), "repair": (5_000_000, 150_000, 100, 5400),
                                    "review": (5_000_000, 40_000, 120, 1800)})
         self.assertEqual((phases["max_repairs"], phases["check_timeout_seconds"]), (2, 1800))
         self.assertEqual(sources["policy.phases.phases.review.budget.input_tokens"], "registry/phases.json")
@@ -260,9 +262,11 @@ class LayeredConfigTests(unittest.TestCase):
         # The options are part of the check definition, so of the configuration fingerprint.
         self.assertNotEqual(config.config_fingerprint(loaded), config.config_fingerprint(plain))
         self.assertEqual(self.load(project=project(last_issue="always"))["checks"][1]["last_issue"], "always")
-        with self.assertRaisesRegex(ConfigError, r"checks\[1\]\.timeout_seconds: 9000 exceeds the registry maximum 7200 "
+        # The registry maximum itself is accepted, one second more is refused (W-525: 10800).
+        self.assertEqual(self.load(project=project(timeout_seconds=10800))["checks"][1]["timeout_seconds"], 10800)
+        with self.assertRaisesRegex(ConfigError, r"checks\[1\]\.timeout_seconds: 10801 exceeds the registry maximum 10800 "
                                                  r"\(phases\.max_check_timeout_seconds\)"):
-            self.load(project=project(timeout_seconds=9000))
+            self.load(project=project(timeout_seconds=10801))
         for bad in ({"timeout_seconds": 0}, {"timeout_seconds": "long"}, {"last_issue": "sometimes"}):
             with self.subTest(bad=bad), self.assertRaises(ConfigError):
                 self.load(project=project(**bad))
@@ -328,6 +332,24 @@ class LayeredConfigTests(unittest.TestCase):
         except SystemExit as stop:
             return None, stop.code, err.getvalue()
         return json.loads(out.getvalue()), 0, err.getvalue()
+
+    def test_validate_config_accepts_the_largest_check_timeout_and_refuses_one_second_more(self):
+        # W-525: max_check_timeout_seconds is 10800; the command reports the check or refuses it by name.
+        base = {"kind": "code", "inputs": ["src/*"], "cwd": ".", "command": ["${python}", "-c", "pass"]}
+        for seconds in (10800, 10801):
+            with self.subTest(seconds=seconds):
+                root = self.root / f"limit-{seconds}"
+                root.mkdir()
+                home, path = make_home(root, self.repo, project={"checks": [
+                    dict(base, name="fast", tier="default"),
+                    dict(base, name="slow", tier="extended", timeout_seconds=seconds)]})
+                report, status, err = self.validate(path, home)
+                if seconds == 10800:
+                    self.assertEqual((status, report["checks"][1]["timeout_seconds"]), (0, 10800))
+                else:
+                    self.assertIsNone(report)
+                    self.assertNotEqual(status, 0)
+                    self.assertIn("checks[1].timeout_seconds: 10801 exceeds the registry maximum 10800", err)
 
     def test_a_batch_file_states_its_purpose_and_the_batch_it_follows(self):
         # W-443: the reason for each of the fifteen §2.10 batches existed only as prose in its guidance.

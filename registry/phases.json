@@ -2,20 +2,20 @@
   "notes": [
     "Settled policy. Budgets are soft: exceeding one checkpoints the issue for explicit reconciliation.",
     "Batch-3 observed maxima: implement 13.3M input / 75k output / 125 tool calls / 2793 s; review 2.3M input / 16k output / 48 tool calls / 575 s.",
-    "implement 15M/250k/250 and 5400 s leave headroom above those maxima; repair is about a third of implement. The implement output budget was 150k until W-263: legitimate implement phases wrote 166,709 (W-245, ready) and 183,191 (W-256) output tokens. The repair output budget was 50k until W-440: five repairs of the fifteen §2.10 batches (s210-spec-20261006, s210-amend-20261006, s210-impl-h-20261009) finished ready with 66,138 to 134,258 output tokens (W-401, W-356, W-331, W-328, W-357), each rewriting long specification pages as its findings asked, and each stopped its batch at a budget checkpoint. 150k is the largest of them plus about a tenth.",
+    "implement 15M/300k/250 and 5400 s leave headroom above those maxima; repair has about a third of implement's input and tool calls and half its output. The implement output budget was 150k until W-263: legitimate implement phases wrote 166,709 (W-245, ready) and 183,191 (W-256) output tokens. The repair output budget was 50k until W-440: five repairs of the fifteen §2.10 batches (s210-spec-20261006, s210-amend-20261006, s210-impl-h-20261009) finished ready with 66,138 to 134,258 output tokens (W-401, W-356, W-331, W-328, W-357), each rewriting long specification pages as its findings asked, and each stopped its batch at a budget checkpoint. 150k is the largest of them plus about a tenth. The implement output budget was 250k until W-525: four §2.12 implement phases (W-483 268,000 and W-484 262,000 output tokens in s212-impl-a-20261015, W-517 and W-518 in s212-appear-impl-a-20261016) stopped at that checkpoint while finishing ready and each finished after recover budget --output-tokens 300000.",
     "review 5M/40k/120 matches the last working batch-3 budget; 1800 s is about three times the slowest observed review.",
-    "max_repairs 2 is the engine's upper bound, shared across resumes and profiles; each check may run 1800 s.",
+    "max_repairs 2 is the engine's upper bound, shared across resumes and profiles; each check may run 1800 s unless its project sets a longer timeout (up to max_check_timeout_seconds).",
     "bounded_sessions holds the thresholds; a batch turns the behavior on with context_controls.bounded_sessions (off by default). A worker session whose cumulative input reached 5M tokens, or the first repair after implement, continues in a fresh session seeded with a handoff file (at most 12,000 bytes) instead of resuming the long one. 5M is where batch-3 implement sessions (the W-170 resume, W-171, W-172) approached the model context window.",
     "Cached input: the input_tokens budget judges uncached input (input_tokens minus cached_input_tokens) whenever the backend reports a cached figure, whatever the phase returned (ready or blocked); without a cached figure it judges total input. A resumed long session rereads its context as cached input on each turn; W-249 implement read 22.2M input of which 21.8M was cached, W-233 repair 6.25M of which 6.21M, and W-245 (ready), W-255 and W-256 (both blocked) implement 20.2M, 15.9M and 31.1M with at most 0.41M uncached (W-263). When total input is over the limit but uncached input is not, phase-usage.json records a budget_note. Uncached input, output or tool calls over budget, or a missing figure, still stop; recover budget --input-tokens sets the uncached limit.",
     "max_timeout_seconds 43200 is the largest phase timeout a batch may set for a named issue (batch phase_overrides, for example a repair that takes browser screenshots: W-249 hit 5400 s). It was 14400 until W-464: a real example that processes every field of view of a sample in one issue was planned at 6.7 to 7.9 hours under a time bound of 9 hours, which no single phase could hold. 43200 is that bound plus a third. The phases' own timeouts and every budget are unchanged; a phase this long may pass the tool-call budget, which is reconciled as before.",
-    "max_check_timeout_seconds 7200 is the largest timeout a project may give one check (check timeout_seconds); a check without one keeps check_timeout_seconds. W-274's validation module needed about 2217 s at one thread and had to be split by test selection under the fixed 1800 s (W-282).",
+    "max_check_timeout_seconds 10800 is the largest timeout a project may give one check (check timeout_seconds); a check without one keeps check_timeout_seconds. W-274's validation module needed about 2217 s at one thread and had to be split by test selection under the fixed 1800 s (W-282). It was 7200 until W-525: W-520's pytest-ci-environment took 4,847 s, and W-487's chain tests about 5,840 s in one selection, which the operator split by -k.",
     "compact_token_limit is unset for every phase. A phase may set it, and a batch may set context_controls.compact_token_limit for all phases; the runner then passes -c model_auto_compact_token_limit=<N> (a Codex CLI 0.154.0 config key) on fresh and resumed calls."
   ],
   "phases": {
     "implement": {
       "budget": {
         "input_tokens": 15000000,
-        "output_tokens": 250000,
+        "output_tokens": 300000,
         "tool_calls": 250
       },
       "timeout_seconds": 5400
@@ -39,7 +39,7 @@
   },
   "max_repairs": 2,
   "check_timeout_seconds": 1800,
-  "max_check_timeout_seconds": 7200,
+  "max_check_timeout_seconds": 10800,
   "max_timeout_seconds": 43200,
   "bounded_sessions": {
     "input_threshold_tokens": 5000000,
