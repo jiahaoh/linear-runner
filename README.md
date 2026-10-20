@@ -766,7 +766,11 @@ elsewhere stops the batch for reconciliation.
    It needs exactly one task-kind and one profile label. Every phase's model/effort must
    appear in the host CLI `model_catalog` (normally `~/.codex/models_cache.json`);
    an unavailable selection stops before the claim, with no substitution. The catalog
-   does not prove remote entitlement or quota.
+   does not prove remote entitlement or quota. The Codex CLI rewrites that cache on each
+   refresh, and a long-running `codex app-server` started before a CLI upgrade keeps
+   writing its older client's catalog, which can lack newer models. Restart it after an
+   upgrade, or point `model_catalog` at a file the current CLI writes with
+   `codex debug models > <file>`, refreshed before a launch.
 3. **Implement.** The controller claims the issue (`in_progress` state) and writes an
    intake packet (see "Context cost"); an interrupted implementation resumes its own
    session unless bounded sessions start a fresh one from a handoff. The worker

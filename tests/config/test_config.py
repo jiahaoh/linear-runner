@@ -75,6 +75,22 @@ class LayeredConfigTests(unittest.TestCase):
             text = (ROOT / "registry" / f"{name}.json").read_text()
             self.assertNotIn("draft", text.lower())
 
+    def test_gpt_6_1_sol_reviews_standard_and_economy_issues(self):
+        # The settled registry (no private override): Jiahao's review models of 2026-10-19 (W-528).
+        from linear_runner.engine.runner import resolve_profile
+        loaded = self.load(registry={})
+
+        def review(labels, **kwargs):
+            selection = resolve_profile(loaded, {"id": "DEV-1", "labels": labels}, "review", **kwargs)
+            return selection["model"], selection["effort"]
+
+        self.assertEqual(review(["Maintenance", "Standard"]), ("gpt-6.1-sol", "high"))
+        # Economy keeps the Standard review floor unless the low-risk review rule applies.
+        self.assertEqual(review(["Maintenance", "Economy"]), ("gpt-6.1-sol", "high"))
+        self.assertEqual(review(["Maintenance", "Economy"], light="Economy"), ("gpt-6.1-sol", "medium"))
+        self.assertEqual(review(["Maintenance", "Deep"]), ("gpt-6-astra", "high"))
+        self.assertEqual(review(["Research", "Standard"]), ("gpt-6-astra", "high"))
+
     def test_private_registry_override_merges_and_records_source(self):
         loaded = self.load()
         self.assertEqual(config.pool_for(loaded["policy"], "Implementation", "Standard", "implement")[1][0]["model"], "astra")

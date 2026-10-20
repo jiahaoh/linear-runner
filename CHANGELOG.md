@@ -15,6 +15,22 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+`gpt-6.1-sol` reviews Standard and Economy issues (`W-528`). The registry lists it (Codex,
+efforts medium and high), and it is the first entry of the `*` Standard review pool (high)
+and the `*` Economy review pool (medium, reached by the low-risk review rule). The earlier
+defaults stay as named alternatives. The Deep and Research review pools and every implement
+and repair pool are unchanged.
+
+**Project impact:** no configuration key changes. The site's `model_catalog` must offer
+`gpt-6.1-sol` at medium and high; otherwise intake stops before the claim with "Requested
+model/effort unavailable in host CLI catalog" (README "Lifecycle", step 2, covers a Codex
+app-server that predates a CLI upgrade). A batch that names `gpt-6-astra@medium` or
+`gpt-6-luna@max` as its reviewer keeps it. Editing `registry/` changes every configuration
+fingerprint, so a paused batch adopts this with `recover repin-config`.
+
+**Canary tier:** canary batch (a model change): stop the next batch after its first issue
+whose review uses the new model.
+
 ## v3.0.0 — 2026-10-16
 
 Runner housekeeping after a two-agent audit of 2.8.0 (`W-489`: `W-490` to `W-497`) and two
