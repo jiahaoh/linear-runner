@@ -1486,7 +1486,13 @@ the recovered issue finishes, just as a fresh launch would; `--then stop` stops 
 | A lifecycle post failed after acceptance | `recover resume --batch $B --reason R --authorized-by A` |
 
 Details: `--note-file` text is stored under the issue's `operator-notes/` with its hash
-and appended to later model prompts; it does not change acceptance criteria.
+and appended to later model prompts. To a worker (implement, repair) a note does not change
+the acceptance criteria. The review reads an owner's decision or reading of a criterion
+recorded in a note as how that criterion applies to this issue: it applies the decision as
+recorded, under the authorization the note carries, even while the owner's later
+confirmation is pending (the owner may still revise it), and names each decision it applied
+under Concerns. At W-487 a review refused three such readings because they awaited
+confirmation, and the operator had to edit the criteria in Linear and repin them (`W-522`).
 `revalidate` needs an active issue stopped at `repair` or `validate` whose checks already
 ran (a repair that finished `blocked` or was interrupted, or checks that still failed). The
 launch that carries it out sets the step back to `validate` and runs the checks on the

@@ -67,6 +67,17 @@ extended check's log (W-519, W-487) no longer need an amended criterion.
 
 **Canary tier:** canary batch (engine), shared with the other changes of this release.
 
+The review applies an owner's decision or reading of a criterion recorded in an operator note
+(`recover ... --note-file`), also while it awaits the owner's confirmation (`W-522`). The
+review prompt says so and asks the reviewer to name each decision it applied under Concerns.
+The implement and repair prompts keep "they do not change the acceptance criteria". At W-487 a
+review refused three such readings, and the operator had to edit the criteria in Linear and
+repin them.
+
+**Project impact:** none.
+
+**Canary tier:** canary batch (prompts), shared with the other changes of this release.
+
 ## v3.0.0 — 2026-10-16
 
 Runner housekeeping after a two-agent audit of 2.8.0 (`W-489`: `W-490` to `W-497`) and two

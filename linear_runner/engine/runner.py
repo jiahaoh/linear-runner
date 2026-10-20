@@ -1324,7 +1324,7 @@ class Runner:
         independent review's findings (``recover repair``) in the stage and ``session.json``."""
         if self.allowed_phases is not None and phase not in self.allowed_phases:
             raise RuntimeError(f"The recorded recovery does not authorize a {phase} model phase")
-        prompt += "\n\n" + REPOSITORY_PRECEDENCE + " " + CONTROLLER_RECORD + operator_notes(active)
+        prompt += "\n\n" + REPOSITORY_PRECEDENCE + " " + CONTROLLER_RECORD + operator_notes(active, phase)
         light = (active.get("review_risk") or {}).get("profile") if phase == "review" else None
         selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"), light)
         self.verify_model(selection)
@@ -2505,11 +2505,25 @@ class Runner:
         self.log("Configured issue limit reached; code and state checkpointed")
 
 
-def operator_notes(active):
-    """Recorded recovery notes (owner authorization text) appended to model prompts."""
+# How a phase reads the recorded recovery notes. A worker never changes the criteria. A review
+# applies an owner's recorded decision or reading of a criterion: at W-487 a review refused such
+# readings as "pending confirmation", and the operator had to edit the criteria in Linear and
+# repin them (W-522).
+OPERATOR_NOTES_WORKER = ("Operator recovery notes (recorded with reason and authorizer; they do not change the "
+                         "acceptance criteria):")
+OPERATOR_NOTES_REVIEW = ("Operator recovery notes (recorded with reason and authorizer). The criteria's text stays "
+                         "the contract, but an owner's decision or reading recorded in a note is how this review "
+                         "reads them for this issue. A note's decision applies as recorded, under the authorization "
+                         "the note carries. Its being pending the owner's later confirmation does not by itself make "
+                         "a criterion unmet; the owner may still revise it. Name each such decision you applied "
+                         "under Concerns.")
+
+
+def operator_notes(active, phase):
+    """Recorded recovery notes (owner authorization text) appended to the prompt of ``phase``."""
     notes = active.get("operator_notes") or []
     if not notes:
         return ""
-    return ("\n\nOperator recovery notes (recorded with reason and authorizer; they do not change the "
-            "acceptance criteria):\n" + "\n".join(f"- [{n['id']}, authorized by {n['authorized_by']}] {n['text']}"
-                                                  for n in notes))
+    intro = OPERATOR_NOTES_REVIEW if phase == "review" else OPERATOR_NOTES_WORKER
+    return ("\n\n" + intro + "\n" + "\n".join(f"- [{n['id']}, authorized by {n['authorized_by']}] {n['text']}"
+                                             for n in notes))

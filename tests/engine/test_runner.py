@@ -1767,6 +1767,45 @@ class EngineTests(unittest.TestCase):
         self.assertIn(f"DEV-1: {run / 'controller-manifest.json'} was not written by the controller; its content is "
                       f"kept as {kept.name}", line)
 
+    def test_the_review_applies_an_owners_recorded_reading_and_the_worker_keeps_the_criteria(self):
+        # W-522: at W-487 a review refused the owner's recorded readings of three criteria because
+        # they awaited his confirmation; the operator had to edit the criteria and repin them.
+        prompts = {}
+        original_session, original_phase = self.runner.run_session, self.runner.model_phase
+        def session(prompt, directory, **kwargs):
+            prompts[Path(directory).name.split("-")[0]] = prompt
+            return original_session(prompt, directory, **kwargs)
+        def phase(active, *args, **kwargs):
+            active["operator_notes"] = [{"id": "note-1", "authorized_by": "Owner (delegated to the operator)",
+                                         "text": "Criterion 2: the worker's own run in the CI-like environment is the evidence."}]
+            return original_phase(active, *args, **kwargs)
+        self.runner.run_session, self.runner.model_phase = session, phase
+        self.runner.config["checks"][0]["command"] = [sys.executable, "-c", "import sys; from pathlib import Path; "
+                                                      "sys.exit(0 if Path('result.txt').read_text() == 'fixed' else 1)"]
+        def fixing(prompt, directory, **kwargs):
+            value = session(prompt, directory, **kwargs)
+            if Path(directory).name.startswith("repair"):
+                (self.repo / "result.txt").write_text("fixed")
+            return value
+        self.runner.run_session = fixing
+        self.runner.execute(limit=1)
+        self.assertEqual(sorted(prompts), ["implement", "repair", "review"])
+        decision = ("The criteria's text stays the contract, but an owner's decision or reading recorded in a note is "
+                    "how this review reads them for this issue. A note's decision applies as recorded, under the "
+                    "authorization the note carries. Its being pending the owner's later confirmation does not by "
+                    "itself make a criterion unmet; the owner may still revise it. Name each such decision you "
+                    "applied under Concerns.")
+        note = "- [note-1, authorized by Owner (delegated to the operator)] Criterion 2:"
+        self.assertIn(decision, prompts["review"])
+        self.assertIn(note, prompts["review"])
+        self.assertNotIn("they do not change the acceptance criteria", prompts["review"])
+        for worker in ("implement", "repair"):
+            with self.subTest(phase=worker):
+                self.assertIn("Operator recovery notes (recorded with reason and authorizer; they do not change the "
+                              "acceptance criteria):", prompts[worker])
+                self.assertIn(note, prompts[worker])
+                self.assertNotIn(decision, prompts[worker])
+
     def test_every_model_prompt_names_the_controllers_record(self):
         prompts = {}
         original = self.runner.run_session
