@@ -111,7 +111,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`), optional `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`, `environment`, `unset_environment`), optional `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -182,6 +182,15 @@ of the home (neither `<home>/batches/<id>.json` nor a file there with that `id`)
 Credentials are never stored: the workspace names an environment variable or a credential
 cache path, and `linear_runner/linear/client.py` re-reads it on each request. Do not put secrets in
 `check_environment`; it is recorded in manifests.
+
+`check_environment` applies to every check. A check may add its own `environment` (with
+`${name}` substitution, as in `check_environment`) and `unset_environment`, a list of names
+removed from its environment whether inherited or set by `check_environment`. They apply to
+that check only, after `check_environment`; they are part of its definition, so of its
+evidence key and of the configuration fingerprint, and `validate-config` lists them under
+`checks`. A name both set and unset is refused. For example, a check that reproduces a CI
+environment without a variable the lab checks need unsets it there instead of hiding
+`/usr/bin/env -u` in its command (`W-524`). The same rule about secrets applies.
 
 ### Interface version
 

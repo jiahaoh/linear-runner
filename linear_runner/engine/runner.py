@@ -118,6 +118,21 @@ LAUNCH_VARIABLES = frozenset({"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_P
                               "MEMORY_PRESSURE_WATCH", "MEMORY_PRESSURE_WRITE"})
 
 
+# The keys of a check definition that ``validate`` runs; every caller passes these (W-524 added
+# a check's own environment, which the launch baseline and the base-parity run must pass too).
+CHECK_RUN_KEYS = ("cwd", "command", "allow_empty", "timeout_seconds", "environment", "unset_environment")
+
+
+def check_process_environment(config, environment, check):
+    """``(process environment, recorded overrides, unset names)`` of one check: the inherited
+    environment, then ``environment`` (the project's ``check_environment``, plus any the caller
+    adds), then the check's own ``environment``, without its ``unset_environment`` names (W-524)."""
+    unset = list(check.get("unset_environment", []))
+    overrides = {k: v for k, v in dict(environment, **check.get("environment", {})).items() if k not in unset}
+    process = {k: v for k, v in dict(inherited_environment(config), **overrides).items() if k not in unset}
+    return process, overrides, unset
+
+
 def evidence_environment(config):
     """The inherited environment as it enters the check-evidence key: without LAUNCH_VARIABLES."""
     return {k: v for k, v in inherited_environment(config).items() if k not in LAUNCH_VARIABLES}
@@ -851,7 +866,8 @@ class Runner:
             self.log(f"Validation: {' '.join(command)}")
             started = now()
             with log.open("wb") as output:
-                self.child = subprocess.Popen(command, cwd=cwd, env=dict(inherited_environment(self.config), **environment),
+                process_environment, overrides, unset = check_process_environment(self.config, environment, check)
+                self.child = subprocess.Popen(command, cwd=cwd, env=process_environment,
                                               stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
                 self.save(child_pid=self.child.pid)
                 try:
@@ -865,10 +881,12 @@ class Runner:
                     self.child = None
                     self.save(child_pid=None)
             allow_empty = bool(check.get("allow_empty"))
-            record = {"command": command, "cwd": str(cwd), "environment_overrides": environment, "started_at": started,
+            record = {"command": command, "cwd": str(cwd), "environment_overrides": overrides, "started_at": started,
                       "finished_at": now(), "exit_code": returncode, "status": check_outcome(returncode, allow_empty),
                       "allow_empty": allow_empty, "timeout_seconds": timeout, "log": str(log),
                       "sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
+            if unset:
+                record["unset_environment"] = unset
             if record["status"] == "empty":
                 record["note"] = EMPTY_NOTE
             elif returncode == 124:
@@ -1694,7 +1712,7 @@ class Runner:
         """A ``base_parity`` check (W-344): the command in the exported base revision and in the
         worktree, then its outputs compared byte for byte. Writes ``checks.json`` (one record,
         as ``validate``) whose log is the comparison's own log."""
-        definition = {k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}
+        definition = {k: spec[k] for k in CHECK_RUN_KEYS if k in spec}
         sides = {}
         with parity.temporary_tree() as scratch:
             tree = Path(scratch) / "tree"
@@ -1705,6 +1723,9 @@ class Runner:
             base_dir, result_dir = subdir / "base", subdir / "result"
             base_dir.mkdir(); result_dir.mkdir()
             base_check = dict(definition, command=[parity.retarget(a, self.repo, tree) for a in definition["command"]])
+            if "environment" in definition:
+                base_check["environment"] = {name: parity.retarget(value, self.repo, tree)
+                                             for name, value in definition["environment"].items()}
             self.validate(base_dir, [base_check], environment, root=tree)
             self.validate(result_dir, [definition], self.config["check_environment"])
             runs = {"base": read_json(base_dir / "checks.json")[0], "result": read_json(result_dir / "checks.json")[0]}
@@ -1777,8 +1798,7 @@ class Runner:
             if spec.get("base_parity"):
                 self.run_parity_check(subdir, spec, active["starting_commit"])
             else:
-                self.validate(subdir, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds") if k in spec}],
-                              self.config["check_environment"])
+                self.validate(subdir, [{k: spec[k] for k in CHECK_RUN_KEYS if k in spec}], self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
             result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False)
             if worktree:

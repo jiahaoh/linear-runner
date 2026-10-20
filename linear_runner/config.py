@@ -690,8 +690,16 @@ def load_config(batch_path, home=None):
         if "last_issue" in spec and spec["tier"] != "extended":
             raise ConfigError(f"{where}.last_issue: only an extended check has a last-issue rule; a default check "
                               "always runs or reuses its evidence")
+        both = sorted(set(spec.get("environment", {})) & set(spec.get("unset_environment", [])))
+        if both:
+            raise ConfigError(f"{where} ({spec['name']}): {', '.join(both)} both set in environment and listed in "
+                              "unset_environment")
+        own = {}
+        if "environment" in spec:
+            own["environment"] = {name: substitute(value, variables, f"{where}.environment.{name}")
+                                  for name, value in spec["environment"].items()}
         checks.append(dict(spec, cwd=inside(substitute(spec["cwd"], variables, where), where),
-                           command=[substitute(arg, variables, where) for arg in spec["command"]]))
+                           command=[substitute(arg, variables, where) for arg in spec["command"]], **own))
     if len({c["name"] for c in checks}) != len(checks):
         raise ConfigError(f"{project_label}.checks: names must be unique")
     put("checks", checks, project_label)

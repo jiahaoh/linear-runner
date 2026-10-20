@@ -48,7 +48,7 @@ from linear_runner.supervision import backend_start, wait
 from linear_runner.engine import lint as criterion_lint
 from linear_runner.version import pin_problem
 from linear_runner.supervision.recovery import expected_state
-from linear_runner.engine.runner import (PHASES, Runner, contract_changes, contract_matches, evidence_intact,
+from linear_runner.engine.runner import (CHECK_RUN_KEYS, PHASES, Runner, contract_changes, contract_matches, evidence_intact,
                                          LockBusy, fingerprint, git, now, project_lock, resolve_profile, run_id)
 from linear_runner.linear import messages
 from linear_runner.supervision.supervisor import STATUS_NAME, Supervisor
@@ -148,8 +148,7 @@ def _baseline_checks(runner, directory, *, reuse=True):
             continue
         target = directory / spec["name"]
         target.mkdir(parents=True)
-        passed = runner.validate(target, [{k: spec[k] for k in ("cwd", "command", "allow_empty", "timeout_seconds")
-                                           if k in spec}], runner.config["check_environment"])
+        passed = runner.validate(target, [{k: spec[k] for k in CHECK_RUN_KEYS if k in spec}], runner.config["check_environment"])
         record = read_json(target / "checks.json")[0]
         records[spec["name"]] = dict({k: record[k] for k in ("exit_code", "status", "log", "sha256")}, reused=False)
         if not passed:

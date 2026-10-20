@@ -351,6 +351,28 @@ class LayeredConfigTests(unittest.TestCase):
                     self.assertNotEqual(status, 0)
                     self.assertIn("checks[1].timeout_seconds: 10801 exceeds the registry maximum 10800", err)
 
+    def test_a_check_may_set_and_unset_its_own_environment_but_not_the_same_name(self):
+        # W-524: validate-config lists both keys (with ${name} substitution) and refuses a name in both.
+        base = {"kind": "code", "inputs": ["src/*"], "cwd": ".", "command": ["${python}", "-c", "pass"]}
+        good = dict(base, name="ci", tier="extended", environment={"CACHE": "${home}/cache"},
+                    unset_environment=["APPEARANCE_BANKS"])
+        root = self.root / "own-environment"
+        root.mkdir()
+        home, path = make_home(root, self.repo, project={"checks": [dict(base, name="fast", tier="default"), good]})
+        report, status, _ = self.validate(path, home)
+        self.assertEqual(status, 0)
+        self.assertEqual({k: report["checks"][1][k] for k in ("environment", "unset_environment")},
+                         {"environment": {"CACHE": f"{home}/cache"}, "unset_environment": ["APPEARANCE_BANKS"]})
+        self.assertNotIn("environment", report["checks"][0])
+        clash = dict(good, unset_environment=["CACHE"])
+        root = self.root / "clash"
+        root.mkdir()
+        home, path = make_home(root, self.repo, project={"checks": [dict(base, name="fast", tier="default"), clash]})
+        report, status, err = self.validate(path, home)
+        self.assertIsNone(report)
+        self.assertNotEqual(status, 0)
+        self.assertIn("checks[1] (ci): CACHE both set in environment and listed in unset_environment", err)
+
     def test_a_batch_file_states_its_purpose_and_the_batch_it_follows(self):
         # W-443: the reason for each of the fifteen §2.10 batches existed only as prose in its guidance.
         example = ROOT / "examples/home/batches/example.json"

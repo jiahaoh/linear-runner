@@ -381,6 +381,47 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(self.runner.run_checks(active))
         self.assertFalse(record()["reused"])
 
+    def test_a_check_sets_and_unsets_its_own_environment(self):
+        # W-524: the project's check_environment applied to every check; the CI-like check had to
+        # hide a variable with `/usr/bin/env -u` in its command.
+        from unittest import mock
+        names = ("PROJECT_A", "PROJECT_B", "CHECK_C", "INHERITED_D")
+        dump = [sys.executable, "-c", "import json, os, pathlib; pathlib.Path(r'{run_dir}', 'env.json').write_text("
+                                      f"json.dumps({{k: os.environ.get(k) for k in {names!r}}}))"]
+        self.config["check_environment"] = dict(self.config["check_environment"], PROJECT_A="a", PROJECT_B="b")
+        self.config["checks"] = [{"name": "ci", "kind": "code", "tier": "default", "inputs": ["*"], "cwd": ".",
+                                  "command": dump, "environment": {"CHECK_C": "c"},
+                                  "unset_environment": ["PROJECT_A", "INHERITED_D"]}]
+        active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        Path(active["run_dir"]).mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"INHERITED_D": "d"}):
+            self.assertTrue(self.runner.run_checks(active))
+        record = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())[0]
+        seen = json.loads((Path(record["log"]).parent / "env.json").read_text())
+        self.assertEqual(seen, {"PROJECT_A": None, "PROJECT_B": "b", "CHECK_C": "c", "INHERITED_D": None})
+        self.assertEqual({k: record["environment_overrides"].get(k) for k in ("PROJECT_A", "PROJECT_B", "CHECK_C")},
+                         {"PROJECT_A": None, "PROJECT_B": "b", "CHECK_C": "c"})
+        self.assertEqual(record["unset_environment"], ["PROJECT_A", "INHERITED_D"])
+
+    def test_a_change_of_a_checks_own_environment_reruns_it(self):
+        # W-524: both keys are part of the check definition, so of its evidence key.
+        quick = [sys.executable, "-c", "pass"]
+        check = {"name": "ci", "kind": "code", "tier": "default", "inputs": ["*"], "cwd": ".", "command": quick,
+                 "environment": {"CHECK_C": "c"}, "unset_environment": ["PROJECT_A"]}
+        active = {"run_dir": str(self.root / "runs" / "manual"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        Path(active["run_dir"]).mkdir(parents=True)
+        def reused(spec):
+            self.config["checks"] = [spec]
+            self.assertTrue(self.runner.run_checks(active))
+            return json.loads((Path(active["validation_dir"]) / "checks.json").read_text())[0]["reused"]
+        self.assertFalse(reused(check))
+        self.assertTrue(reused(check))
+        self.assertFalse(reused(dict(check, environment={"CHECK_C": "other"})))
+        self.assertFalse(reused(dict(check, environment={"CHECK_C": "other"}, unset_environment=["PROJECT_B"])))
+        self.assertTrue(reused(dict(check, environment={"CHECK_C": "other"}, unset_environment=["PROJECT_B"])))
+
     def test_a_check_runs_under_its_own_timeout(self):
         # W-282: the registry's check_timeout_seconds was the only limit.
         sleeper = [sys.executable, "-c", "import time; time.sleep(30)"]

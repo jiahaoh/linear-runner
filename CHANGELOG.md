@@ -42,6 +42,18 @@ configuration fingerprint, so a paused batch adopts this with `recover repin-con
 
 **Canary tier:** canary batch (engine budgets), shared with the other changes of this release.
 
+A check may set `environment` and `unset_environment` of its own (`W-524`). They apply to that
+check only, after the project's `check_environment` and the inherited environment, with
+`${name}` substitution in `environment`. Both are part of the check's definition, so a change
+reruns it and changes the configuration fingerprint; `validate-config` lists them under
+`checks` and refuses a name both set and unset. The launch baseline and the base-parity run
+pass them too: the keys a check runs with are now one list in the engine.
+
+**Project impact:** none; a project may now replace a command prefix such as `/usr/bin/env -u
+NAME` with `"unset_environment": ["NAME"]`.
+
+**Canary tier:** canary batch (engine), shared with the other changes of this release.
+
 ## v3.0.0 — 2026-10-16
 
 Runner housekeeping after a two-agent audit of 2.8.0 (`W-489`: `W-490` to `W-497`) and two
