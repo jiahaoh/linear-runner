@@ -1766,12 +1766,21 @@ class Runner:
         before = fingerprint(self.repo)
         last = None  # decided at the first extended check (W-342: by the queue)
         batch_changed = None
+        # Extended checks the batch names for this issue run here as at the last issue (W-523).
+        named = set(self.config.get("check_overrides", {}).get(active["issue_id"], {}).get("run", []))
         for index, spec in enumerate(self.config["checks"]):
             extended = spec["tier"] == "extended"
             if extended and last is None:
                 last = self.is_last_issue(active["issue_id"])
+            # A check the batch names for this issue gets the last-issue treatment here (W-523).
+            requested = extended and spec["name"] in named
+            final = extended and (last or requested)
+            reason = {"run_reason": f"named in the batch's check_overrides for {active['issue_id']}"} if requested else {}
+            if requested:
+                self.log(f"Validation: {spec['name']} is treated at {active['issue_id']} as at the last issue, because "
+                         "the batch names it (check_overrides)")
             if extended and not any(fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
-                if not last:
+                if not final:
                     continue
                 if spec.get("last_issue") == "when_changed":
                     # The last issue runs every extended check as the batch's final word. A check
@@ -1781,18 +1790,19 @@ class Runner:
                     if not any(fnmatch.fnmatch(p, pattern) for p in batch_changed for pattern in spec["inputs"]):
                         results.append({"name": spec["name"], "status": "skipped", "exit_code": None,
                                         "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
-                                        "model": None})
+                                        "model": None, **reason})
                         continue
             # At the last issue an extended check's evidence counts only for this worktree: at
             # W-486 a repair changed test files two checks' inputs omit, and their logs of the
             # earlier state were reused (W-507).
-            worktree = before if extended and last else None
+            worktree = before if final else None
             key, launch_key = self.check_keys(spec, base=active["starting_commit"], worktree=worktree)
             previous = cache.get(spec["name"], {})
             # Only intact successful evidence (passed, or an allowed empty selection) is reused;
             # failures always rerun. ``key`` covers the whole check definition, allow_empty included.
             if previous.get("key") == key and evidence_intact(previous):
-                results.append(dict(previous, reused=True))
+                # The reason belongs to this issue's selection, not to the cached evidence.
+                results.append(dict({k: v for k, v in previous.items() if k != "run_reason"}, reused=True, **reason))
                 continue
             subdir = directory / str(index); subdir.mkdir()
             if spec.get("base_parity"):
@@ -1800,7 +1810,7 @@ class Runner:
             else:
                 self.validate(subdir, [{k: spec[k] for k in CHECK_RUN_KEYS if k in spec}], self.config["check_environment"])
             result = read_json(subdir / "checks.json")[0]
-            result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False)
+            result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False, **reason)
             if worktree:
                 result["reuse_scope"] = "worktree"
             cache[spec["name"]] = result

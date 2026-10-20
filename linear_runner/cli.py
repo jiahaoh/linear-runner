@@ -34,6 +34,7 @@ def summarize(config):
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
             "delivery_integrity": bool(config["delivery_integrity"]),
             "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
+            "check_overrides": config.get("check_overrides", {}),
             "variable_overrides": variable_overrides(config),
             "lineage": config["lineage"], "warnings": lineage_warnings(config),
             "checks": [dict({"name": c["name"], "tier": c["tier"],

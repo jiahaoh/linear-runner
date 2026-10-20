@@ -112,7 +112,7 @@ model does not allow) are errors.
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
 | Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`, `environment`, `unset_environment`), optional `delivery_checks`, `delivery_integrity` |
-| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
+| Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `check_overrides` (extended checks to run at a named issue, see "Lifecycle" step 4), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
 
@@ -789,7 +789,15 @@ elsewhere stops the batch for reconciliation.
    inputs and at the batch's last issue. The last issue is the one that runs last: no other
    allowlisted issue is still to run (done or deferred issues of the batch and issues Done in
    Linear do not count, an issue that waits for this one does), whatever its position in the
-   allowlist; a Linear read that fails while deciding counts as "last". An extended check may set
+   allowlist; a Linear read that fails while deciding counts as "last". A batch may also name
+   extended checks to run at an issue of its allowlist, as at the last issue, when an issue's
+   criteria cite such a check's log: `"check_overrides": {"W-487": {"run":
+   ["pytest-ci-environment"]}}` (`W-523`). At that issue a named check is treated exactly as at
+   the last issue: it runs whatever that issue changed (one with `last_issue: "when_changed"`
+   only if the batch touched its inputs, as below), its evidence is keyed on the worktree, and
+   its record says why (`run_reason`); at other issues the rules here apply unchanged.
+   `validate-config` lists the key and refuses a check the project does not define, a default
+   check or an issue outside the allowlist. An extended check may set
    `"last_issue": "when_changed"`: at the last issue it then runs (or reuses passing
    evidence) only if a file changed since the batch's base revision matches its `inputs`,
    whichever issue of the batch changed it. The base revision is the starting commit of the
@@ -823,11 +831,13 @@ elsewhere stops the batch for reconciliation.
    is the batch's final word, while its `inputs` are what selects it at other issues and need
    not name every file it runs (a check that runs the whole suite in another environment is
    selected by the environment files, for example; `W-507`). So at the last issue a change to any file,
-   a repair's for example, runs every extended check that runs there again, and evidence
-   recorded at an earlier issue is not reused there; a round with no file changed (a
-   revalidation after a timeout, say) still reuses it. Default checks and extended checks at
-   other issues are keyed on their `inputs` alone, so those should name every file the check
-   runs, its tests included. Only successful records with intact
+   a repair's for example, runs every extended check that runs there again, and evidence keyed
+   on `inputs` at an earlier issue is not reused there; worktree-keyed evidence of the same
+   worktree still is: a round with no file changed (a revalidation after a timeout, say), or a
+   run at an earlier issue whose batch named the check (`check_overrides`) when no file changed
+   since. A named check is keyed the same way at its named issue. Default checks, and extended
+   checks at an issue that is neither the last nor named for them, are keyed on their `inputs`
+   alone, so those should name every file the check runs, its tests included. Only successful records with intact
    log hashes are reused; failures are never reused. Validation that changes source stops.
    Two things are deliberately not part of that key. The variables the service manager sets
    anew for every unit (`INVOCATION_ID`, `JOURNAL_STREAM`, `SYSTEMD_EXEC_PID` and the like)
@@ -835,8 +845,9 @@ elsewhere stops the batch for reconciliation.
    them no evidence survived one. And the key is taken after a round of checks has run, so
    ignored files that the checks write and their `inputs` match (a test cache, generated
    documentation sources) belong to the recorded state. A repair or resume that changes
-   none of the inputs (at the last issue, for an extended check: no file of the worktree)
-   therefore reuses the evidence, shown as `reused` in `checks.json`.
+   none of the inputs (at the last issue, and at an issue whose batch names the check in
+   `check_overrides`, for an extended check: no file of the worktree) therefore reuses the
+   evidence, shown as `reused` in `checks.json`.
    **Empty checks:** a check may set `"allow_empty": true`. Its exit code 5 (pytest's "no
    tests collected", for example when a marker selects nothing after the tests moved) is then
    recorded as `status: "empty"` with the note "no tests selected; not applicable" and counts

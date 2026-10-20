@@ -651,6 +651,76 @@ class EngineTests(unittest.TestCase):
         self.runner.execute(dry_run=True)
         self.assertEqual(logged[-1], "Dry run: selected=None; nothing ready; issues wait on prerequisites")
 
+    def named_check_batch(self, last_issue=None):
+        """Three allowlisted issues; an extended check `ci` whose inputs (env/*) no issue changes,
+        named for DEV-1 (W-523). Returns (run(issue) -> {name: record}, runs() -> marker lines)."""
+        marker = self.root / "runs.txt"
+        def recording(name):
+            return [sys.executable, "-c", f"open({str(marker)!r}, 'a').write({name!r} + '\\n')"]
+        ci = {"name": "ci", "kind": "code", "tier": "extended", "inputs": ["env/*"], "cwd": ".", "command": recording("ci")}
+        if last_issue:
+            ci["last_issue"] = last_issue
+        self.config["checks"] = [
+            {"name": "fast", "kind": "code", "tier": "default", "inputs": ["lib/*"], "cwd": ".", "command": recording("fast")}, ci]
+        self.config["issues"] = ["DEV-1", "DEV-2", "DEV-3"]
+        self.config["check_overrides"] = {"DEV-1": {"run": ["ci"]}}
+        self.linear.add_issue("DEV-2"); self.linear.add_issue("DEV-3")
+        base = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "lib").mkdir(); (self.repo / "lib" / "code.txt").write_text("v1")
+        (self.root / "runs").mkdir()
+        def run(issue):
+            active = {"run_dir": str(self.root / "runs" / f"{issue}-{len(list((self.root / 'runs').iterdir()))}"),
+                      "issue_id": issue, "starting_commit": base}
+            Path(active["run_dir"]).mkdir()
+            self.assertTrue(self.runner.run_checks(active))
+            return {r["name"]: r for r in json.loads((Path(active["validation_dir"]) / "checks.json").read_text())}
+        def runs():
+            return marker.read_text().splitlines() if marker.exists() else []
+        return run, runs
+
+    def test_a_batch_runs_a_named_extended_check_at_a_named_issue(self):
+        # W-523: W-519's and W-487's criteria cited the CI-environment check's log, which the
+        # controller ran only at the last issue or when the environment files changed.
+        run, runs = self.named_check_batch()
+        reason = "named in the batch's check_overrides for DEV-1"
+        # DEV-1 is not the last issue and changes none of the check's inputs; the batch names it.
+        first = run("DEV-1")
+        self.assertEqual((first["ci"]["status"], first["ci"]["reused"], first["ci"]["reuse_scope"], first["ci"]["run_reason"]),
+                         ("passed", False, "worktree", reason))
+        self.assertEqual(runs(), ["fast", "ci"])
+        # DEV-2 is neither named nor last: the check does not run there.
+        self.runner.state["history"] = [{"issue_id": "DEV-1"}]
+        self.assertNotIn("ci", run("DEV-2"))
+        self.assertEqual(runs(), ["fast", "ci"])  # fast reused its evidence
+        # DEV-3 is the last issue: a repair changed a file, so the check runs again, for its own reason.
+        self.runner.state["history"] = [{"issue_id": "DEV-1"}, {"issue_id": "DEV-2"}]
+        (self.repo / "lib" / "code.txt").write_text("v2")
+        last = run("DEV-3")
+        self.assertEqual((last["ci"]["status"], last["ci"]["reused"]), ("passed", False))
+        self.assertNotIn("run_reason", last["ci"])
+        self.assertEqual(runs(), ["fast", "ci", "fast", "ci"])
+
+    def test_the_last_issue_reuses_a_named_run_of_the_same_worktree_without_its_reason(self):
+        # W-523 with W-507: the named run's evidence is keyed on the worktree, as at the last issue;
+        # with no file changed since, the last issue reuses it, and the record is the last issue's own.
+        run, runs = self.named_check_batch()
+        self.assertEqual(run("DEV-1")["ci"]["run_reason"], "named in the batch's check_overrides for DEV-1")
+        self.runner.state["history"] = [{"issue_id": "DEV-1"}, {"issue_id": "DEV-2"}]
+        last = run("DEV-3")["ci"]
+        self.assertEqual((last["reused"], last["reuse_scope"]), (True, "worktree"))
+        self.assertNotIn("run_reason", last)
+        self.assertEqual(runs(), ["fast", "ci"])
+
+    def test_a_named_when_changed_check_follows_the_last_issue_rule_at_its_issue(self):
+        # W-523 changes nothing about when_changed: at the named issue the check is treated as at the
+        # last issue, so it is skipped while the batch has not touched its inputs, with the reason.
+        run, runs = self.named_check_batch(last_issue="when_changed")
+        first = run("DEV-1")["ci"]
+        self.assertEqual((first["status"], first["run_reason"]), ("skipped", "named in the batch's check_overrides for DEV-1"))
+        (self.repo / "env").mkdir(); (self.repo / "env" / "pyproject.toml").write_text("[project]")
+        self.assertEqual(run("DEV-1")["ci"]["status"], "passed")
+        self.assertEqual(runs(), ["fast", "ci"])
+
     def test_the_last_issue_is_decided_by_the_queue(self):
         # W-342: the last entry of the allowlist is not necessarily the issue that runs last.
         self.config["issues"] = ["DEV-1", "DEV-2", "DEV-3"]

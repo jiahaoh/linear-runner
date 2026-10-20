@@ -54,6 +54,19 @@ NAME` with `"unset_environment": ["NAME"]`.
 
 **Canary tier:** canary batch (engine), shared with the other changes of this release.
 
+A batch may name extended checks to run at a named issue, as at its last issue (`W-523`):
+`"check_overrides": {"<issue>": {"run": ["<extended check>"]}}`. At that issue a named check
+is treated exactly as at the last issue: it runs whatever that issue changed (with
+`last_issue: "when_changed"`, only if the batch touched its inputs), its evidence is keyed on
+the worktree (`W-507`), and its record carries a `run_reason`. The key is
+part of the configuration fingerprint; `validate-config` lists it and refuses an unknown
+check, a default check and an issue outside the allowlist. Issues whose criteria cite an
+extended check's log (W-519, W-487) no longer need an amended criterion.
+
+**Project impact:** none; a batch may add the key.
+
+**Canary tier:** canary batch (engine), shared with the other changes of this release.
+
 ## v3.0.0 — 2026-10-16
 
 Runner housekeeping after a two-agent audit of 2.8.0 (`W-489`: `W-490` to `W-497`) and two

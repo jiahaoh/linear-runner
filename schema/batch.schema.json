@@ -81,6 +81,19 @@
         }
       }
     },
+    "check_overrides": {
+      "description": "Extended checks that run at a named issue as at the batch's last issue (W-523): {\"<issue>\": {\"run\": [\"<extended check>\"]}}. At that issue a named check is treated exactly as at the last issue: it runs whatever that issue changed (a last_issue when_changed check only if the batch touched its inputs), and its evidence is keyed on the worktree.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/issue"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run"],
+        "properties": {
+          "run": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}}
+        }
+      }
+    },
     "phase_overrides": {
       "description": "Per-issue phase limits for this batch: {\"<issue>\": {\"<phase>\": {\"timeout_seconds\": N}}}. N may exceed the registry phase timeout up to registry phases.max_timeout_seconds.",
       "type": "object",

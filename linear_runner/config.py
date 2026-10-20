@@ -91,6 +91,24 @@ def phase_overrides(overrides, issues, phases, where):
     return overrides
 
 
+def check_overrides(overrides, issues, checks, where):
+    """A batch's per-issue extended checks (W-523): ``{"<issue>": {"run": [<check name>, ...]}}``.
+    Each issue is in the allowlist, and each name is an extended check of the project (a
+    default check runs at every issue already)."""
+    overrides = copy.deepcopy(overrides)
+    outside = sorted(set(overrides) - set(issues))
+    if outside:
+        raise ConfigError(f"{where}: {outside} not in the issue allowlist")
+    tiers = {check["name"]: check["tier"] for check in checks}
+    for issue, entry in overrides.items():
+        for name in entry["run"]:
+            if name not in tiers:
+                raise ConfigError(f"{where}.{issue}.run: {name!r} is not a check of the project")
+            if tiers[name] != "extended":
+                raise ConfigError(f"{where}.{issue}.run: {name!r} is a default check, which runs at every issue")
+    return overrides
+
+
 def batch_variables(values, site, where):
     """A batch's ``variables``, resolved as site variables are (``~`` expanded): each must name
     a site ``variables`` entry, never an executable, a built-in or a new name."""
@@ -703,6 +721,10 @@ def load_config(batch_path, home=None):
     if len({c["name"] for c in checks}) != len(checks):
         raise ConfigError(f"{project_label}.checks: names must be unique")
     put("checks", checks, project_label)
+    if "check_overrides" in batch:
+        # Only a batch that sets them records them, so other fingerprints are unchanged.
+        put("check_overrides", check_overrides(batch["check_overrides"], config["issues"], checks,
+                                               f"{batch_label}.check_overrides"), batch_label)
     delivery = []
     for index, spec in enumerate(project.get("delivery_checks", [])):
         where = f"{project_label}.delivery_checks[{index}]"
