@@ -15,21 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.1.0 — 2026-10-19
+
+Five changes for the pre-§2.13 housekeeping (`W-526`): a new reviewer model for Standard and
+Economy issues, larger implement and check limits, two check options for batches and projects,
+and a review rule for owner decisions recorded in operator notes. Each was written in a Claude
+Code session and its diff reviewed by Codex against the issue's criteria.
+
 `gpt-6.1-sol` reviews Standard and Economy issues (`W-528`). The registry lists it (Codex,
 efforts medium and high), and it is the first entry of the `*` Standard review pool (high)
 and the `*` Economy review pool (medium, reached by the low-risk review rule). The earlier
 defaults stay as named alternatives. The Deep and Research review pools and every implement
 and repair pool are unchanged.
-
-**Project impact:** no configuration key changes. The site's `model_catalog` must offer
-`gpt-6.1-sol` at medium and high; otherwise intake stops before the claim with "Requested
-model/effort unavailable in host CLI catalog" (README "Lifecycle", step 2, covers a Codex
-app-server that predates a CLI upgrade). A batch that names `gpt-6-astra@medium` or
-`gpt-6-luna@max` as its reviewer keeps it. Editing `registry/` changes every configuration
-fingerprint, so a paused batch adopts this with `recover repin-config`.
-
-**Canary tier:** canary batch (a model change): stop the next batch after its first issue
-whose review uses the new model.
 
 The implement phase's default output budget is 300,000 tokens (was 250,000), and a project
 may give one check up to 10,800 s (`max_check_timeout_seconds`, was 7,200) (`W-525`). Four
@@ -37,22 +34,12 @@ large §2.12 implementations stopped at the old budget while finishing ready, an
 selections came within reach of the old timeout. The repair and review budgets, the phase
 timeouts and the default `check_timeout_seconds` (1,800) are unchanged.
 
-**Project impact:** none in configuration files. Editing `registry/` changes every
-configuration fingerprint, so a paused batch adopts this with `recover repin-config`.
-
-**Canary tier:** canary batch (engine budgets), shared with the other changes of this release.
-
 A check may set `environment` and `unset_environment` of its own (`W-524`). They apply to that
 check only, after the project's `check_environment` and the inherited environment, with
 `${name}` substitution in `environment`. Both are part of the check's definition, so a change
 reruns it and changes the configuration fingerprint; `validate-config` lists them under
 `checks` and refuses a name both set and unset. The launch baseline and the base-parity run
 pass them too: the keys a check runs with are now one list in the engine.
-
-**Project impact:** none; a project may now replace a command prefix such as `/usr/bin/env -u
-NAME` with `"unset_environment": ["NAME"]`.
-
-**Canary tier:** canary batch (engine), shared with the other changes of this release.
 
 A batch may name extended checks to run at a named issue, as at its last issue (`W-523`):
 `"check_overrides": {"<issue>": {"run": ["<extended check>"]}}`. At that issue a named check
@@ -63,10 +50,6 @@ part of the configuration fingerprint; `validate-config` lists it and refuses an
 check, a default check and an issue outside the allowlist. Issues whose criteria cite an
 extended check's log (W-519, W-487) no longer need an amended criterion.
 
-**Project impact:** none; a batch may add the key.
-
-**Canary tier:** canary batch (engine), shared with the other changes of this release.
-
 The review applies an owner's decision or reading of a criterion recorded in an operator note
 (`recover ... --note-file`), also while it awaits the owner's confirmation (`W-522`). The
 review prompt says so and asks the reviewer to name each decision it applied under Concerns.
@@ -74,9 +57,20 @@ The implement and repair prompts keep "they do not change the acceptance criteri
 review refused three such readings, and the operator had to edit the criteria in Linear and
 repin them.
 
-**Project impact:** none.
+**Project impact:** no configuration key changes; the new keys are optional.
 
-**Canary tier:** canary batch (prompts), shared with the other changes of this release.
+* The site's `model_catalog` must offer `gpt-6.1-sol` at medium and high; otherwise intake
+  stops before the claim with "Requested model/effort unavailable in host CLI catalog". A
+  long-running Codex app-server that predates a CLI upgrade keeps writing an older catalog
+  (README "Lifecycle", step 2).
+* A batch that pins `runner_version` 3.0.0 must pin 3.1.0 to launch on this release.
+* Editing `registry/` changes every configuration fingerprint, so a paused batch adopts the
+  release with `recover repin-config`.
+* A project may replace a command prefix such as `/usr/bin/env -u NAME` with
+  `"unset_environment": ["NAME"]`; a batch may add `check_overrides`.
+
+**Canary tier:** canary batch. The release changes a model, prompts and the engine: stop the
+next batch after its first issue, whose review then uses `gpt-6.1-sol`.
 
 ## v3.0.0 — 2026-10-16
 
