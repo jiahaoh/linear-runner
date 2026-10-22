@@ -786,7 +786,19 @@ elsewhere stops the batch for reconciliation.
    leaves changes uncommitted and makes no Linear or Git mutations.
 4. **Checks.** Checks declare `name`, `kind`, `tier`, `inputs`, `cwd` and `command`.
    Default checks always run or reuse evidence; extended checks run for matching changed
-   inputs and at the batch's last issue. The last issue is the one that runs last: no other
+   inputs and at the batch's last issue. A validation runs its selected default checks first,
+   then its selected extended checks; within each tier the check whose latest record in the
+   batch's `check-cache.json` passed in the least wall time (`started_at` to `finished_at`;
+   for a base-parity check, the result run alone) runs first, and checks whose latest record
+   is missing or did not pass follow in configuration order. Each check's evidence directory
+   is still its configuration index, and `checks.json` lists the records in configuration order (`W-552`). When a default check fails, the other default
+   checks still run, and every extended check the rules below select is recorded as
+   `status: "skipped"` with `skipped_after` (the failed check) and a note, without running:
+   the validation goes to repair either way, and the validation after the repair runs them as
+   usual. Such a record is neither passing evidence nor reusable, the repeated-failure test
+   and the validation comment leave it out of the failing checks, and the comment names the
+   checks it held back. At `W-535` a 22-minute default failure was followed by about 3.5 hours
+   of extended checks before a one-line repair. The last issue is the one that runs last: no other
    allowlisted issue is still to run (done or deferred issues of the batch and issues Done in
    Linear do not count, an issue that waits for this one does), whatever its position in the
    allowlist; a Linear read that fails while deciding counts as "last". A batch may also name
@@ -854,8 +866,12 @@ elsewhere stops the batch for reconciliation.
    as passing; the validation comment lists it as "<name> selected no tests (allowed)", and
    `report`/`measure` show the outcome as "empty". Any other nonzero exit, and exit 5 without
    the flag, is still a failure. The flag is part of the check definition, so changing it
-   changes the configuration fingerprint and the check's reuse identity. Every check record
-   in `checks.json` has `status` (`passed`, `failed` or `empty`) and `allow_empty`.
+   changes the configuration fingerprint and the check's reuse identity. Every record of a
+   check that ran or was reused in `checks.json` has `status` (`passed`, `failed` or `empty`)
+   and `allow_empty`. A check that did not run has `status: "skipped"`, no exit code and no
+   `allow_empty`: either `last_issue: "when_changed"` with the note above (not applicable), or
+   `skipped_after` naming the default check whose failure held it back (`W-552`; neither
+   passing nor evidence).
    Each run of the checks writes `validation-<UTC second>-<random>/checks.json` in the issue's
    run directory. These names do not order validations within one second, so the state names
    the validation that counts: `active.validation_dir` while the issue runs and

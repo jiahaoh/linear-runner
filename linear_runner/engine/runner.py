@@ -29,8 +29,8 @@ from linear_runner import backends
 from linear_runner.linear import attention
 from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
                                   match_entry, pid_alive, pool_for, read_json, write_json)
-from linear_runner.engine.delivery import (EMPTY_NOTE, SKIPPED_NOTE, check_outcome, check_passed, check_skipped,
-                                           evidence_intact)
+from linear_runner.engine.delivery import (EMPTY_NOTE, FAIL_FAST_NOTE, SKIPPED_NOTE, check_deferred, check_outcome,
+                                           check_passed, check_skipped, evidence_intact)
 from linear_runner.engine import intake
 from linear_runner.engine import parity
 from linear_runner.engine import lint as criterion_lint
@@ -97,6 +97,20 @@ class IssueBlocked(RuntimeError):
 
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def expected_seconds(record):
+    """The wall time of a passing check record (its ``started_at`` to ``finished_at``), or None
+    when the record is missing, did not pass or carries no times. A base-parity record keeps the
+    result run's times, so its value leaves out the base run (W-552)."""
+    if not record or not check_passed(record):
+        return None
+    try:
+        started = dt.datetime.fromisoformat(record["started_at"])
+        finished = dt.datetime.fromisoformat(record["finished_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return max((finished - started).total_seconds(), 0.0)
 
 
 def run_id():
@@ -1581,7 +1595,9 @@ class Runner:
         validation = []
         if active.get("validation_dir") and (Path(active["validation_dir"]) / "checks.json").is_file():
             validation = [{"command": c.get("name", " ".join(c.get("command", []))),
-                           "outcome": (("skipped" if check_skipped(c) else f"exit {c.get('exit_code')}")
+                           "outcome": (("skipped" if check_skipped(c) else
+                                        f"not run ({c['skipped_after']} failed)" if check_deferred(c) else
+                                        f"exit {c.get('exit_code')}")
                                        + (f" ({EMPTY_NOTE})" if c.get("status") == "empty" else "")
                                        + (f" ({SKIPPED_NOTE})" if check_skipped(c) else "")
                                        + (" (reused)" if c.get("reused") else ""))}
@@ -1768,7 +1784,15 @@ class Runner:
         batch_changed = None
         # Extended checks the batch names for this issue run here as at the last issue (W-523).
         named = set(self.config.get("check_overrides", {}).get(active["issue_id"], {}).get("run", []))
-        for index, spec in enumerate(self.config["checks"]):
+        # Default checks run first, then extended ones; within each tier the check whose latest
+        # passing record in the cache took least time runs first, and checks without such a
+        # record follow in configuration order. Each keeps its configuration index (W-552).
+        def order(item):
+            index, spec = item
+            seconds = expected_seconds(cache.get(spec["name"]))
+            return (spec["tier"] != "default", seconds is None, seconds or 0.0, index)
+        failed_default = None  # the first default check that failed: the extended checks then wait (W-552)
+        for index, spec in sorted(enumerate(self.config["checks"]), key=order):
             extended = spec["tier"] == "extended"
             if extended and last is None:
                 last = self.is_last_issue(active["issue_id"])
@@ -1792,6 +1816,14 @@ class Runner:
                                         "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
                                         "model": None, **reason})
                         continue
+            if extended and failed_default:
+                # A default check failed, so this validation goes to repair whatever the extended
+                # checks show; they run in the validation after the repair (W-552: at W-535 a
+                # 22-minute failure was followed by about 3.5 hours of extended checks).
+                results.append({"name": spec["name"], "status": "skipped", "exit_code": None, "key": None,
+                                "skipped_after": failed_default, "note": FAIL_FAST_NOTE.format(check=failed_default),
+                                "reused": False, "model": None, **reason})
+                continue
             # At the last issue an extended check's evidence counts only for this worktree: at
             # W-486 a repair changed test files two checks' inputs omit, and their logs of the
             # earlier state were reused (W-507).
@@ -1817,6 +1849,10 @@ class Runner:
             results.append(result)
             ran.append((spec, result, worktree))
             write_json(cache_path, cache)
+            if not extended and failed_default is None and not check_passed(result):
+                failed_default = spec["name"]
+                self.log(f"Validation: {spec['name']} failed; the selected extended checks of this validation run "
+                         "after the repair (W-552)")
         if fingerprint(self.repo) != before:
             raise RuntimeError("Validation modified source; reconcile before continuing")
         # The checks themselves write ignored files that their input patterns match (a test
@@ -1830,6 +1866,9 @@ class Runner:
             write_json(cache_path, cache)
         if not [r for r in results if not check_skipped(r)]:
             raise RuntimeError("No applicable validation checks")
+        # The checks ran by tier and expected time; their records keep configuration order (W-552).
+        position = {spec["name"]: index for index, spec in enumerate(self.config["checks"])}
+        results.sort(key=lambda record: position.get(record["name"], len(position)))
         write_json(directory / "checks.json", results)
         active["validation_dir"] = str(directory)
         active["validated_fingerprint"] = before
@@ -2056,8 +2095,9 @@ class Runner:
                                                                    directory=active["validation_dir"]),
                           dedupe=active["validation_dir"])
                 break
-            failures = [c for c in records if not check_passed(c)]
-            failure_key = hashlib.sha256(json.dumps([(c["name"], c["key"], c["exit_code"]) for c in failures]).encode()).hexdigest()
+            # A check left unrun after a default failure (W-552) is no failure of its own.
+            failures = [c for c in records if not check_passed(c) and not check_deferred(c)]
+            failure_key =hashlib.sha256(json.dumps([(c["name"], c["key"], c["exit_code"]) for c in failures]).encode()).hexdigest()
             if active.get("failure_key") == failure_key or active["repairs"] >= self.policy["phases"]["max_repairs"]:
                 raise IssueBlocked("Repeated unchanged failure or repair limit exhausted; failing: "
                                    + ", ".join(c["name"] for c in failures), "checks_failed")

@@ -191,9 +191,11 @@ def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), m
 
 
 def validation(ctx, *, issue, records, passed, repair=None, directory=None, repair_stage=None, escalated=False):
-    from linear_runner.engine.delivery import check_passed, check_skipped
+    from linear_runner.engine.delivery import check_deferred, check_passed, check_skipped
     skipped = [r for r in records if check_skipped(r)]
-    records = [r for r in records if not check_skipped(r)]  # the counts are of checks that ran or were reused
+    deferred = [r for r in records if check_deferred(r)]  # left unrun after a default check failed (W-552)
+    # The counts are of checks that ran or were reused.
+    records = [r for r in records if not check_skipped(r) and not check_deferred(r)]
     failing = [r for r in records if not check_passed(r)]
     empty = [r for r in records if r.get("status") == "empty" and check_passed(r)]
     reused = sum(bool(r.get("reused")) for r in records)
@@ -206,6 +208,10 @@ def validation(ctx, *, issue, records, passed, repair=None, directory=None, repa
               "empty": " ".join(not_applicable)}
     if not passed:
         fields["failing"] = " ".join(f"{r.get('name', 'check')} exited with code {r.get('exit_code')}." for r in failing)
+        if deferred:
+            fields["failing"] += (f" Not run after {deferred[0]['skipped_after']} failed: "
+                                  + ", ".join(r.get("name", "check") for r in deferred)
+                                  + "; they run in the validation after the repair.")
         fields["repair_note"] = ("The repair worker gets the failing check logs and may change only what those "
                                  "checks need.")
         if model_text(repair_stage):

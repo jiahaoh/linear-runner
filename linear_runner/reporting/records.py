@@ -184,9 +184,11 @@ def _resolve_log(record_log, checks_path, run_dir):
 
 
 def check_status(record):
-    """``passed``, ``failed``, ``empty`` (an allowed empty selection) or ``skipped`` (by the
-    check's own ``last_issue`` rule); older records have no ``status`` field and are derived
-    from the exit code."""
+    """``passed``, ``failed``, ``empty`` (an allowed empty selection), ``skipped`` (by the
+    check's own ``last_issue`` rule) or ``deferred`` (left unrun after a default check failed,
+    W-552); older records have no ``status`` field and are derived from the exit code."""
+    if record.get("status") == "skipped" and record.get("skipped_after"):
+        return "deferred"
     if record.get("status") in ("passed", "failed", "empty", "skipped"):
         return record["status"]
     code = record.get("exit_code")
@@ -196,7 +198,8 @@ def check_status(record):
 def outcome_text(status):
     """A check outcome for people: an allowed empty selection is named as such."""
     return {"empty": "empty (no tests selected; allowed)",
-            "skipped": "skipped (no change in the batch matches its inputs)"}.get(status, status)
+            "skipped": "skipped (no change in the batch matches its inputs)",
+            "deferred": "not run (a default check failed first)"}.get(status, status)
 
 
 def find_checks(roots):

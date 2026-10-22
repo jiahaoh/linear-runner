@@ -15,6 +15,26 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.2.0 — 2026-10-22
+
+Validation fails fast and runs short checks first (`W-552`). A validation runs its selected
+default checks first, then its selected extended checks, each tier shortest first by the wall
+time of the check's latest passing record in the batch's check cache; checks without one keep
+configuration order after the others. When a default check fails, the remaining default checks
+still run and every selected extended check is recorded as `skipped` with `skipped_after` and a
+note instead of running; the validation goes to repair, and the next validation runs them as
+usual. Such a record never counts as passing, is never reused, and is left out of the failing
+checks in the repeated-failure test and the validation comment, which names the checks it held
+back; reports call it "not run (a default check failed first)". At W-535 a 22-minute default
+failure was followed by about 3.5 hours of extended checks before a one-line repair. The
+selection rules (`inputs`, `last_issue`, `check_overrides`, base parity) are unchanged.
+
+**Project impact:** none. A batch that pins `runner_version` 3.1.0 must pin 3.2.0 to launch on
+this release.
+
+**Canary tier:** canary batch. The release changes the engine's validation: run a canary batch on
+low-risk issues before the next production batch.
+
 ## v3.1.0 — 2026-10-19
 
 Five changes for the pre-§2.13 housekeeping (`W-526`): a new reviewer model for Standard and

@@ -25,7 +25,8 @@ from linear_runner.backends.codex import execution_evidence
 from linear_runner.linear import attention
 from linear_runner.linear import messages
 from linear_runner.reporting import records as records_module
-from linear_runner.engine.runner import (RESULT_SCHEMA, ContractChanged, Runner, fingerprint, git, issue_contract, project_lock,
+from linear_runner.engine.delivery import check_deferred, check_passed, check_skipped
+from linear_runner.engine.runner import (RESULT_SCHEMA, ContractChanged, Runner, expected_seconds, fingerprint, git, issue_contract, project_lock,
                                          publication_form, published_contract_matches, published_issue, resolve_profile, review_criteria,
                                          review_schema, usage_totals, write_json)
 
@@ -720,6 +721,153 @@ class EngineTests(unittest.TestCase):
         (self.repo / "env").mkdir(); (self.repo / "env" / "pyproject.toml").write_text("[project]")
         self.assertEqual(run("DEV-1")["ci"]["status"], "passed")
         self.assertEqual(runs(), ["fast", "ci"])
+
+    # --- Validation order and fail-fast (W-552) -------------------------------------
+
+    def fail_fast_checks(self, extra=()):
+        """Two default checks (`fast` fails until `fixed.txt` exists, `lint` passes) and two extended
+        checks (`slow1`, `slow2`), all recording their runs; every check matches every changed file.
+        Returns runs() -> marker lines in execution order."""
+        marker = self.root / "runs.txt"
+        def recording(name, needs=None):
+            code = f"open({str(marker)!r}, 'a').write({name!r} + '\\n')"
+            if needs:
+                code += f"; import pathlib, sys; sys.exit(0 if pathlib.Path({needs!r}).exists() else 1)"
+            return [sys.executable, "-c", code]
+        check = lambda name, tier, **kw: {"name": name, "kind": "code", "tier": tier, "inputs": ["*"], "cwd": ".",
+                                          "command": recording(name, kw.pop("needs", None)), **kw}
+        self.config["checks"] = [check("fast", "default", needs="fixed.txt"), check("slow1", "extended"),
+                                 check("lint", "default"), check("slow2", "extended"), *extra]
+        return lambda: marker.read_text().splitlines() if marker.exists() else []
+
+    def test_a_failed_default_check_skips_the_extended_checks_and_the_repair_runs_them(self):
+        # W-552: at W-535 a 22-minute default failure was followed by about 3.5 hours of extended
+        # checks before a one-line repair. Now the extended checks wait for the repair.
+        runs = self.fail_fast_checks()
+        original = self.runner.run_session
+        def fixing(prompt, directory, **kwargs):
+            if Path(directory).name.startswith("repair"):
+                (self.repo / "fixed.txt").write_text("fixed")
+            return original(prompt, directory, **kwargs)
+        self.runner.run_session = fixing
+        self.runner.execute(limit=1)
+        self.assertEqual(self.calls, ["implement", "repair", "review"])
+        self.assertEqual(self.linear.data["statusType"], "completed")
+        # Validation directories do not order within one second (README "Checks"): tell them apart
+        # by content, and take the accepted one from the state.
+        accepted = Path(self.runner.state["history"][0]["validation_dir"])
+        validations = list(Path(self.runner.state["history"][0]["run_dir"]).glob("validation-*"))
+        self.assertEqual(len(validations), 2)
+        failed = [v for v in validations if v != accepted]
+        validations = [failed[0], accepted]
+        first = {r["name"]: r for r in json.loads((validations[0] / "checks.json").read_text())}
+        self.assertEqual((first["fast"]["status"], first["lint"]["status"]), ("failed", "passed"))
+        for name in ("slow1", "slow2"):
+            self.assertEqual((first[name]["status"], first[name]["exit_code"], first[name]["skipped_after"]),
+                             ("skipped", None, "fast"))
+            self.assertIn("the default check fast failed", first[name]["note"])
+            self.assertFalse((validations[0] / str([c["name"] for c in self.config["checks"]].index(name))).exists())
+        # Both default checks ran in the first validation and no extended check did; the repair's
+        # validation ran all four, the extended ones for the first time.
+        self.assertEqual(runs()[:2], ["fast", "lint"])
+        self.assertEqual(sorted(runs()[2:]), ["fast", "lint", "slow1", "slow2"])
+        second = {r["name"]: r for r in json.loads((validations[1] / "checks.json").read_text())}
+        self.assertTrue(all(r["status"] == "passed" and not r["reused"] for r in second.values()))
+        comment = "\n".join(text for issue, text in self.linear.posts if "validation" in text or "checks failed" in text)
+        self.assertIn("Not run after fast failed: slow1, slow2; they run in the validation after the repair.", comment)
+
+    def test_a_deferred_record_is_not_evidence_and_not_passing(self):
+        # W-552: a check left unrun is never reused and never satisfies delivery integrity.
+        self.fail_fast_checks()
+        (self.repo / "result.txt").write_text("changed")
+        active = {"run_dir": str(self.root / "run"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-list", "--max-parents=0", "HEAD")}
+        Path(active["run_dir"]).mkdir()
+        self.assertFalse(self.runner.run_checks(active))
+        records = json.loads((Path(active["validation_dir"]) / "checks.json").read_text())
+        deferred = [r for r in records if r.get("skipped_after")]
+        self.assertEqual([r["name"] for r in deferred], ["slow1", "slow2"])
+        self.assertTrue(all(check_deferred(r) and not check_passed(r) and not check_skipped(r) for r in deferred))
+        cache = json.loads((self.runner.root / "check-cache.json").read_text())
+        self.assertEqual(sorted(cache), ["fast", "lint"])
+        from linear_runner.engine.delivery import DeliveryError, verify_delivery
+        with self.assertRaisesRegex(DeliveryError, "slow1"):
+            verify_delivery({"required_checks": ["slow1"], "manifest": "m.json", "revision_field": "r"},
+                            self.root, "c", deferred)
+        with self.assertRaisesRegex(DeliveryError, "required check"):
+            verify_delivery({"required_checks": ["slow1"], "manifest": "m.json", "revision_field": "r"},
+                            self.root, "c", [r for r in records if r["name"] == "lint"])
+        # The report helpers name the outcome; the validation loop does not count it as a failure.
+        from linear_runner.reporting import records as report_records
+        self.assertEqual(report_records.outcome_text(report_records.check_status(deferred[0])),
+                         "not run (a default check failed first)")
+
+    def test_checks_run_default_first_then_shortest_first_by_the_check_cache(self):
+        # W-552: the order of execution; each check keeps its configuration index as its evidence directory.
+        def extended(name):
+            return {"name": name, "kind": "code", "tier": "extended", "inputs": ["*"], "cwd": ".",
+                    "command": [sys.executable, "-c", f"open({str(self.root / 'runs.txt')!r}, 'a').write({name!r} + '\\n')"]}
+        runs = self.fail_fast_checks(extra=[extended("slow3"), extended("slow4"), extended("tieA"), extended("tieB"),
+                                            extended("slow5")])
+        (self.repo / "fixed.txt").write_text("fixed")  # every check passes
+        def passing(seconds):
+            return {"status": "passed", "exit_code": 0, "key": "stale",
+                    "started_at": "2026-10-22T00:00:00+00:00", "finished_at": f"2026-10-22T00:00:{seconds:02d}+00:00"}
+        # lint is shorter than fast; slow2 is shorter than slow1; tieA and tieB take the same time and
+        # keep configuration order; slow3 (a failed record), slow4 and slow5 (no record) have no time
+        # and follow in configuration order.
+        write_json(self.runner.root / "check-cache.json",
+                   {"fast": passing(30), "lint": passing(5), "slow1": passing(50), "slow2": passing(10),
+                    "tieA": passing(20), "tieB": passing(20), "slow3": dict(passing(1), status="failed", exit_code=1)})
+        active = {"run_dir": str(self.root / "run"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-list", "--max-parents=0", "HEAD")}
+        Path(active["run_dir"]).mkdir()
+        self.assertTrue(self.runner.run_checks(active))
+        self.assertEqual(runs(), ["lint", "fast", "slow2", "tieA", "tieB", "slow1", "slow3", "slow4", "slow5"])
+        names = [c["name"] for c in self.config["checks"]]
+        for name in names:
+            self.assertTrue((Path(active["validation_dir"]) / str(names.index(name)) / "checks.json").is_file(), name)
+        self.assertEqual(expected_seconds(passing(30)), 30.0)
+        self.assertIsNone(expected_seconds(dict(passing(30), status="failed", exit_code=1)))
+        self.assertIsNone(expected_seconds({"status": "passed", "exit_code": 0}))
+
+    def test_the_last_issue_keeps_its_rules_under_fail_fast(self):
+        # W-552 with W-342/W-523: at the last issue a failing default check still defers the extended
+        # checks it would run, while a when_changed check the batch never touched keeps its own skip.
+        run, runs = self.named_check_batch(last_issue="when_changed")
+        self.config["checks"][0]["command"] = [sys.executable, "-c", "raise SystemExit(1)"]
+        self.config["checks"].append({"name": "full", "kind": "code", "tier": "extended", "inputs": ["nothing/*"],
+                                      "cwd": ".", "command": [sys.executable, "-c", "pass"]})
+        base = git(self.repo, "rev-parse", "HEAD")
+        self.runner.state["history"] = [{"issue_id": "DEV-1", "starting_commit": base},
+                                        {"issue_id": "DEV-2", "starting_commit": base}]
+        active = {"run_dir": str(self.root / "runs" / "last"), "issue_id": "DEV-3", "starting_commit": base}
+        Path(active["run_dir"]).mkdir()
+        self.assertFalse(self.runner.run_checks(active))
+        records = {r["name"]: r for r in json.loads((Path(active["validation_dir"]) / "checks.json").read_text())}
+        self.assertEqual(records["fast"]["status"], "failed")
+        self.assertTrue(check_skipped(records["ci"]) and "skipped_after" not in records["ci"])
+        self.assertEqual((records["full"]["status"], records["full"]["skipped_after"]), ("skipped", "fast"))
+        self.assertEqual(runs(), [])  # fast failed without writing the marker; nothing else ran
+
+    def test_a_check_named_in_check_overrides_is_deferred_after_a_default_failure_with_its_reason(self):
+        # W-552 with W-523: at its named issue the check is selected as at the last issue; a failing
+        # default check then defers it, and the record keeps the selection's reason.
+        run, runs = self.named_check_batch()
+        self.config["checks"][0]["command"] = [sys.executable, "-c", "raise SystemExit(1)"]
+        active = {"run_dir": str(self.root / "runs" / "named"), "issue_id": "DEV-1",
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        Path(active["run_dir"]).mkdir()
+        self.assertFalse(self.runner.run_checks(active))
+        ci = {r["name"]: r for r in json.loads((Path(active["validation_dir"]) / "checks.json").read_text())}["ci"]
+        self.assertEqual((ci["status"], ci["skipped_after"], ci["run_reason"]),
+                         ("skipped", "fast", "named in the batch's check_overrides for DEV-1"))
+        self.assertTrue(check_deferred(ci))
+        self.assertEqual(runs(), [])
+        # After a fix the named check runs at its issue as before.
+        self.config["checks"][0]["command"] = [sys.executable, "-c", "pass"]
+        self.assertTrue(self.runner.run_checks(active))
+        self.assertEqual(runs(), ["ci"])
 
     def test_the_last_issue_is_decided_by_the_queue(self):
         # W-342: the last entry of the allowlist is not necessarily the issue that runs last.

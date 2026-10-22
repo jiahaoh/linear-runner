@@ -53,6 +53,18 @@ def check_skipped(record):
             and record.get("exit_code") is None)
 
 
+# An extended check that a validation did not run because one of its default checks failed
+# (W-552): the validation goes to repair, and the check runs in the validation after it. The
+# record names the failed check in ``skipped_after``; it is neither passing nor evidence.
+FAIL_FAST_NOTE = "not run: the default check {check} failed, so this validation goes to repair; it runs after the repair"
+
+
+def check_deferred(record):
+    """Whether a saved record is an extended check left unrun after a default check failed."""
+    return (record.get("status") == "skipped" and bool(record.get("skipped_after"))
+            and record.get("exit_code") is None)
+
+
 def check_passed(record):
     """Whether a saved check record counts as passing: exit 0, an allowed empty selection, or
     a check skipped by its own ``last_issue`` rule.
