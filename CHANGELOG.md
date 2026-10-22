@@ -15,6 +15,13 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+* The progress board (mod 0.3.1) opens its pane by itself only in a session whose own board
+  has batches: one that ran `/runner-board` or launched a batch, which also opens the pane
+  then. Before, every session start opened it from the board saved last, so it appeared on
+  each switch of session tab in the desktop app. Elsewhere `/runner-board` still shows the
+  board saved last. Project impact: none. Canary tier: none needed (the board mod only)
+  (`W-554`).
+
 ## v3.1.0 — 2026-10-19
 
 Five changes for the pre-§2.13 housekeeping (`W-526`): a new reviewer model for Standard and

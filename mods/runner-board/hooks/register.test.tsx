@@ -111,12 +111,30 @@ let answer: { exitCode: number; stdout?: string; stderr: string } | null = null
 // The host beneath the mod: a runner home with three batch files, and a runner that prints `boards`.
 function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, string> = {}) {
   const runs: string[][] = []
+  const opened: string[] = []
+  const kept: Record<string, unknown> = {}
   boards = { demo: DEMO, 'demo-b': DEMO_B, fixture }
   answer = null
-  mock.store(on, stored)
+  // The store, with what the board wrote to it kept apart.
+  const store = new Map(Object.entries(stored))
+  on('store.get', async (_, e) => ({ value: store.get(e.key) }))
+  on('store.keys', async () => ({ value: [...store.keys()] }))
+  on('store.set', async (_, e) => {
+    store.set(e.key, e.value)
+    kept[e.key] = e.value
+
+    return { value: undefined }
+  })
   const clock = mock.clock(on)
   mock.env(on, { HOME: '/h', ...env })
-  on('ui.open', async () => ({ value: { isPlaced: true } }))
+  on('ui.open', async (_, e) => {
+    opened.push(String(e.id))
+
+    return { value: { isPlaced: true } }
+  })
+  on('session.id', async () => ({ value: 'this-session' }))
+  on('session.start', async (_, e) => ({ cwd: e.cwd }))
+  on('command.register', async () => ({ value: { command: 'runner-board' } }))
   on('fs.exists', async (_, e) => ({ value: /\/batches\/(demo(-b)?|fixture)\.json$/.test(String(e.path)) }))
   on('fs.list', async (_, e) => ({
     value: String(e.path).endsWith('/lineage') ? [{ name: 'phase.json', kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false }] : [],
@@ -142,7 +160,7 @@ function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, 
     }
   })
 
-  return Object.assign(runs, { clock })
+  return Object.assign(runs, { clock, opened, kept })
 }
 
 const COMMAND = { command: 'runner-board', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -394,6 +412,28 @@ test('a session with no board of its own starts from the board saved last', asyn
   expect(await ui.find({ key: 'batch-gone' })).toBeUndefined()
 })
 
+const START = { cwd: '/', surface: 'desktop', isInteractive: true } as const
+
+test('a session opens the pane by itself only when its own board holds batches', async ($, on) => {
+  const { opened, kept } = host(on, { 'batches:last': ['demo'] })
+  await $.session.start(START)
+  expect(opened).toEqual([])
+  // Asked for, the board saved last shows, and the session keeps it as its own.
+  await $.command.run({ ...COMMAND, args: '' })
+  expect(opened).toEqual(['runner-board'])
+  const ui = await $.ui.mount({ plugin: 'runner-board', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'batch-demo' })).toBeDefined()
+  expect(kept['batches:this-session']).toEqual(['demo'])
+})
+
+test('a session whose own board holds batches opens the pane when it starts', async ($, on) => {
+  const { opened, kept } = host(on, { 'batches:last': ['demo', 'gone'], 'batches:this-session': ['demo', 'gone'] })
+  await $.session.start(START)
+  expect(opened).toEqual(['runner-board'])
+  // A batch file that is gone leaves the board it was kept on, and only that one.
+  expect(kept).toEqual({ 'batches:this-session': ['demo'] })
+})
+
 test('a board kept only under an earlier session is found too', async ($, on) => {
   host(on, { 'batches:earlier-session': ['demo'], 'batches:another': [] })
   await $.command.run({ ...COMMAND, args: '' })
@@ -410,8 +450,8 @@ test('only a launch names a batch for the board', () => {
   expect(launched("cat > t.ts <<'EOF'\npython3 runner.py launch --batch batches/s1-impl.json\nEOF")).toEqual([])
 })
 
-test('a launch this session ran puts its batch on the board, a command that only mentions one does not', async ($, on) => {
-  host(on)
+test('a launch this session ran puts its batch on the board and opens it, a command that only mentions one does not', async ($, on) => {
+  const { opened } = host(on)
   let printed = '{"launch_id": "L-1"}'
   on('tool.call', { tool: 'Bash' }, async () => ({ result: {}, text: printed }) as never)
   const board = async () => {
@@ -427,4 +467,5 @@ test('a launch this session ran puts its batch on the board, a command that only
   printed = '{"launch_id": "L-1"}'
   await $.tool.call({ tool: 'Bash', command: 'python3 runner.py launch --batch batches/demo.json' })
   expect(await board()).toBeDefined()
+  expect(opened).toEqual(['runner-board'])
 })

@@ -704,7 +704,10 @@ not reviewed). Once a batch file has a key of its own, its entry in such a file 
 `/runner-board add <batch id>` puts a batch on the board (a trailing `*` adds every batch
 file whose name starts so), `remove <batch id>` and `clear` take batches off, and a batch that
 the session launches with `runner.py launch` joins by itself. Batches under way are read
-again every ten seconds, the others when you press Refresh. The board is kept across sessions.
+again every ten seconds, the others when you press Refresh. Each session keeps its own board:
+the pane opens by itself only in a session that has asked for it (`/runner-board` there) or
+launched a batch, and when such a session starts again. In another session `/runner-board`
+shows the board saved last, and from then on it is that session's board too.
 
 **Installing it from the checkout.** The checkout is a plugin marketplace with this one
 plugin (`.claude-plugin/marketplace.json`):

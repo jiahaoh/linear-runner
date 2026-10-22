@@ -77,6 +77,9 @@ type Look = { glyph: string; icon: Icon; color: Color; border: Color }
 
 let batches: Batch[] = []
 let isLoaded = false
+// Whether the board is this session's own, kept under its id: only then does the pane open by itself when the
+// session starts. A board taken over from another session shows when it is asked for.
+let isOwn = false
 let isRefreshing = false
 let updatedAt: number | null = null
 let expanded: string | null = null
@@ -215,20 +218,29 @@ async function restore($: EngineInterface) {
   // From here on the batches under way are read again every few seconds.
   $.clock.every(POLL_MS, () => void refresh($, isLive))
   // A session with no board of its own yet starts from the board saved last: a resumed session has a new id.
-  let saved = (await $.store.get(await storeKey($))) ?? (await $.store.get(LAST))
+  const own = await storeKey($)
+  let from = own
+  let saved = await $.store.get(own)
+  if (!Array.isArray(saved)) {
+    from = LAST
+    saved = await $.store.get(LAST)
+  }
   if (!Array.isArray(saved)) {
     // Before the last board was kept under its own key, each session's was kept only under that session's.
     const keys = (await $.store.keys().catch(() => [])).filter(key => key.startsWith('batches:'))
-    const boards = await Promise.all(keys.map(key => $.store.get(key)))
-    saved = boards.filter(Array.isArray).sort((a, b) => b.length - a.length)[0]
+    for (const key of keys) {
+      const board = await $.store.get(key)
+      if (Array.isArray(board) && (!Array.isArray(saved) || board.length > saved.length)) [from, saved] = [key, board]
+    }
   }
   if (Array.isArray(saved)) {
-    // A name with no batch file behind it is not a batch: it leaves the board.
+    // A name with no batch file behind it is not a batch: it leaves the board, where it was kept.
     const ids = saved.filter((id): id is string => typeof id === 'string')
     const { found } = await sift($, ids)
     batches = found.map(id => ({ id, issues: [] }))
-    if (found.length !== ids.length) await save($)
+    if (found.length !== ids.length) await $.store.set(from, found)
   }
+  isOwn = from === own && batches.length > 0
   await refresh($)
 }
 
@@ -242,6 +254,7 @@ async function sift($: EngineInterface, ids: string[]) {
 
 async function save($: EngineInterface) {
   const ids = batches.map(batch => batch.id)
+  isOwn = ids.length > 0
   await $.store.set(await storeKey($), ids)
   await $.store.set(LAST, ids)
 }
@@ -687,7 +700,7 @@ export const register: Register = (on, options) => {
       description: 'Show runner batches in a pane: add <batch id or prefix*>, remove <id>, clear',
     })
     await restore($)
-    if (batches.length) void $.ui.open({ id: PANE, title: TITLE })
+    if (isOwn) void $.ui.open({ id: PANE, title: TITLE })
 
     return next(e)
   })
@@ -710,6 +723,8 @@ export const register: Register = (on, options) => {
       said.push(added.length ? `Added ${added.join(', ')}.` : 'Nothing new to add.')
       if (missing.length) said.push(`No batch file for ${missing.join(', ')}.`)
     } else {
+      // Asked for here, the board is this session's own from now on, and opens when the session starts again.
+      await save($)
       void refresh($)
     }
     const opened = await $.ui.open({ id: PANE, title: TITLE })
@@ -726,7 +741,8 @@ export const register: Register = (on, options) => {
       // A launch that started prints its launch id; a command that only mentions one does not.
       const hasStarted = ran.deny === undefined && ran.isError !== true && Boolean(ran.text?.includes('"launch_id"'))
       const ids = hasStarted ? launched(e.command) : []
-      if (ids.length) void add($, ids).catch(() => undefined)
+      // A session that launches a batch is one that follows it: its board opens.
+      if (ids.length) void add($, ids).then(() => $.ui.open({ id: PANE, title: TITLE })).catch(() => undefined)
     } catch {
       // Watching must never cost the call its result.
     }
