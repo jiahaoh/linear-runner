@@ -3,8 +3,11 @@ import type { Color, EngineInterface, PluginOptions, Register } from 'claude-cod
 const PANE = 'runner-board'
 const TITLE = 'Runner board'
 const POLL_MS = 10_000
+// How often a board that is a session's own asks the runner for new launches, from any shell or session.
+const LAUNCHES_MS = 30_000
 // The record `runner.py status --board` prints, as this board reads it.
 const SCHEMA = 'linear-runner.board/1'
+const LAUNCHES = 'linear-runner.launches/1'
 
 // Where the runner is: the plugin's options, with the defaults plugin.json gives them. A path that starts with `~/`
 // is under the user's home, a bare name is a program on the PATH, and another relative path is under the plugin's
@@ -81,6 +84,9 @@ let isLoaded = false
 // session starts. A board taken over from another session shows when it is asked for.
 let isOwn = false
 let isRefreshing = false
+// The time of the last launch this board has taken in (`runner.py launches`); later launches join it.
+let seenSince: string | null = null
+let isAsking = false
 let updatedAt: number | null = null
 let expanded: string | null = null
 // What the files of `<runner home>/lineage/` record, for the batches whose own file says nothing.
@@ -117,6 +123,8 @@ async function places($: EngineInterface) {
 }
 
 const LAST = 'batches:last'
+// Where the time of the last launch a board took in is kept, beside the board.
+const seenKey = (key: string) => 'seen:' + key
 
 async function storeKey($: EngineInterface) {
   try {
@@ -212,11 +220,60 @@ async function refresh($: EngineInterface, only?: (batch: Batch) => boolean) {
   }
 }
 
+async function keepSeen($: EngineInterface, at: string) {
+  seenSince = at
+  await $.store.set(seenKey(await storeKey($)), at)
+  await $.store.set(seenKey(LAST), at)
+
+  return at
+}
+
+// The `project` a batch file names, or undefined when it does not read.
+async function projectOf($: EngineInterface, id: string) {
+  const { runnerHome } = await places($)
+  try {
+    return (JSON.parse(await $.fs.read(`${runnerHome}/batches/${id}.json`)) as { project?: string }).project
+  } catch {
+    return undefined
+  }
+}
+
+// A batch launched since the board last asked joins it, from whichever shell or session it was launched, when it
+// belongs to a project of a batch already on the board; only a board that is the session's own asks. A batch of
+// that project taken off the board comes back when it is launched again.
+async function join($: EngineInterface) {
+  if (!isOwn || isAsking) return
+  isAsking = true
+  try {
+    const { python, runner, runnerHome } = await places($)
+    const since = seenSince ?? (await keepSeen($, new Date(await $.clock.now()).toISOString()))
+    const ran = await $.process.run([python, runner, 'launches', '--since', since, '--home', runnerHome], { timeoutMs: 60_000 })
+    if (ran.exitCode !== 0) return
+    const record = JSON.parse(ran.stdout) as { schema?: string; launches?: { batch: string; at: string }[] }
+    if (record.schema !== LAUNCHES || !Array.isArray(record.launches)) return
+    const last = record.launches.at(-1)?.at
+    if (last) await keepSeen($, last)
+    const known = new Set(batches.map(batch => batch.id))
+    const fresh = [...new Set(record.launches.map(launch => launch.batch))].filter(id => !known.has(id))
+    if (!fresh.length) return
+    const projects = new Set(await Promise.all(batches.map(batch => projectOf($, batch.id))))
+    projects.delete(undefined)
+    const ids = []
+    for (const id of fresh) if (projects.has(await projectOf($, id))) ids.push(id)
+    if (ids.length) await add($, ids)
+  } catch {
+    // A runner that cannot answer leaves the board as it is; the next tick asks again.
+  } finally {
+    isAsking = false
+  }
+}
+
 async function restore($: EngineInterface) {
   if (isLoaded) return
   isLoaded = true
-  // From here on the batches under way are read again every few seconds.
+  // From here on the batches under way are read again every few seconds, and new launches looked for.
   $.clock.every(POLL_MS, () => void refresh($, isLive))
+  $.clock.every(LAUNCHES_MS, () => void join($))
   // A session with no board of its own yet starts from the board saved last: a resumed session has a new id.
   const own = await storeKey($)
   let from = own
@@ -241,7 +298,10 @@ async function restore($: EngineInterface) {
     if (found.length !== ids.length) await $.store.set(from, found)
   }
   isOwn = from === own && batches.length > 0
-  await refresh($)
+  const seen = await $.store.get(seenKey(from))
+  if (typeof seen === 'string') seenSince = seen
+  // Launches made while the session was away join too; a board with no time kept starts from now.
+  await Promise.all([refresh($), join($)])
 }
 
 // Which of these names have a batch file.
@@ -257,6 +317,8 @@ async function save($: EngineInterface) {
   isOwn = ids.length > 0
   await $.store.set(await storeKey($), ids)
   await $.store.set(LAST, ids)
+  // A board that becomes the session's own takes in the launches from now on.
+  if (isOwn && !seenSince) await keepSeen($, new Date(await $.clock.now()).toISOString())
 }
 
 // A name ending in `*` stands for every batch file whose name starts with what is before it.

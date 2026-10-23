@@ -514,6 +514,7 @@ python3 runner.py launch --batch $B                          # preflight, start 
 python3 runner.py launch --batch $B --stop-after TEAM-123    # same, with a planned checkpoint
 python3 runner.py status --batch $B                          # short summary (status --json: the full record)
 python3 runner.py status --batch $B --board                  # one compact JSON record for a progress board
+python3 runner.py launches --since 2026-10-23T12:00:00Z      # the launches of every batch of the home, as one JSON line
 python3 runner.py wait --batch $B                            # block until the batch stops, then say how
 python3 runner.py watch --batch $B --timeout 1800            # one line per change, then as wait
 ```
@@ -551,6 +552,13 @@ issue under way cover its finished phases. `title` and `url` come from `titles.j
 state directory, which `dry-run` and every `launch` write for the whole allowlist; until then
 an issue the batch has not claimed has no title, and its `url` is built from the workspace and
 the identifier.
+
+`launches` prints one JSON object on one line, `{"schema": "linear-runner.launches/1",
+"launches": [{"batch", "launch_id", "at"}, ...]}`: every launch of a batch of the home whose
+supervisor started, oldest first, read from the launch records under the site's `state_root`;
+with `--since TIME` (ISO, `Z` or an offset) only the later ones. It takes no `--batch`, writes
+nothing and makes no Linear call. A progress board follows it to show a batch as soon as it is
+launched, from whichever shell or session.
 
 `watch` follows a launched batch: it prints one line whenever
 the active issue, the phase, the step, the repair count or the supervisor's status changes,
@@ -679,8 +687,9 @@ appears in them.
 
 `mods/runner-board/` is a Claude Code mod: a plugin whose code draws a pane in the Claude
 desktop app and in the terminal. It shows the batches you put on it and only reads. For each
-batch it runs `runner.py status --board` (see "Running a batch") and draws that record; it
-runs no other runner command, keeps no cache and writes no file.
+batch it runs `runner.py status --board` (see "Running a batch") and draws that record, and it
+runs `runner.py launches` to find new launches; it runs no other runner command, keeps no
+cache and writes no file.
 
 * **Board**: one card for each batch, with the `purpose` its batch file states, its state, how
   many issues are done, and whether a STOP marker or a recovery is pending. Under it the
@@ -702,8 +711,14 @@ of `<home>/lineage/`, which the board read before batch files had the keys
 not reviewed). Once a batch file has a key of its own, its entry in such a file is not read.
 
 `/runner-board add <batch id>` puts a batch on the board (a trailing `*` adds every batch
-file whose name starts so), `remove <batch id>` and `clear` take batches off, and a batch that
-the session launches with `runner.py launch` joins by itself. Batches under way are read
+file whose name starts so), `remove <batch id>` and `clear` take batches off. A batch that
+is launched joins by itself: one that the session launches with `runner.py launch` at once
+(and the pane opens). One launched from another session or a terminal joins within thirty
+seconds every board that is its session's own and already holds a batch of the same project
+(the batch file's `project`), so a board of the housekeeping batches takes in the next
+housekeeping batch and nothing else (`runner.py launches`). Such a board takes in the launches
+from the time it became the session's own, also those made while the session was closed; a
+batch of its project taken off the board comes back when it is launched again. Batches under way are read
 again every ten seconds, the others when you press Refresh. Each session keeps its own board:
 the pane opens by itself only in a session that has asked for it (`/runner-board` there) or
 launched a batch, and when such a session starts again. In another session `/runner-board`

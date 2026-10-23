@@ -1,6 +1,6 @@
 {
   "name": "runner-board",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "A pane that shows linear-runner batches: each batch's issues at their stage, with time and tokens, and how the batches follow from one another",
   "author": {
     "name": "linear-runner"

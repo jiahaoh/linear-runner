@@ -22,6 +22,7 @@ count of finished repair attempts for a done one.
 """
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 from linear_runner.engine.runner import TITLES_NAME
@@ -29,6 +30,33 @@ from linear_runner.reporting import records, trajectory
 from linear_runner.reporting.records import USAGE_KEYS
 
 SCHEMA = "linear-runner.board/1"
+LAUNCHES_SCHEMA = "linear-runner.launches/1"
+
+
+def _time(text):
+    # Python 3.10 reads no trailing ``Z``.
+    return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def launches(state_root, since=None):
+    """``runner.py launches``: the launches of every batch under ``state_root`` that started a
+    supervisor, oldest first, after ``since`` (an ISO time) when given. A board follows it to put
+    a batch on as it is launched, from whichever shell or session. Reads launch records only."""
+    after = _time(since) if since else None
+    found = []
+    for path in Path(state_root).glob("*/launches/*.json"):
+        # A record is written when its launch starts and again when it is confirmed.
+        if after and path.stat().st_mtime < after.timestamp():
+            continue
+        entry = records.read_json(path) or {}
+        at = entry.get("at")
+        if not isinstance(at, str) or "confirmation" not in entry or entry.get("error"):
+            continue
+        if after and _time(at) <= after:
+            continue
+        found.append({"batch": path.parent.parent.name, "launch_id": entry.get("launch_id"), "at": at})
+    found.sort(key=lambda launch: _time(launch["at"]))
+    return {"schema": LAUNCHES_SCHEMA, "launches": found}
 
 
 def launch_times(root):

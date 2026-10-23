@@ -15,6 +15,14 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+* A launched batch joins the progress board (mod 0.3.2) by itself also when it was launched
+  from another session or a terminal, when the board already holds a batch of the same
+  project: a board that is its session's own asks the new command `runner.py launches --since
+  <time>` every thirty seconds and adds those of the batches launched since it last asked. Before, only a launch through the board session's own shell tool joined, and
+  every other batch had to be added with `/runner-board add`. `launches` reads the launch
+  records under the site's `state_root` and writes nothing. Project impact: none. Canary tier:
+  first-issue checkpoint (a new read-only command and the board mod only) (`W-561`).
+
 * The progress board (mod 0.3.1) opens its pane by itself only in a session whose own board
   has batches: one that ran `/runner-board` or launched a batch, which also opens the pane
   then. Before, every session start opened it from the board saved last, so it appeared on

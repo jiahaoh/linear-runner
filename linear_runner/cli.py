@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 from linear_runner.config import (PHASES, ConfigError, lineage_warnings, load_config, pid_alive, pin_resolution,
-                                  pinned_config, read_json, variable_overrides, write_json, write_resolved)
+                                  pinned_config, read_json, state_root, variable_overrides, write_json, write_resolved)
 from linear_runner.engine.runner import LockBusy, Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
 
@@ -130,6 +130,10 @@ def build_parser():
                               "$CODEX_HOME/sessions, else ~/.codex/sessions, when it exists)")
     measure.add_argument("--no-rollouts", action="store_true", help="do not read Codex session logs")
     measure.add_argument("--json", metavar="PATH", help="also write the full measurement as JSON")
+    launches = commands.add_parser("launches", parents=[home],
+                                   help="one JSON line: the launches of every batch of the home that started a "
+                                        "supervisor, oldest first, for a progress board; reads launch records only")
+    launches.add_argument("--since", metavar="TIME", help="only launches after this ISO time")
     insert = commands.add_parser("insert-issues", parents=[home],
                                  help="edit the batch file: insert issues into its allowlist (before an issue, or at "
                                       "the end), with their implement timeout and a new terminal_issue; adopt the "
@@ -428,6 +432,13 @@ def main(argv=None):
         return sync_linear_template(parser, args)
     if args.command == "insert-issues":
         return insert_issues(parser, args)
+    if args.command == "launches":
+        from linear_runner.reporting import board
+        try:
+            print(json.dumps(board.launches(state_root(args.home), args.since)))
+        except (ConfigError, OSError, ValueError) as error:
+            parser.error(str(error))
+        return
     try:
         config = load_config(args.batch, args.home)
     except (ConfigError, OSError) as error:

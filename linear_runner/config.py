@@ -487,6 +487,13 @@ def find_home(explicit=None):
     return Path(value).expanduser().resolve()
 
 
+def state_root(home=None):
+    """``site.state_root`` of the home: the parent of every batch's state directory."""
+    home = find_home(home)
+    site = read_layer(home / "site.json", "site", "site")
+    return _path(site["state_root"], home, {"home": str(home), "runner_root": str(RUNNER_ROOT)}, "site.state_root")
+
+
 def substitute(text, variables, where):
     def replace(match):
         name = match.group(1)

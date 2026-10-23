@@ -240,6 +240,25 @@ class BoardTests(Recorded):
         self.assertTrue(module.startswith(MOD_HEADER + "export default {"), hint)
         self.assertEqual(json.loads(module[len(MOD_HEADER + "export default "):]), record, hint)
 
+    def test_launches_lists_every_started_launch_of_the_home(self):
+        def launches(*since):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["launches", "--home", str(self.home), *since])
+            self.assertEqual(out.getvalue().count("\n"), 1)  # one line, for a program to read
+            printed = json.loads(out.getvalue())
+            self.assertEqual(printed["schema"], board.LAUNCHES_SCHEMA)
+            return printed["launches"]
+        first, second = launches()
+        self.assertEqual([first["batch"], second["batch"]], [self.state_dir.name] * 2)
+        self.assertLess(first["at"], second["at"])
+        self.assertEqual(launches("--since", first["at"]), [second])
+        self.assertEqual(launches("--since", second["at"].replace("+00:00", "Z")), [])
+        # A launch whose supervisor did not start puts no batch on a board.
+        path = self.state_dir / "launches" / f"{second['launch_id']}.json"
+        write_json(path, dict(records.read_json(path), error="Supervisor refused to start"))
+        self.assertEqual(launches(), [first])
+
 
 class UnclaimedBatchTests(Recorded):
     """A batch that has no state yet: every issue is queued, and a dry-run gives the titles."""

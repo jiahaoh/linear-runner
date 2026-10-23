@@ -107,14 +107,19 @@ const LINEAGE = {
 // What the runner prints for each batch now; a test may move it on, or put another answer in its place.
 let boards: Record<string, object> = {}
 let answer: { exitCode: number; stdout?: string; stderr: string } | null = null
+// The launches the runner knows of, as `runner.py launches` lists them; it prints those after `--since`.
+let launches: { batch: string; launch_id: string; at: string }[] = []
 
 // The host beneath the mod: a runner home with three batch files, and a runner that prints `boards`.
 function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, string> = {}) {
+  // `status --board` calls; the asks for launches are kept apart.
   const runs: string[][] = []
+  const asks: string[][] = []
   const opened: string[] = []
   const kept: Record<string, unknown> = {}
   boards = { demo: DEMO, 'demo-b': DEMO_B, fixture }
   answer = null
+  launches = []
   // The store, with what the board wrote to it kept apart.
   const store = new Map(Object.entries(stored))
   on('store.get', async (_, e) => ({ value: store.get(e.key) }))
@@ -143,9 +148,20 @@ function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, 
     const path = String(e.path)
     if (path.endsWith('/lineage/phase.json')) return { value: JSON.stringify(LINEAGE) }
 
-    return { value: JSON.stringify({ issues: ['T-1', 'T-2', 'T-3'] }) }
+    // `demo` and `demo-b` belong to one project, `fixture` to another.
+    const project = path.endsWith('/fixture.json') ? 'other' : 'demo-project'
+
+    return { value: JSON.stringify({ project, issues: ['T-1', 'T-2', 'T-3'] }) }
   })
   on('process.run', async (_, e) => {
+    if (e.argv[2] === 'launches') {
+      asks.push([...e.argv])
+      const since = String(e.argv[e.argv.indexOf('--since') + 1])
+      const after = launches.filter(launch => Date.parse(launch.at) > Date.parse(since))
+      const stdout = JSON.stringify({ schema: 'linear-runner.launches/1', launches: after })
+
+      return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     runs.push([...e.argv])
     const id = String(e.argv[e.argv.indexOf('--batch') + 1]).replace(/^.*\//, '').replace(/\.json$/, '')
 
@@ -160,7 +176,7 @@ function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, 
     }
   })
 
-  return Object.assign(runs, { clock, opened, kept })
+  return Object.assign(runs, { asks, clock, opened, kept })
 }
 
 const COMMAND = { command: 'runner-board', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -431,7 +447,8 @@ test('a session whose own board holds batches opens the pane when it starts', as
   await $.session.start(START)
   expect(opened).toEqual(['runner-board'])
   // A batch file that is gone leaves the board it was kept on, and only that one.
-  expect(kept).toEqual({ 'batches:this-session': ['demo'] })
+  expect(Object.keys(kept).filter(key => key.startsWith('batches:'))).toEqual(['batches:this-session'])
+  expect(kept['batches:this-session']).toEqual(['demo'])
 })
 
 test('a board kept only under an earlier session is found too', async ($, on) => {
@@ -468,4 +485,45 @@ test('a launch this session ran puts its batch on the board and opens it, a comm
   await $.tool.call({ tool: 'Bash', command: 'python3 runner.py launch --batch batches/demo.json' })
   expect(await board()).toBeDefined()
   expect(opened).toEqual(['runner-board'])
+})
+
+test('a batch launched elsewhere joins a board that is the session\'s own when its project is on it', async ($, on) => {
+  const { asks, clock, kept } = host(on, { 'batches:last': ['demo'] })
+  await $.session.start(START)
+  // A board taken over from another session does not ask.
+  await clock.advance(30_000)
+  expect(asks).toEqual([])
+  await $.command.run({ ...COMMAND, args: '' })
+  const from = String(kept['seen:batches:this-session'])
+  const at = (seconds: number) => new Date(Date.parse(from) + seconds * 1000).toISOString()
+  launches = [
+    { batch: 'demo-b', launch_id: 'L-0', at: at(-1) },
+    { batch: 'fixture', launch_id: 'L-1', at: at(1) },
+  ]
+  await clock.advance(30_000)
+  expect(asks.length).toBe(1)
+  expect(asks[0]!.slice(2)).toEqual(['launches', '--since', from, '--home', '/h/.config/linear-runner'])
+  // Launched before the board was its own, a batch stays off; one of a project not on the board stays off too.
+  expect(kept['batches:this-session']).toEqual(['demo'])
+  launches = [...launches, { batch: 'demo-b', launch_id: 'L-2', at: at(2) }]
+  await clock.advance(30_000)
+  expect(asks[1]![asks[1]!.indexOf('--since') + 1]).toBe(at(1))
+  // Launched after, a batch of a project on the board joins.
+  const ui = await $.ui.mount({ plugin: 'runner-board', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'batch-demo-b' })).toBeDefined()
+  expect(await ui.find({ key: 'batch-fixture' })).toBeUndefined()
+  expect(kept['batches:this-session']).toEqual(['demo', 'demo-b'])
+  // The time of the last launch taken in is kept for the next ask and the next session.
+  expect(kept['seen:batches:this-session']).toBe(at(2))
+  expect(kept['seen:batches:last']).toBe(at(2))
+})
+
+test('a batch launched while the session was away joins its board when the session starts again', async ($, on) => {
+  const since = '2026-10-23T08:00:00.000Z'
+  const { asks } = host(on, { 'batches:this-session': ['demo'], 'seen:batches:this-session': since })
+  launches = [{ batch: 'demo-b', launch_id: 'L-2', at: '2026-10-23T09:00:00+00:00' }]
+  await $.session.start(START)
+  expect(asks.map(ask => ask[ask.indexOf('--since') + 1])).toEqual([since])
+  const ui = await $.ui.mount({ plugin: 'runner-board', surface: 'desktop', ...PANE })
+  expect(await ui.find({ key: 'batch-demo-b' })).toBeDefined()
 })
