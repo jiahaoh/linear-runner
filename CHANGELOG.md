@@ -15,6 +15,41 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.3.0 — 2026-10-27
+
+An extended check whose matched changes are all inert is not run (`W-605`). The controller
+compares each changed file with the base revision itself (`linear_runner/engine/inert.py`): a
+`.py` file is inert when its AST without docstrings is the same (comments never reach the AST),
+and a `.md` or `.rst` file is inert when it lies outside the project's `documents_read_by_tests`,
+a rule that applies only when the project sets that key. A file added, deleted, renamed or
+changed in mode, and one that does not parse on either side, is never inert, nor is any other
+format. Nothing a worker or reviewer wrote is an input. The base is the issue's starting commit;
+at the last issue or a named issue (`check_overrides`), a `last_issue: "when_changed"` check
+compares the batch's changes with the batch's base revision instead, after the issue's own. The
+check is recorded in `checks.json` as `skipped` with `inert` (base, scope and each file's rule).
+It counts as not applicable, is no evidence for a required check, and is not stored in the check
+cache, so its previous record keeps its reuse and its place in the shortest-first order; evidence
+keys stay byte-based. The validation comment lists it under "Not applicable" with the number of
+files compared, and `report`, `measure` and the synthesized handoff call it "not run (only inert
+changes to its inputs)". Default checks, `always` checks at the last issue, and checks of `kind:
+"docs"` or `"presentation"` are not affected; a check opts out with `inert_changes: "run"`.
+`validate-config` lists each extended check's `inert_changes` and the project's
+`documents_read_by_tests`, and refuses `inert_changes` on a default check, `"skip"` on a check of
+another kind than `code`, and a pattern that is absolute or contains `..`. In
+hk-g-stages-20261026, W-591's docstring citation and a test-data README edit ran 39 minutes of
+learned and spot-finding checks. README "Lifecycle" step 4 states the limits: code that reads
+docstrings or source text, and documents a test reads that the project's list omits, can fail
+on an inert change, and a test that only a `when_changed` check runs has no backstop within the
+batch.
+
+**Project impact:** no key is required. A project whose extended code check depends on
+docstrings or comments (doctest, a linter, coverage) sets `inert_changes: "run"` on it. A
+project that wants the documentation rule sets `documents_read_by_tests`, which changes its
+configuration fingerprint. A batch that pins `runner_version` 3.2.0 must pin 3.3.0 to launch on
+this release.
+
+**Canary tier:** canary batch; the engine's check selection changes.
+
 ## v3.2.0 — 2026-10-22
 
 Validation fails fast and runs short checks first (`W-552`). A validation runs its selected

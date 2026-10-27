@@ -38,6 +38,7 @@
       "additionalProperties": {"type": "string"}
     },
     "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}},
+    "documents_read_by_tests": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}, "description": "fnmatch patterns (like a check's inputs, inside the worktree) of the .md and .rst files that a test or tested code reads (W-605). A changed .md or .rst file that matches none of them is inert, so an extended check of kind code whose matched changes are all inert is not run. Without the key no documentation file is inert; an empty list states that no test or tested code reads documentation. Part of the configuration fingerprint when set."},
     "delivery_checks": {"type": "array", "items": {"$ref": "#/$defs/delivery"}},
     "delivery_integrity": {"$ref": "#/$defs/integrity"}
   },
@@ -60,6 +61,7 @@
         "environment": {"type": "object", "propertyNames": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}, "additionalProperties": {"type": "string"}, "description": "Variables for this check only, applied after the project's check_environment and the inherited environment, with ${name} substitution as there. Part of the check definition and its reuse identity (W-524)."},
         "unset_environment": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}, "description": "Variables removed from this check's environment, whether inherited or set by check_environment; a name may not also be in environment. Part of the check definition and its reuse identity (W-524)."},
         "last_issue": {"enum": ["always", "when_changed"], "description": "Extended checks only. 'always' (default): the check runs at the batch's last issue whatever changed. 'when_changed': at the last issue it runs only if a file changed since the batch's base revision matches its inputs; otherwise it is recorded as skipped."},
+        "inert_changes": {"enum": ["skip", "run"], "description": "Extended checks only (W-605). 'skip' (default for kind code): the check is not run when every changed file its inputs match is inert (a .py file equal in AST without docstrings, or a .md or .rst file outside the project's documents_read_by_tests), and is recorded as skipped with 'inert'. 'run': inertness never applies, for a check whose result depends on docstrings or comments (doctest, a linter, a type checker, coverage). A check of kind docs or presentation is never skipped for inertness and may set only 'run'. Part of the check definition and its reuse identity."},
         "base_parity": {
           "type": "object",
           "additionalProperties": false,

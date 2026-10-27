@@ -42,6 +42,9 @@ class LayeredConfigTests(unittest.TestCase):
         self.assertFalse(Path(loaded["state_dir"]).exists())
         # W-525: the example batch loads the settled implement output budget.
         self.assertEqual(loaded["policy"]["phases"]["phases"]["implement"]["budget"]["output_tokens"], 300_000)
+        # W-605: the example project sets the documentation rule and one opt-out.
+        self.assertEqual(loaded["documents_read_by_tests"], ["tests/data/*.md"])
+        self.assertEqual([c.get("inert_changes") for c in loaded["checks"]], [None, "run"])
 
     def test_settled_registry_values(self):
         policy, sources, _ = config.load_registry(self.root / "no-home")
@@ -253,9 +256,11 @@ class LayeredConfigTests(unittest.TestCase):
         loaded = self.load(project=project(timeout_seconds=3600, last_issue="when_changed"))
         self.assertEqual({k: loaded["checks"][1][k] for k in ("timeout_seconds", "last_issue")},
                          {"timeout_seconds": 3600, "last_issue": "when_changed"})
+        # An extended check also lists what it does with inert changes (W-605), here the default.
         self.assertEqual(cli.summarize(loaded)["checks"],
                          [{"name": "fast", "tier": "default", "timeout_seconds": 1800},
-                          {"name": "slow", "tier": "extended", "timeout_seconds": 3600, "last_issue": "when_changed"}])
+                          {"name": "slow", "tier": "extended", "timeout_seconds": 3600, "last_issue": "when_changed",
+                           "inert_changes": "skip"}])
         plain = self.load(project=project())
         self.assertNotIn("timeout_seconds", plain["checks"][1])
         self.assertNotIn("last_issue", plain["checks"][1])
@@ -395,6 +400,56 @@ class LayeredConfigTests(unittest.TestCase):
                 self.assertIn(message, err)
         # Absent, it changes no other batch's fingerprint.
         self.assertNotIn("check_overrides", self.load())
+
+    def test_validate_config_lists_inert_changes_and_documents_read_by_tests_and_refuses_bad_entries(self):
+        # W-605: an extended check of kind code is not run when its matched changes are inert,
+        # unless it opts out; a docs check never is. The project lists the documents tests read.
+        base = {"inputs": ["src/*"], "cwd": ".", "command": ["${python}", "-c", "pass"]}
+        checks = [dict(base, name="fast", kind="code", tier="default"),
+                  dict(base, name="slow", kind="code", tier="extended"),
+                  dict(base, name="doctest", kind="code", tier="extended", inert_changes="run"),
+                  dict(base, name="docs", kind="docs", tier="extended")]
+        def outcome(label, **project):
+            root = self.root / label
+            root.mkdir()
+            home, path = make_home(root, self.repo, project=dict({"checks": checks}, **project))
+            return self.validate(path, home)
+        report, status, _ = outcome("good", documents_read_by_tests=["docs/read-by-tests.md", "tests/data/*.md"])
+        self.assertEqual(status, 0)
+        self.assertEqual([c.get("inert_changes") for c in report["checks"]], [None, "skip", "run", "run"])
+        self.assertEqual(report["documents_read_by_tests"], ["docs/read-by-tests.md", "tests/data/*.md"])
+        report, status, _ = outcome("unset")
+        self.assertEqual((status, report["documents_read_by_tests"]), (0, None))
+        cases = [({"checks": [dict(checks[0], inert_changes="run")]},
+                  "checks[0].inert_changes: only an extended check is selected by inert changes"),
+                 ({"checks": [checks[0], dict(checks[1], inert_changes="sometimes")]},
+                  "checks[1].inert_changes: must be one of ['skip', 'run']"),
+                 ({"checks": [checks[0], dict(checks[3], inert_changes="skip")]},
+                  "checks[1].inert_changes: a check of kind 'docs' is never skipped for inert changes")]
+        cases += [({"documents_read_by_tests": [bad]}, "documents_read_by_tests: patterns must stay inside the worktree")
+                  for bad in ("/abs/docs/*.md", "../docs/*.md", "docs/../tests/*.md")]
+        for index, (project, message) in enumerate(cases):
+            with self.subTest(project=project):
+                report, status, err = outcome(f"bad-{index}", **project)
+                self.assertIsNone(report)
+                self.assertNotEqual(status, 0)
+                self.assertIn(message, err)
+
+    def test_a_project_that_sets_neither_inert_key_keeps_its_fingerprint(self):
+        # W-605: neither key enters the configuration unless the project sets it, so the
+        # fingerprints of projects that set neither do not move.
+        slow = {"name": "slow", "kind": "code", "tier": "extended", "inputs": ["src/*"], "cwd": ".",
+                "command": ["${python}", "-c", "pass"]}
+        def load(**project):
+            return self.load(project=dict({"checks": [slow]}, **project))
+        plain = load()
+        effective = config._effective(plain)
+        self.assertNotIn("documents_read_by_tests", effective)
+        self.assertNotIn("inert_changes", effective["checks"][0])
+        # Setting either key is a configuration change.
+        for changed in (load(documents_read_by_tests=[]), load(checks=[dict(slow, inert_changes="run")])):
+            with self.subTest(changed=changed["_sources"].get("documents_read_by_tests")):
+                self.assertNotEqual(config_fingerprint(plain), config_fingerprint(changed))
 
     def test_a_batch_file_states_its_purpose_and_the_batch_it_follows(self):
         # W-443: the reason for each of the fifteen §2.10 batches existed only as prose in its guidance.

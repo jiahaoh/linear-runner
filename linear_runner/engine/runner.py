@@ -29,15 +29,17 @@ from linear_runner import backends
 from linear_runner.linear import attention
 from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
                                   match_entry, pid_alive, pool_for, read_json, write_json)
-from linear_runner.engine.delivery import (EMPTY_NOTE, FAIL_FAST_NOTE, SKIPPED_NOTE, check_deferred, check_outcome,
-                                           check_passed, check_skipped, evidence_intact)
+from linear_runner.engine.delivery import (EMPTY_NOTE, FAIL_FAST_NOTE, INERT_NOTE, SKIPPED_NOTE, check_deferred,
+                                           check_inert, check_not_applicable, check_outcome, check_passed,
+                                           check_skipped, evidence_intact)
+from linear_runner.engine import inert
 from linear_runner.engine import intake
 from linear_runner.engine import parity
 from linear_runner.engine import lint as criterion_lint
 from linear_runner.linear.client import LinearClient, read_back
 from linear_runner.linear import messages
 from linear_runner.linear import updates
-from linear_runner.reporting.records import USAGE_KEYS, last_counter
+from linear_runner.reporting.records import INERT_OUTCOME, USAGE_KEYS, last_counter
 
 
 # In every model prompt: repositories keep their own agent instructions (AGENTS.md, CLAUDE.md),
@@ -1597,6 +1599,7 @@ class Runner:
             validation = [{"command": c.get("name", " ".join(c.get("command", []))),
                            "outcome": (("skipped" if check_skipped(c) else
                                         f"not run ({c['skipped_after']} failed)" if check_deferred(c) else
+                                        INERT_OUTCOME if check_inert(c) else
                                         f"exit {c.get('exit_code')}")
                                        + (f" ({EMPTY_NOTE})" if c.get("status") == "empty" else "")
                                        + (f" ({SKIPPED_NOTE})" if check_skipped(c) else "")
@@ -1781,7 +1784,28 @@ class Runner:
         ran = []
         before = fingerprint(self.repo)
         last = None  # decided at the first extended check (W-342: by the queue)
-        batch_changed = None
+        batch_changed = batch = None
+        # Changed files the controller compared with a base commit in this validation, never kept
+        # beyond it: {(base, path): rule or None} (W-605).
+        rules = {}
+        documents = self.config.get("documents_read_by_tests")
+
+        def inert_files(base, paths):
+            """``[(path, rule)]`` when every one of ``paths`` is inert against ``base``, else None."""
+            pending = [path for path in paths if (base, path) not in rules]
+            if pending:
+                rules.update(((base, path), rule)
+                             for path, rule in inert.classify(self.repo, base, pending, documents).items())
+            found = [(path, rules[(base, path)]) for path in paths]
+            return found if found and all(rule for _, rule in found) else None
+
+        def inert_record(spec, base, scope, files, reason):
+            self.log(f"Validation: {spec['name']} is not run: the {len(files)} changed file(s) its inputs match are "
+                     f"inert against {base[:12]} ({scope} scope)")
+            return {"name": spec["name"], "status": "skipped", "exit_code": None, "key": None, "reused": False,
+                    "model": None, "inert": {"base": base, "scope": scope,
+                                             "files": [{"path": path, "rule": rule} for path, rule in files]},
+                    "note": INERT_NOTE, **reason}
         # Extended checks the batch names for this issue run here as at the last issue (W-523).
         named = set(self.config.get("check_overrides", {}).get(active["issue_id"], {}).get("run", []))
         # Default checks run first, then extended ones; within each tier the check whose latest
@@ -1803,19 +1827,39 @@ class Runner:
             if requested:
                 self.log(f"Validation: {spec['name']} is treated at {active['issue_id']} as at the last issue, because "
                          "the batch names it (check_overrides)")
-            if extended and not any(fnmatch.fnmatch(p, pattern) for p in changed for pattern in spec["inputs"]):
-                if not final:
+            matched = sorted({p for p in changed if any(fnmatch.fnmatch(p, pattern) for pattern in spec["inputs"])})
+            # An extended code check is not run when every changed file its inputs match is inert
+            # (W-605): at W-591 a docstring citation and a test-data README ran 39 minutes of checks.
+            # A docs or presentation check reads documentation and docstrings, and a check may opt
+            # out (doctest, a linter, coverage). The controller compares the files itself.
+            skips_inert = extended and spec["kind"] == "code" and spec.get("inert_changes", "skip") == "skip"
+            if extended and not final:
+                if not matched:
                     continue
-                if spec.get("last_issue") == "when_changed":
-                    # The last issue runs every extended check as the batch's final word. A check
-                    # that opted out runs only if the batch as a whole touched its inputs.
-                    if batch_changed is None:
-                        batch_changed = self.batch_changed_files(active)
-                    if not any(fnmatch.fnmatch(p, pattern) for p in batch_changed for pattern in spec["inputs"]):
-                        results.append({"name": spec["name"], "status": "skipped", "exit_code": None,
-                                        "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
-                                        "model": None, **reason})
-                        continue
+                files = skips_inert and inert_files(active["starting_commit"], matched)
+                if files:
+                    results.append(inert_record(spec, active["starting_commit"], "issue", files, reason))
+                    continue
+            elif extended and spec.get("last_issue") == "when_changed" and (
+                    not matched or (skips_inert and inert_files(active["starting_commit"], matched))):
+                # The last issue runs every extended check as the batch's final word. A check
+                # that opted out runs only if the batch as a whole touched its inputs, and, when
+                # the issue's own matching changes are inert, only if the batch's are not: each
+                # file the batch changed is then compared with the batch's base revision. An
+                # "always" check runs here whatever changed: it is the backstop beyond the
+                # default checks, and inertness does not apply to it.
+                if batch_changed is None:
+                    batch, batch_changed = self.batch_base(active), self.batch_changed_files(active)
+                touched = [p for p in batch_changed if any(fnmatch.fnmatch(p, pattern) for pattern in spec["inputs"])]
+                if not touched:
+                    results.append({"name": spec["name"], "status": "skipped", "exit_code": None,
+                                    "last_issue": "when_changed", "note": SKIPPED_NOTE, "reused": False,
+                                    "model": None, **reason})
+                    continue
+                files = skips_inert and inert_files(batch, touched)
+                if files:
+                    results.append(inert_record(spec, batch, "batch", files, reason))
+                    continue
             if extended and failed_default:
                 # A default check failed, so this validation goes to repair whatever the extended
                 # checks show; they run in the validation after the repair (W-552: at W-535 a
@@ -1864,7 +1908,7 @@ class Runner:
                                                                   worktree=worktree)
         if ran:
             write_json(cache_path, cache)
-        if not [r for r in results if not check_skipped(r)]:
+        if not [r for r in results if not check_not_applicable(r)]:
             raise RuntimeError("No applicable validation checks")
         # The checks ran by tier and expected time; their records keep configuration order (W-552).
         position = {spec["name"]: index for index, spec in enumerate(self.config["checks"])}

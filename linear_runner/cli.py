@@ -40,8 +40,12 @@ def summarize(config):
             "checks": [dict({"name": c["name"], "tier": c["tier"],
                              "timeout_seconds": c.get("timeout_seconds",
                                                       config["policy"]["phases"]["check_timeout_seconds"])},
-                            **{k: c[k] for k in ("last_issue", "environment", "unset_environment") if k in c})
+                            **{k: c[k] for k in ("last_issue", "environment", "unset_environment") if k in c},
+                            # What an extended check does when its matched changes are inert (W-605).
+                            **({"inert_changes": c.get("inert_changes", "skip") if c["kind"] == "code" else "run"}
+                               if c["tier"] == "extended" else {}))
                        for c in config["checks"]],
+            "documents_read_by_tests": config.get("documents_read_by_tests"),
             "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "interface": config.get("_interface"), "layers": config["_layers"]}
 

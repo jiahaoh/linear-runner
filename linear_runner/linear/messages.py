@@ -191,11 +191,12 @@ def ready(ctx, *, issue, result, attempt, draft_problem=None, deliverables=(), m
 
 
 def validation(ctx, *, issue, records, passed, repair=None, directory=None, repair_stage=None, escalated=False):
-    from linear_runner.engine.delivery import check_deferred, check_passed, check_skipped
+    from linear_runner.engine.delivery import check_deferred, check_inert, check_passed, check_skipped
     skipped = [r for r in records if check_skipped(r)]
     deferred = [r for r in records if check_deferred(r)]  # left unrun after a default check failed (W-552)
+    inert = [r for r in records if check_inert(r)]  # left unrun: its matched changes are inert (W-605)
     # The counts are of checks that ran or were reused.
-    records = [r for r in records if not check_skipped(r) and not check_deferred(r)]
+    records = [r for r in records if not check_skipped(r) and not check_deferred(r) and not check_inert(r)]
     failing = [r for r in records if not check_passed(r)]
     empty = [r for r in records if r.get("status") == "empty" and check_passed(r)]
     reused = sum(bool(r.get("reused")) for r in records)
@@ -203,6 +204,11 @@ def validation(ctx, *, issue, records, passed, repair=None, directory=None, repa
     not_applicable = [f"{r.get('name', 'check')} selected no tests (allowed)." for r in empty]
     not_applicable += [f"{r.get('name', 'check')} was skipped: no file changed in this batch matches its inputs."
                        for r in skipped]
+    not_applicable += [f"{r.get('name', 'check')} was not run: the controller compared "
+                       f"{plural(len(r['inert']['files']), 'changed file')} its inputs match with "
+                       + ("the batch's base revision" if r["inert"]["scope"] == "batch" else "the issue's starting commit")
+                       + " and found every change inert (Python equal without docstrings, or documentation no test "
+                       "reads)." for r in inert]
     fields = {"issue": issue, "checks": checks, "failed": len(failing), "total": len(records), "repair": repair,
               "max_repairs": ctx["max_repairs"], "evidence": evidence(directory),
               "empty": " ".join(not_applicable)}

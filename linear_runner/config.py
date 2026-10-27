@@ -708,6 +708,12 @@ def load_config(batch_path, home=None):
         if "last_issue" in spec and spec["tier"] != "extended":
             raise ConfigError(f"{where}.last_issue: only an extended check has a last-issue rule; a default check "
                               "always runs or reuses its evidence")
+        if "inert_changes" in spec and spec["tier"] != "extended":
+            raise ConfigError(f"{where}.inert_changes: only an extended check is selected by inert changes; a default "
+                              "check always runs or reuses its evidence")
+        if spec.get("inert_changes") == "skip" and spec["kind"] != "code":
+            raise ConfigError(f"{where}.inert_changes: a check of kind {spec['kind']!r} is never skipped for inert "
+                              "changes (it may read documentation and docstrings); only a check of kind 'code' is")
         both = sorted(set(spec.get("environment", {})) & set(spec.get("unset_environment", [])))
         if both:
             raise ConfigError(f"{where} ({spec['name']}): {', '.join(both)} both set in environment and listed in "
@@ -721,6 +727,12 @@ def load_config(batch_path, home=None):
     if len({c["name"] for c in checks}) != len(checks):
         raise ConfigError(f"{project_label}.checks: names must be unique")
     put("checks", checks, project_label)
+    if "documents_read_by_tests" in project:
+        # Only a project that sets it records it, so other fingerprints are unchanged (W-605).
+        for pattern in project["documents_read_by_tests"]:
+            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+                raise ConfigError(f"{project_label}.documents_read_by_tests: patterns must stay inside the worktree")
+        put("documents_read_by_tests", list(project["documents_read_by_tests"]), project_label)
     if "check_overrides" in batch:
         # Only a batch that sets them records them, so other fingerprints are unchanged.
         put("check_overrides", check_overrides(batch["check_overrides"], config["issues"], checks,

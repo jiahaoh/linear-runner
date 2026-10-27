@@ -183,12 +183,19 @@ def _resolve_log(record_log, checks_path, run_dir):
     return candidate if candidate.is_file() else None
 
 
+# A check left unrun because every changed file its inputs match is inert (W-605).
+INERT_OUTCOME = "not run (only inert changes to its inputs)"
+
+
 def check_status(record):
     """``passed``, ``failed``, ``empty`` (an allowed empty selection), ``skipped`` (by the
-    check's own ``last_issue`` rule) or ``deferred`` (left unrun after a default check failed,
-    W-552); older records have no ``status`` field and are derived from the exit code."""
+    check's own ``last_issue`` rule), ``deferred`` (left unrun after a default check failed,
+    W-552) or ``inert`` (left unrun because its matched changes are inert, W-605); older records
+    have no ``status`` field and are derived from the exit code."""
     if record.get("status") == "skipped" and record.get("skipped_after"):
         return "deferred"
+    if record.get("status") == "skipped" and isinstance(record.get("inert"), dict):
+        return "inert"
     if record.get("status") in ("passed", "failed", "empty", "skipped"):
         return record["status"]
     code = record.get("exit_code")
@@ -199,7 +206,8 @@ def outcome_text(status):
     """A check outcome for people: an allowed empty selection is named as such."""
     return {"empty": "empty (no tests selected; allowed)",
             "skipped": "skipped (no change in the batch matches its inputs)",
-            "deferred": "not run (a default check failed first)"}.get(status, status)
+            "deferred": "not run (a default check failed first)",
+            "inert": INERT_OUTCOME}.get(status, status)
 
 
 def find_checks(roots):
