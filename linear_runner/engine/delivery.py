@@ -4,8 +4,9 @@ Project ``delivery_checks`` render an issue's delivery packet from saved evidenc
 receive ``RUNNER_DELIVERY_CONTEXT``. Afterwards this step verifies, from files only:
 
 * every validation check the controller recorded passed (or selected no tests where its
-  definition allows that, ``allow_empty``) and its log hash is intact;
-* the project's ``required_checks`` are among them;
+  definition allows that, ``allow_empty``) and its log hash is intact; a check recorded as not
+  applicable (``check_skipped``, ``check_inert``) has no log to verify;
+* the project's ``required_checks`` are among the checks that ran or were reused;
 * every delivery check passed and its log hash is intact;
 * the renderer's manifest exists, names the committed revision in ``revision_field``,
   and each ``file_hashes`` field equals the SHA-256 of the named file;
@@ -53,14 +54,48 @@ def check_skipped(record):
             and record.get("exit_code") is None)
 
 
+# An extended check that a validation did not run because one of its default checks failed
+# (W-552): the validation goes to repair, and the check runs in the validation after it. The
+# record names the failed check in ``skipped_after``; it is neither passing nor evidence.
+FAIL_FAST_NOTE = "not run: the default check {check} failed, so this validation goes to repair; it runs after the repair"
+
+
+def check_deferred(record):
+    """Whether a saved record is an extended check left unrun after a default check failed."""
+    return (record.get("status") == "skipped" and bool(record.get("skipped_after"))
+            and record.get("exit_code") is None)
+
+
+# An extended check that a validation did not run because every changed file its inputs match is
+# inert (W-605, ``linear_runner.engine.inert``): Python equal in AST without docstrings, or
+# documentation no test reads. The record's ``inert`` names the base commit, the scope
+# (``issue``: the issue's starting commit; ``batch``: the batch's base revision, at the last or a
+# named issue) and each file with its rule. It counts as not applicable and is no evidence.
+INERT_NOTE = ("every changed file its inputs match is inert (Python equal in AST without docstrings, or "
+              "documentation no test reads); not run")
+
+
+def check_inert(record):
+    """Whether a saved record is an extended check left unrun because its matched changes are inert."""
+    inert = record.get("inert")
+    return (record.get("status") == "skipped" and record.get("exit_code") is None and isinstance(inert, dict)
+            and bool(inert.get("base")) and inert.get("scope") in ("issue", "batch") and bool(inert.get("files")))
+
+
+def check_not_applicable(record):
+    """Whether a saved record is a check that did not run and counts as passing without a log:
+    skipped by its own ``last_issue`` rule, or left unrun for inert changes (W-605)."""
+    return check_skipped(record) or check_inert(record)
+
+
 def check_passed(record):
     """Whether a saved check record counts as passing: exit 0, an allowed empty selection, or
-    a check skipped by its own ``last_issue`` rule.
+    a check that was not applicable (``check_not_applicable``).
 
     An ``empty`` outcome is accepted only with its own evidence: exit code 5 and the
     ``allow_empty`` flag recorded from the check definition.
     """
-    if record.get("exit_code") == 0 or check_skipped(record):
+    if record.get("exit_code") == 0 or check_not_applicable(record):
         return True
     return (record.get("status") == "empty" and record.get("exit_code") == EMPTY_EXIT_CODE
             and record.get("allow_empty") is True)
@@ -83,7 +118,7 @@ def _inside(base, relative, where):
 
 def _intact(records, where):
     for record in records:
-        if check_skipped(record):  # it did not run: there is no log to verify
+        if check_not_applicable(record):  # it did not run: there is no log to verify
             continue
         name = record.get("name") or " ".join(record.get("command", [])[:3])
         if not check_passed(record):
@@ -105,7 +140,8 @@ def verify_delivery(spec, delivery_dir, commit, validation_records):
     """Return an evidence record, or raise DeliveryError naming the first failure."""
     delivery_dir = Path(delivery_dir)
     _intact(validation_records, "validation check")
-    names = {r.get("name") for r in validation_records if not check_skipped(r)}  # a skipped check is no evidence
+    # A check that did not run (skipped or inert) is no evidence.
+    names = {r.get("name") for r in validation_records if not check_not_applicable(r)}
     missing = sorted(set(spec.get("required_checks", [])) - names)
     if missing:
         raise DeliveryError(f"required check(s) {missing} are not in the validated evidence")

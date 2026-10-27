@@ -27,6 +27,9 @@
     "PYTHONDONTWRITEBYTECODE": "1",
     "TMPDIR": "${scratch}/${batch}"
   },
+  "documents_read_by_tests": [
+    "tests/data/*.md"
+  ],
   "checks": [
     {
       "name": "regression",
@@ -45,6 +48,26 @@
         "discover",
         "-v"
       ]
+    },
+    {
+      "name": "doctest",
+      "kind": "code",
+      "tier": "extended",
+      "inputs": [
+        "src/**/*.py",
+        "docs/*.md"
+      ],
+      "cwd": ".",
+      "command": [
+        "${python}",
+        "-m",
+        "pytest",
+        "--doctest-modules",
+        "--doctest-glob=*.md",
+        "src",
+        "docs"
+      ],
+      "inert_changes": "run"
     }
   ],
   "delivery_checks": []

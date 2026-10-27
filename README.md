@@ -39,6 +39,7 @@ the checkout root, which is also `${runner_root}`.
 | `linear_runner/config.py` | Layered loading, schema validation, `${variable}` substitution, name resolution pinning, the configuration fingerprint and runner identity |
 | `linear_runner/engine/runner.py` | The per-issue state machine: gates, model phases, checks and validation, the controller commit, delivery, review, publication and terminal reporting |
 | `linear_runner/engine/delivery.py` | Check outcomes and the generic, config-driven delivery integrity step |
+| `linear_runner/engine/inert.py` | Inert changes: whether a changed file can alter a test result (a `.py` file equal in AST without docstrings, documentation no test reads), decided from the repository alone (see "Lifecycle" step 4) |
 | `linear_runner/engine/intake.py` | Worker intake packets (compact, schema 2) |
 | `linear_runner/engine/lint.py` | Criterion wording a project lists as ambiguous (`criterion_lint`, see "Writing issues") |
 | `linear_runner/engine/parity.py` | Base-parity checks: one command on the issue's base revision and on the result |
@@ -111,7 +112,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `base_parity`, `environment`, `unset_environment`), optional `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `inert_changes`, `base_parity`, `environment`, `unset_environment`), optional `documents_read_by_tests` (see "Lifecycle" step 4), `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `check_overrides` (extended checks to run at a named issue, see "Lifecycle" step 4), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -804,7 +805,19 @@ elsewhere stops the batch for reconciliation.
    leaves changes uncommitted and makes no Linear or Git mutations.
 4. **Checks.** Checks declare `name`, `kind`, `tier`, `inputs`, `cwd` and `command`.
    Default checks always run or reuse evidence; extended checks run for matching changed
-   inputs and at the batch's last issue. The last issue is the one that runs last: no other
+   inputs and at the batch's last issue. A validation runs its selected default checks first,
+   then its selected extended checks; within each tier the check whose latest record in the
+   batch's `check-cache.json` passed in the least wall time (`started_at` to `finished_at`;
+   for a base-parity check, the result run alone) runs first, and checks whose latest record
+   is missing or did not pass follow in configuration order. Each check's evidence directory
+   is still its configuration index, and `checks.json` lists the records in configuration order (`W-552`). When a default check fails, the other default
+   checks still run, and every extended check the rules below select is recorded as
+   `status: "skipped"` with `skipped_after` (the failed check) and a note, without running:
+   the validation goes to repair either way, and the validation after the repair runs them as
+   usual. Such a record is neither passing evidence nor reusable, the repeated-failure test
+   and the validation comment leave it out of the failing checks, and the comment names the
+   checks it held back. At `W-535` a 22-minute default failure was followed by about 3.5 hours
+   of extended checks before a one-line repair. The last issue is the one that runs last: no other
    allowlisted issue is still to run (done or deferred issues of the batch and issues Done in
    Linear do not count, an issue that waits for this one does), whatever its position in the
    allowlist; a Linear read that fails while deciding counts as "last". A batch may also name
@@ -841,7 +854,8 @@ elsewhere stops the batch for reconciliation.
    set `timeout_seconds`, up to the registry's `max_check_timeout_seconds` (10800); without
    it the registry's `check_timeout_seconds` (1800) applies. A check that exceeds its limit
    is stopped and fails with exit code 124. `validate-config` lists each check's tier, time
-   limit and last-issue rule under `checks`. Reuse is keyed on the check definition,
+   limit and last-issue rule under `checks`, with each extended check's `inert_changes` (below),
+   and the project's `documents_read_by_tests` (`null` when unset). Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured
    environment, the executable and `identity_files`. At the batch's last issue the key of an
    extended check also covers the whole worktree: the content of every tracked and untracked,
@@ -872,8 +886,63 @@ elsewhere stops the batch for reconciliation.
    as passing; the validation comment lists it as "<name> selected no tests (allowed)", and
    `report`/`measure` show the outcome as "empty". Any other nonzero exit, and exit 5 without
    the flag, is still a failure. The flag is part of the check definition, so changing it
-   changes the configuration fingerprint and the check's reuse identity. Every check record
-   in `checks.json` has `status` (`passed`, `failed` or `empty`) and `allow_empty`.
+   changes the configuration fingerprint and the check's reuse identity. Every record of a
+   check that ran or was reused in `checks.json` has `status` (`passed`, `failed` or `empty`)
+   and `allow_empty`. A check that did not run has `status: "skipped"`, no exit code and no
+   `allow_empty`: either `last_issue: "when_changed"` with the note above (not applicable),
+   `inert` (below; not applicable), or `skipped_after` naming the default check whose failure
+   held it back (`W-552`; neither passing nor evidence).
+   **Inert changes:** an extended check of `kind: "code"` is not run when every changed file
+   its `inputs` match is inert (`W-605`; at W-591 a docstring citation in a test file and a
+   README in a test-data directory ran 39 minutes of extended checks). The controller decides
+   from the repository alone (`linear_runner/engine/inert.py`): it compares each file's blob in
+   a base commit (read with `git ls-tree` and `git cat-file`, which leave the index alone) with
+   the file on disk, and nothing a worker or reviewer wrote counts, so a summary that calls a
+   change "comments only" changes nothing. A `.py` file is inert (rule `python-ast`) when both
+   sides parse with the runner's interpreter into the same AST once every docstring is removed
+   (the first statement of a module, class, function or async function body when it is a
+   string constant); comments never reach the AST and line numbers are not compared. A `.md` or
+   `.rst` file is inert (rule `documentation`) when the project sets `documents_read_by_tests`,
+   `fnmatch` patterns inside the worktree like `inputs`, and the path matches none of them;
+   without the key no document is inert, and an empty list states that no test or tested code
+   reads one. A file added, deleted or renamed since the base, whose Git mode changed (the
+   executable bit, a symlink), that is not a regular file on either side, that fails to parse
+   or decode on either side, or with any other suffix (YAML, TOML, JSON, notebooks, `.pyi`) is
+   never inert. At an issue that is neither the last nor named for the check, the base is the
+   issue's starting commit, and a check whose matched files are all inert is recorded in
+   `checks.json` as `status: "skipped"` with `inert` (`base`, `scope: "issue"` and `files`, each
+   with its `path` and `rule`) and the note "every changed file its inputs match is inert
+   (Python equal in AST without docstrings, or documentation no test reads); not run". At the
+   last issue and at an issue that names the check in `check_overrides`, a check with
+   `last_issue: "always"` runs whatever changed, keyed on the worktree: inertness does not
+   apply to it. A `when_changed` check there runs when the issue's own matching changes include
+   one that is not inert; otherwise the files changed since the batch's base revision that its
+   `inputs` match decide, each compared with that base: one that is not inert runs the check,
+   all inert give an inert record with `scope: "batch"` and the batch's base as `base`, and none
+   gives the `when_changed` skip above. Default checks are not affected, and a check of `kind:
+   "docs"` or `"presentation"` is never skipped this way, since it reads documentation and
+   docstrings (Sphinx autodoc); this is the engine's first use of `kind`. A check whose result
+   depends on docstrings or comments (doctest, a linter's `# noqa`, a type checker's
+   `# type: ignore`, coverage with `# pragma: no cover`) opts out with `"inert_changes": "run"`;
+   `validate-config` refuses the key on a default check, `"skip"` on a check of another kind
+   than `code`, and a `documents_read_by_tests` pattern that is absolute or contains `..`. Each
+   key enters the configuration fingerprint only when set. An inert record counts as passing
+   and as not applicable: no log is verified, the low-risk review rule treats it as passing, and
+   a validation of only such records still stops with "No applicable validation checks". It is
+   no evidence for `delivery_integrity.required_checks` and is never written to
+   `check-cache.json`, so the check's previous record keeps its reuse and its place in the order
+   above. Evidence keys stay byte-based: a default check, an `always` check at the last issue
+   and an opted-out check rerun after a docstring edit of their inputs. The classification is
+   recomputed in each validation, so a repair that turns a docstring edit into a code edit runs
+   the check. The validation comment lists such a check under "Not applicable" with the number
+   of files compared, and `report`, `measure` and the synthesized handoff call it "not run (only
+   inert changes to its inputs)". **Limits:** code that reads docstrings (`__doc__`, an
+   `argparse` description built from it), source text (`inspect.getsource`, a hash of a source
+   file) or line numbers, and a document that a test reads but the project's list omits, can
+   make an inert change fail a test. The default checks run at every issue, but only on the
+   tests they select; the backstop beyond them is the last issue's `always` checks, which ignore
+   inertness. A test that only a `when_changed` check runs has no backstop within the batch:
+   set `inert_changes: "run"` on that check, or list the document in `documents_read_by_tests`.
    Each run of the checks writes `validation-<UTC second>-<random>/checks.json` in the issue's
    run directory. These names do not order validations within one second, so the state names
    the validation that counts: `active.validation_dir` while the issue runs and

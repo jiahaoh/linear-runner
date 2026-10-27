@@ -30,6 +30,61 @@ its tier. The release procedure is in the README ("Releases").
   board saved last. Project impact: none. Canary tier: none needed (the board mod only)
   (`W-554`).
 
+## v3.3.0 — 2026-10-27
+
+An extended check whose matched changes are all inert is not run (`W-605`). The controller
+compares each changed file with the base revision itself (`linear_runner/engine/inert.py`): a
+`.py` file is inert when its AST without docstrings is the same (comments never reach the AST),
+and a `.md` or `.rst` file is inert when it lies outside the project's `documents_read_by_tests`,
+a rule that applies only when the project sets that key. A file added, deleted, renamed or
+changed in mode, and one that does not parse on either side, is never inert, nor is any other
+format. Nothing a worker or reviewer wrote is an input. The base is the issue's starting commit;
+at the last issue or a named issue (`check_overrides`), a `last_issue: "when_changed"` check
+compares the batch's changes with the batch's base revision instead, after the issue's own. The
+check is recorded in `checks.json` as `skipped` with `inert` (base, scope and each file's rule).
+It counts as not applicable, is no evidence for a required check, and is not stored in the check
+cache, so its previous record keeps its reuse and its place in the shortest-first order; evidence
+keys stay byte-based. The validation comment lists it under "Not applicable" with the number of
+files compared, and `report`, `measure` and the synthesized handoff call it "not run (only inert
+changes to its inputs)". Default checks, `always` checks at the last issue, and checks of `kind:
+"docs"` or `"presentation"` are not affected; a check opts out with `inert_changes: "run"`.
+`validate-config` lists each extended check's `inert_changes` and the project's
+`documents_read_by_tests`, and refuses `inert_changes` on a default check, `"skip"` on a check of
+another kind than `code`, and a pattern that is absolute or contains `..`. In
+hk-g-stages-20261026, W-591's docstring citation and a test-data README edit ran 39 minutes of
+learned and spot-finding checks. README "Lifecycle" step 4 states the limits: code that reads
+docstrings or source text, and documents a test reads that the project's list omits, can fail
+on an inert change, and a test that only a `when_changed` check runs has no backstop within the
+batch.
+
+**Project impact:** no key is required. A project whose extended code check depends on
+docstrings or comments (doctest, a linter, coverage) sets `inert_changes: "run"` on it. A
+project that wants the documentation rule sets `documents_read_by_tests`, which changes its
+configuration fingerprint. A batch that pins `runner_version` 3.2.0 must pin 3.3.0 to launch on
+this release.
+
+**Canary tier:** canary batch; the engine's check selection changes.
+
+## v3.2.0 — 2026-10-22
+
+Validation fails fast and runs short checks first (`W-552`). A validation runs its selected
+default checks first, then its selected extended checks, each tier shortest first by the wall
+time of the check's latest passing record in the batch's check cache; checks without one keep
+configuration order after the others. When a default check fails, the remaining default checks
+still run and every selected extended check is recorded as `skipped` with `skipped_after` and a
+note instead of running; the validation goes to repair, and the next validation runs them as
+usual. Such a record never counts as passing, is never reused, and is left out of the failing
+checks in the repeated-failure test and the validation comment, which names the checks it held
+back; reports call it "not run (a default check failed first)". At W-535 a 22-minute default
+failure was followed by about 3.5 hours of extended checks before a one-line repair. The
+selection rules (`inputs`, `last_issue`, `check_overrides`, base parity) are unchanged.
+
+**Project impact:** none. A batch that pins `runner_version` 3.1.0 must pin 3.2.0 to launch on
+this release.
+
+**Canary tier:** canary batch. The release changes the engine's validation: run a canary batch on
+low-risk issues before the next production batch.
+
 ## v3.1.0 — 2026-10-19
 
 Five changes for the pre-§2.13 housekeeping (`W-526`): a new reviewer model for Standard and

@@ -14,6 +14,7 @@ import argparse
 import sys
 
 from linear_runner.config import ATTENTION_DEFAULTS, RUNNER_ROOT
+from linear_runner.engine.delivery import INERT_NOTE
 from linear_runner.linear import messages
 from linear_runner.linear import updates
 from linear_runner.reporting import trajectory
@@ -125,7 +126,11 @@ def samples():
     team15 = "/absolute/path/to/runs/TEAM-15/20260924T091500Z-3c4d5e6f"
     records = [{"name": "regression", "exit_code": 1}, {"name": "docs", "exit_code": 0, "reused": True},
                {"name": "pytest-extended", "exit_code": 5, "status": "empty", "allow_empty": True},
-               {"name": "pytest-validation", "exit_code": None, "status": "skipped", "last_issue": "when_changed"}]
+               {"name": "pytest-validation", "exit_code": None, "status": "skipped", "last_issue": "when_changed"},
+               {"name": "pytest-learned", "exit_code": None, "status": "skipped", "key": None, "note": INERT_NOTE,
+                "inert": {"base": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", "scope": "batch",
+                          "files": [{"path": "tests/test_metrics.py", "rule": "python-ast"},
+                                    {"path": "tests/data/metrics/README.md", "rule": "documentation"}]}}]
     recovery = {"id": "R-20260923T120000Z-9c8d7e6f", "kind": "resume", "authorized_by": "Owner", "then": "continue",
                 "reason": "The calibration table is at data/calibration.csv; the note tells the worker",
                 "details": {"issue": "TEAM-12", "step": "implement"}}
