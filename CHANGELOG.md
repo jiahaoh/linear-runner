@@ -15,6 +15,20 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.3.1 — 2026-10-28
+
+`gpt-6.1-sol` at high effort becomes a named implement and repair entry in the Maintenance
+Standard pools and the `*` Deep pools of `registry/pools.json`. It is never a default: a batch
+selects it with `model_overrides` (for example `{"issues": {"W-1": {"implement": "gpt-6.1-sol",
+"repair": "gpt-6.1-sol"}}}`), and an escalation from it keeps it at the Deep pool's effort.
+Jiahao asked for it on 2026-10-28 so that a documentation batch spends less Claude usage, with
+Codex implementing and Claude reviewing. No code changes.
+
+**Project impact:** none. A batch that names `gpt-6.1-sol` for implement or repair needs this
+release; on 3.3.0 its preflight fails with the model outside that phase's pool.
+
+**Canary tier:** canary batch; a model becomes available to the implement and repair phases.
+
 ## v3.3.0 — 2026-10-27
 
 An extended check whose matched changes are all inert is not run (`W-605`). The controller
