@@ -1789,13 +1789,14 @@ class Runner:
         # beyond it: {(base, path): rule or None} (W-605).
         rules = {}
         documents = self.config.get("documents_read_by_tests")
+        schemas = self.config.get("schema_documentation")
 
         def inert_files(base, paths):
             """``[(path, rule)]`` when every one of ``paths`` is inert against ``base``, else None."""
             pending = [path for path in paths if (base, path) not in rules]
             if pending:
                 rules.update(((base, path), rule)
-                             for path, rule in inert.classify(self.repo, base, pending, documents).items())
+                             for path, rule in inert.classify(self.repo, base, pending, documents, schemas).items())
             found = [(path, rules[(base, path)]) for path in paths]
             return found if found and all(rule for _, rule in found) else None
 

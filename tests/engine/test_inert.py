@@ -64,6 +64,55 @@ FILES = {"tests/test_metrics.py": TEST_MODULE, README: "# Metrics data\n\nThe te
          "docs/contracts.md": "# Contracts\n", "lib/code.py": "def value():\n    return 1\n"}
 
 
+# A JSON Schema in YAML: a property named description (a mapping, and an inline flow mapping),
+# a keyword description inline and as a block scalar, title, $comment and comments.
+SCHEMA = """# Workflow configuration schema.
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: Workflow configuration
+type: object
+properties:
+  description:
+    type: string
+    description: A property named description.
+  title: {type: integer}
+  mode:
+    type: string
+    default: fast
+    description: >-
+      How the workflow runs; see the
+      section 2.13 rule.
+    enum: [fast, slow]
+$defs:
+  block:
+    $comment: internal
+    description: Python only. Run by the section 2.13 rule.
+    type: object
+    oneOf:
+      - description: The first form.
+        required: [mode]
+      - required: [name]
+"""
+SCHEMA_DOCUMENTATION = (SCHEMA
+                        .replace("# Workflow configuration schema.", "# The workflow configuration schema.\n# Generated pages read it.")
+                        .replace("title: Workflow configuration", "title: The workflow configuration")
+                        .replace("    description: A property named description.", "    description: >-\n      A property\n      named description.")
+                        .replace("      How the workflow runs; see the\n      section 2.13 rule.", "      How the workflow runs.")
+                        .replace("$comment: internal", "$comment: kept for the workflow")
+                        .replace("description: Python only. Run by the section 2.13 rule.", "description: Python only.\n\n")
+                        .replace("- description: The first form.", "- description: 'The first form, by mode.'"))
+SCHEMA_CHANGES = {
+    "a default": SCHEMA.replace("default: fast", "default: slow"),
+    "an enum": SCHEMA.replace("enum: [fast, slow]", "enum: [fast, slow, full]"),
+    "the property named description": SCHEMA.replace("  description:\n    type: string", "  description:\n    type: integer"),
+    "the property named title": SCHEMA.replace("title: {type: integer}", "title: {type: string}"),
+    "a trailing comment": SCHEMA.replace("type: object\nproperties:", "type: object  # the root\nproperties:"),
+    "a required list in a sequence item": SCHEMA.replace("required: [mode]", "required: [mode, name]"),
+    "a key after a description": SCHEMA.replace("    enum: [fast, slow]\n$defs", "    enum: [fast, slow]\n    minLength: 1\n$defs"),
+    "a key right after a block description": SCHEMA.replace("      section 2.13 rule.\n    enum", "      section 2.13 rule.\n    minimum: 0\n    enum"),
+    "a key moved into a description's indentation": SCHEMA.replace("    type: object\n    oneOf:", "      type: object\n    oneOf:"),
+}
+
+
 class Harness(unittest.TestCase):
     """FILES committed on a baseline; a batch of DEV-1 and DEV-2, so DEV-1 is not the last issue;
     every check appends its name to a marker outside the repository when it runs."""
@@ -167,7 +216,7 @@ class ClassifyTests(Harness):
     def test_the_classification_takes_no_worker_or_reviewer_input(self):
         # The controller decides alone: the repository, the base commit, the paths and the project's patterns.
         self.assertEqual(list(inspect.signature(inert.classify).parameters),
-                         ["repo", "base", "paths", "documents_read_by_tests"])
+                         ["repo", "base", "paths", "documents_read_by_tests", "schema_documentation"])
 
 
 class SelectionTests(Harness):
@@ -225,6 +274,35 @@ class SelectionTests(Harness):
         base = self.commit({"tests/test_broken.py": "def broken(:\n"}, "a module that does not parse")
         write(self.repo / "tests/test_broken.py", '"""Fixed."""\n')
         self.assertEqual(inert.classify(self.repo, base, ["tests/test_broken.py"]), {"tests/test_broken.py": None})
+
+    def test_schema_documentation_is_inert_only_for_listed_schemas_and_only_documentation(self):
+        schema = "schemas/config.schema.yaml"
+        base = self.commit({schema: SCHEMA}, "a workflow schema")
+        def classify(text, patterns=("schemas/*.yaml",)):
+            write(self.repo / schema, text)
+            return inert.classify(self.repo, base, [schema], None, list(patterns) if patterns is not None else None)[schema]
+        # Descriptions (inline and block), titles, $comment, comment lines and blank lines: documentation only.
+        self.assertEqual(classify(SCHEMA_DOCUMENTATION), "schema-documentation")
+        # Not listed by the project, or no key: not inert.
+        self.assertIsNone(classify(SCHEMA_DOCUMENTATION, patterns=("other/*.yaml",)))
+        self.assertIsNone(classify(SCHEMA_DOCUMENTATION, patterns=None))
+        # Anything a test or a validator reads is a difference.
+        for label, text in SCHEMA_CHANGES.items():
+            with self.subTest(change=label):
+                self.assertIsNone(classify(text))
+        # A tab in the indentation, which YAML forbids, is never inert.
+        self.assertIsNone(classify(SCHEMA.replace("    type: string\n    description: A property", "\ttype: string\n    description: A property")))
+
+    def test_a_schema_documentation_change_does_not_run_an_extended_check(self):
+        schema = "schemas/config.schema.yaml"
+        self.base = self.commit({schema: SCHEMA}, "a workflow schema")
+        self.config["schema_documentation"] = ["schemas/*.yaml"]
+        self.config["checks"] = [self.quick(), self.check("slow", ["schemas/*"])]
+        write(self.repo / schema, SCHEMA_DOCUMENTATION)
+        self.assert_inert(self.validate()["slow"], [(schema, "schema-documentation")])
+        write(self.repo / schema, SCHEMA_CHANGES["a default"])
+        self.assertEqual(self.validate()["slow"]["status"], "passed")
+        self.assertEqual(self.runs(), ["quick", "slow"])
 
     def test_documentation_outside_the_projects_list_is_inert(self):
         self.config["documents_read_by_tests"] = ["docs/read-by-tests.md"]
