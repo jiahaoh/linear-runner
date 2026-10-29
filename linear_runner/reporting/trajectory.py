@@ -317,8 +317,12 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
             "validation_audit": audit, "comparison": comparison}
 
 
-def from_roots(roots, **options):
-    return build(records.find_invocations(roots), records.find_checks(roots), **options)
+def from_roots(roots, shallow=False, **options):
+    """The report of the records under ``roots``. ``shallow`` (the progress board): ``roots`` are run
+    directories, read only where the engine writes the records, and no check log is opened, so the
+    peak RSS and log hashes of the validation audit are unknown; time and tokens are the same."""
+    return build(records.find_invocations(roots, shallow), records.find_checks(roots, shallow, logs=not shallow),
+                 **options)
 
 
 # --- Reproduction check -------------------------------------------------------------------

@@ -720,7 +720,11 @@ seconds every board that is its session's own and already holds a batch of the s
 housekeeping batch and nothing else (`runner.py launches`). Such a board takes in the launches
 from the time it became the session's own, also those made while the session was closed; a
 batch of its project taken off the board comes back when it is launched again. Batches under way are read
-again every ten seconds, the others when you press Refresh. Each session keeps its own board:
+again every ten seconds, the others when you press Refresh. A batch with no good read yet is read
+again a minute after its last failed read. The board reads two batches at a time and gives a
+read two minutes: `status --board` reads a run directory only where the runner writes its
+records and opens no check log, because a run directory may hold a whole built site on a
+network mount (W-721). Each session keeps its own board:
 the pane opens by itself only in a session that has asked for it (`/runner-board` there) or
 launched a batch, and when such a session starts again. In another session `/runner-board`
 shows the board saved last, and from then on it is that session's board too.

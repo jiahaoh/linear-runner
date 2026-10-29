@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+* `status --board` reads each issue's run directory only where the engine writes its records
+  (the attempt directories' `session.json`, the run-level `checks.json` of `validation-*/` and
+  `delivery/`), not the whole tree, and opens no check log; the time and token figures are
+  the report's, as before (`trajectory.from_roots(..., shallow=True)`). A run directory also
+  holds the workers' evidence, and documentation batches keep whole built sites there: on a
+  network mount one read took 90 s to more than 3 min and the board's pane timed out after 60
+  s; it now takes 2 to 5 s (35 s for an 18-issue batch with a cold cache). The progress board
+  (mod 0.3.3) reads two batches at a time instead of all at once, gives a read two minutes, and
+  reads a batch with no good read yet again a minute after its last failure instead of on every
+  ten-second tick. `report` still walks every root and reads the logs. Project impact: none.
+  Canary tier: first-issue checkpoint (reporting and the board mod only) (`W-721`).
+
 * A launched batch joins the progress board (mod 0.3.2) by itself also when it was launched
   from another session or a terminal, when the board already holds a batch of the same
   project: a board that is its session's own asks the new command `runner.py launches --since

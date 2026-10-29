@@ -5,6 +5,12 @@ const TITLE = 'Runner board'
 const POLL_MS = 10_000
 // How often a board that is a session's own asks the runner for new launches, from any shell or session.
 const LAUNCHES_MS = 30_000
+// How many batches the board reads at once, and how long one read may take. A read lists run directories that may
+// be on a network mount, where many reads at once slowed one another past the limit (W-721).
+const READS = 2
+const READ_MS = 120_000
+// A batch with no good read yet is read again by the timer only this long after its last failed read.
+const RETRY_MS = 60_000
 // The record `runner.py status --board` prints, as this board reads it.
 const SCHEMA = 'linear-runner.board/1'
 const LAUNCHES = 'linear-runner.launches/1'
@@ -64,6 +70,8 @@ type Batch = {
   issues: string[]
   board?: Board
   problem?: string
+  // When a read that found no good read before it failed.
+  failedAt?: number
 }
 type Detail = { label: string; text?: string; items?: string[] }
 type Kind = 'done' | 'running' | 'stopped' | 'deferred' | 'queued'
@@ -146,7 +154,7 @@ async function load($: EngineInterface, id: string): Promise<Batch> {
   try {
     // The runner reads the batch's state directory and the records of its issues' runs; it writes nothing.
     const ran = await $.process.run([python, runner, 'status', '--board', '--batch', file, '--home', runnerHome], {
-      timeoutMs: 60_000,
+      timeoutMs: READ_MS,
     })
     if (ran.exitCode !== 0) return { id, issues, problem: ran.stderr.trim().split('\n').pop() || 'status failed' }
     const board = JSON.parse(ran.stdout) as Partial<Board>
@@ -187,29 +195,44 @@ function linkOf(batch: Batch): Link | undefined {
 const issueOf = (board: Board | undefined, id: string) => board?.issues.find(issue => issue.id === id)
 // The first launch, so that a batch keeps its place on the board when it is launched again.
 const startedAt = (batch: Batch) => batch.board?.batch.first_launch_at ?? '9'
-const isLive = (batch: Batch) => !batch.board || batch.board.batch.supervisor.status === 'running'
+// The batches the timer reads: those under way, and one with no good read yet once its last failure is old enough.
+const isLive = (batch: Batch, now: number) =>
+  batch.board ? batch.board.batch.supervisor.status === 'running' : now - (batch.failedAt ?? -RETRY_MS) >= RETRY_MS
+
+// `work` on each of `items`, at most READS at a time.
+async function inTurn<T>(items: T[], work: (item: T) => Promise<unknown>) {
+  const queue = [...items]
+  const reader = async () => {
+    for (let item = queue.shift(); item !== undefined; item = queue.shift()) await work(item)
+  }
+  await Promise.all(Array.from({ length: Math.min(READS, queue.length) }, reader))
+}
 
 // What of a batch the board draws: the record is all of it. A read that leaves it as it was calls for no new
 // drawing, and a new drawing of the graph is a flash on the desktop, which draws it afresh each time.
 const shown = (batch: Batch) => JSON.stringify([batch.issues, batch.problem, batch.board])
 
 // With `only`, the timer's read of the batches under way: it draws again only when one of them has changed.
-async function refresh($: EngineInterface, only?: (batch: Batch) => boolean) {
-  if (isRefreshing || (only && !batches.some(only))) return
+async function refresh($: EngineInterface, only?: (batch: Batch, now: number) => boolean) {
+  const now = await $.clock.now()
+  if (isRefreshing || (only && !batches.some(batch => only(batch, now)))) return
   isRefreshing = true
   try {
     const before = batches.map(shown).join()
     const fresh = new Map<string, Batch>()
-    await Promise.all(
-      batches.filter(batch => !only || only(batch)).map(async batch => fresh.set(batch.id, await load($, batch.id))),
+    await inTurn(
+      batches.filter(batch => !only || only(batch, now)),
+      async batch => fresh.set(batch.id, await load($, batch.id)),
     )
-    // A failed read keeps what the last good read showed.
+    const readAt = await $.clock.now()
+    // A failed read keeps what the last good read showed; with none, the timer waits before it tries again.
     batches = batches
       .map(batch => {
         const next = fresh.get(batch.id)
         if (!next) return batch
+        if (next.board) return next
 
-        return !next.board && batch.board ? { ...batch, problem: next.problem } : next
+        return batch.board ? { ...batch, problem: next.problem } : { ...next, failedAt: readAt }
       })
       .sort((a, b) => startedAt(a).localeCompare(startedAt(b)))
     if (!only) await readLineage($)
@@ -247,7 +270,7 @@ async function join($: EngineInterface) {
   try {
     const { python, runner, runnerHome } = await places($)
     const since = seenSince ?? (await keepSeen($, new Date(await $.clock.now()).toISOString()))
-    const ran = await $.process.run([python, runner, 'launches', '--since', since, '--home', runnerHome], { timeoutMs: 60_000 })
+    const ran = await $.process.run([python, runner, 'launches', '--since', since, '--home', runnerHome], { timeoutMs: READ_MS })
     if (ran.exitCode !== 0) return
     const record = JSON.parse(ran.stdout) as { schema?: string; launches?: { batch: string; at: string }[] }
     if (record.schema !== LAUNCHES || !Array.isArray(record.launches)) return

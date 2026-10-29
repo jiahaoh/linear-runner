@@ -12,7 +12,10 @@ writes nothing, takes no lock and makes no Linear call.
 
 Time and tokens are the trajectory report's own, from ``trajectory.from_roots`` on the run
 directories the state names: ``report --runs`` on the same directories gives the same figures
-with the same bounds, and an invocation without a recorded finish is left out of both.
+with the same bounds, and an invocation without a recorded finish is left out of both. The board
+reads a run directory only where the engine writes those records, one level down, and opens no
+check log: a run directory also holds the workers' evidence, and walking it on a network mount
+took minutes (W-721).
 
 Per issue: ``stage`` is ``done``, ``deferred``, ``queued`` or the step of the active issue;
 ``summary`` is the accepted result's summary for a done issue (``null`` when the state was
@@ -80,7 +83,7 @@ def record(config, report):
     first, last = launch_times(root)
     latest = dict(records.claimed_runs(report))  # the last run of each issue
     runs = [run for run in dict.fromkeys(latest.values()) if run and Path(run).is_dir()]
-    usage = {s["issue"]: s for s in trajectory.from_roots(runs, issues=config["issues"])["summaries"]}
+    usage = {s["issue"]: s for s in trajectory.from_roots(runs, shallow=True, issues=config["issues"])["summaries"]}
     issues = []
     for identifier in config["issues"]:
         done = history.get(identifier)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import re
 
@@ -59,11 +60,23 @@ def locate(path):
     return None
 
 
-def _walk(roots, name):
+def _children(root, name):
+    """``name`` in each directory directly under ``root``: where the engine writes an attempt's
+    ``session.json`` and a stage's ``checks.json`` in a run directory. A run directory also holds
+    the workers' evidence (a whole built site, say), which a full walk over a network mount takes
+    minutes to list (W-721)."""
+    with os.scandir(root) as entries:
+        return sorted(Path(entry.path) / name for entry in entries if entry.is_dir())
+
+
+def _walk(roots, name, shallow=False):
+    """Files named ``name`` under ``roots``, each once: at any depth, or with ``shallow`` only one
+    level down (``roots`` are then run directories)."""
     seen = set()
     for root in roots:
         root = Path(root)
-        candidates = [root] if root.is_file() else sorted(root.rglob(name)) if root.is_dir() else []
+        candidates = ([root] if root.is_file() else _children(root, name) if shallow and root.is_dir()
+                      else sorted(root.rglob(name)) if root.is_dir() else [])
         for path in candidates:
             if path.name == name and path.is_file() and path.resolve() not in seen:
                 seen.add(path.resolve())
@@ -143,10 +156,11 @@ def invocation_key(item):
     return (item["session_id"], item["start"], item["role"])
 
 
-def find_invocations(roots):
-    """Unique invocations under ``roots`` (sorted by start); copies are listed, not counted."""
+def find_invocations(roots, shallow=False):
+    """Unique invocations under ``roots`` (sorted by start); copies are listed, not counted.
+    ``shallow``: ``roots`` are run directories, read only where the engine writes the records."""
     unique = {}
-    for path in _walk(roots, "session.json"):
+    for path in _walk(roots, "session.json", shallow):
         item = read_invocation(path)
         if item is None:
             continue
@@ -210,10 +224,12 @@ def outcome_text(status):
             "inert": INERT_OUTCOME}.get(status, status)
 
 
-def find_checks(roots):
-    """Unique runner check records from ``validation-*/checks.json`` and ``delivery/checks.json``."""
+def find_checks(roots, shallow=False, logs=True):
+    """Unique runner check records from ``validation-*/checks.json`` and ``delivery/checks.json``.
+    ``shallow`` as for ``find_invocations``. Without ``logs`` no check log is opened: its peak RSS,
+    whether it is found and whether its hash matches are then ``None``."""
     unique = {}
-    for path in _walk(roots, "checks.json"):
+    for path in _walk(roots, "checks.json", shallow):
         located = locate(path)
         if not located or path.parent.parent != located[2]:
             continue  # only the run-level summaries, not per-check subdirectories
@@ -234,7 +250,7 @@ def find_checks(roots):
                 continue
             start, end = parse_time(record.get("started_at")), parse_time(record.get("finished_at"))
             reused = bool(record.get("reused"))
-            log = _resolve_log(record.get("log"), path, run_dir)
+            log = _resolve_log(record.get("log"), path, run_dir) if logs else None
             recorded_hash = record.get("sha256")
             rss = None
             if log is not None:
@@ -246,7 +262,7 @@ def find_checks(roots):
                 "started_at": record.get("started_at"), "finished_at": record.get("finished_at"),
                 "seconds": (end - start).total_seconds() if start and end and not reused else None,
                 "rss_kib": rss, "log": str(log) if log else record.get("log"),
-                "log_found": log is not None,
+                "log_found": log is not None if logs else None,
                 "hash_matches": (file_sha256(log) == recorded_hash) if log is not None and recorded_hash else None,
                 "source": str(path), "copies": [],
             }

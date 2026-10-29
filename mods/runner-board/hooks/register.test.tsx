@@ -117,6 +117,9 @@ function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, 
   const asks: string[][] = []
   const opened: string[] = []
   const kept: Record<string, unknown> = {}
+  // The most `status --board` calls under way at once.
+  const counts = { most: 0 }
+  let reading = 0
   boards = { demo: DEMO, 'demo-b': DEMO_B, fixture }
   answer = null
   launches = []
@@ -164,6 +167,11 @@ function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, 
     }
     runs.push([...e.argv])
     const id = String(e.argv[e.argv.indexOf('--batch') + 1]).replace(/^.*\//, '').replace(/\.json$/, '')
+    // A read takes a while, as a real one does: the reads the board started meanwhile are counted.
+    reading += 1
+    counts.most = Math.max(counts.most, reading)
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+    reading -= 1
 
     return {
       value: {
@@ -176,7 +184,7 @@ function host(on: On, stored: Record<string, unknown> = {}, env: Record<string, 
     }
   })
 
-  return Object.assign(runs, { asks, clock, opened, kept })
+  return Object.assign(runs, { asks, clock, opened, kept, counts })
 }
 
 const COMMAND = { command: 'runner-board', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -379,15 +387,15 @@ test('a runner that cannot answer is said so on the card, and the last good read
   expect((await ui.find({ key: 'batch-demo' }))?.text).toBe('demo  cannot read  0/3  ▾')
   expect(await ui.find({ type: 'Text', text: /^runner\.py: error: unrecognized arguments: --board$/ })).toBeDefined()
   await ui.unmount()
-  // A record of another shape is not drawn as if it were this one.
+  // A record of another shape is not drawn as if it were this one. With no good read yet, the timer waits a minute.
   answer = { exitCode: 0, stdout: JSON.stringify({ schema: 'linear-runner.board/2', batch: {}, issues: [] }), stderr: '' }
-  await runs.clock.advance(10_000)
+  await runs.clock.advance(60_000)
   ui = await $.ui.mount({ plugin: 'runner-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ type: 'Text', text: /cannot read \(linear-runner\.board\/2, not linear-runner\.board\/1\)/ })).toBeDefined()
   await ui.unmount()
   // Once it reads, a later failure keeps the card and adds the problem.
   answer = null
-  await runs.clock.advance(10_000)
+  await runs.clock.advance(60_000)
   answer = { exitCode: 1, stderr: 'Traceback\nOSError: state.json is being written\n' }
   await runs.clock.advance(10_000)
   ui = await $.ui.mount({ plugin: 'runner-board', surface: 'terminal', ...PANE })
@@ -406,6 +414,31 @@ test('the timer reads only batches under way, and stops once none is', async ($,
   expect(runs.length).toBe(3)
   await runs.clock.advance(60_000)
   expect(runs.length).toBe(3)
+})
+
+test('a batch with no good read is read again a minute after its last failure, not on each tick', async ($, on) => {
+  // A read that times out on a slow mount, tried again every ten seconds beside the others, piled up (W-721).
+  const runs = host(on)
+  answer = { exitCode: 1, stderr: 'runner.py: still running after 120000ms\n' }
+  await $.command.run({ ...COMMAND, args: 'add demo' })
+  expect(runs.length).toBe(1)
+  await runs.clock.advance(50_000)
+  expect(runs.length).toBe(1)
+  await runs.clock.advance(10_000)
+  expect(runs.length).toBe(2)
+  answer = null
+  await runs.clock.advance(60_000)
+  expect(runs.length).toBe(3)
+  // Read once, it is under way, and the timer reads it on each tick again.
+  await runs.clock.advance(10_000)
+  expect(runs.length).toBe(4)
+})
+
+test('the board reads at most two batches at once', async ($, on) => {
+  const runs = host(on)
+  await $.command.run({ ...COMMAND, args: 'add demo demo-b fixture' })
+  expect(runs.length).toBe(3)
+  expect(runs.counts.most).toBe(2)
 })
 
 test('batches keep the order of their first launch, whichever was launched last', async ($, on) => {

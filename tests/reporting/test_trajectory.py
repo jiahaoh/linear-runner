@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from linear_runner.reporting import records
 from linear_runner import cli
@@ -47,6 +48,25 @@ class TrajectoryTests(unittest.TestCase):
         checks = records.find_checks(ROOTS)
         unit = next(c for c in checks if c["issue"] == "TEAM-1" and c["name"] == "unit")
         self.assertEqual((len(unit["copies"]), unit["hash_matches"], unit["rss_kib"]), (1, True, 1000))
+
+    def test_a_shallow_read_of_run_directories_gives_the_same_time_and_tokens(self):
+        # The progress board reads the run directories only where the engine writes the records, and
+        # opens no check log: a full walk of a run directory on a network mount takes minutes (W-721).
+        runs = sorted(path for root in ROOTS for path in root.glob("*/*") if records.RUN_ID.match(path.name))
+        self.assertEqual(len(runs), 4)  # TEAM-1 in both roots, TEAM-2, TEAM-3
+        with patch.object(Path, "rglob", side_effect=AssertionError("a shallow read walked a directory")), \
+                patch.object(records, "_resolve_log", side_effect=AssertionError("a shallow read looked for a log")):
+            shallow = trajectory.from_roots(runs, shallow=True, groups=GROUPS)
+        full = trajectory.from_roots(runs, groups=GROUPS)
+        kept = ("attempts", "repairs", "issue_elapsed_seconds", "validation_seconds", "delivery_check_seconds",
+                "pending", "usage", "totals")
+        self.assertEqual([{key: s[key] for key in kept} for s in shallow["summaries"]],
+                         [{key: s[key] for key in kept} for s in full["summaries"]])
+        self.assertEqual(shallow["comparison"], full["comparison"])
+        unit = next(c for c in records.find_checks(runs, shallow=True, logs=False)
+                    if c["issue"] == "TEAM-1" and c["name"] == "unit")
+        self.assertEqual((len(unit["copies"]), unit["rss_kib"], unit["log_found"], unit["hash_matches"]),
+                         (1, None, None, None))
 
     def test_resumed_session_counts_once_with_deltas(self):
         rows = [a for a in self.result["attempts"] if a["session_id"] == "sess-t2-impl"]

@@ -177,6 +177,16 @@ class BoardTests(Recorded):
         self.assertEqual((summaries["DEV-2"]["attempts"], summaries["DEV-2"]["repairs"]), (1, 0))
         self.assertEqual(summaries["DEV-1"]["repairs"], record["issues"][0]["repairs"])
 
+    def test_the_run_directories_are_read_only_where_the_engine_writes(self):
+        # A run directory also holds the workers' evidence, a whole built site, say: a board that walked
+        # it over a network mount took minutes and its pane timed out (W-721). The figures still agree
+        # with the report's full walk (test_time_and_tokens_agree_with_the_report).
+        expected, _ = self.board()
+        with patch.object(Path, "rglob", side_effect=AssertionError("the board walked a run directory")), \
+                patch.object(records, "_resolve_log", side_effect=AssertionError("the board looked for a check log")):
+            record, _ = self.board()
+        self.assertEqual(record, expected)
+
     def test_nothing_is_written_and_linear_is_not_called(self):
         def files():
             return {str(p.relative_to(self.root)): (p.read_bytes(), p.stat().st_mtime_ns)
