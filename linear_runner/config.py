@@ -740,6 +740,16 @@ def load_config(batch_path, home=None):
             if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
                 raise ConfigError(f"{project_label}.documents_read_by_tests: patterns must stay inside the worktree")
         put("documents_read_by_tests", list(project["documents_read_by_tests"]), project_label)
+    if "schema_documentation" in project:
+        # YAML schemas whose documentation keywords no test reads (inert rule schema-documentation).
+        # Only a project that sets it records it, so other fingerprints are unchanged.
+        patterns = project["schema_documentation"]  # a list of strings (schema/project.schema.json)
+        for pattern in patterns:
+            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+                raise ConfigError(f"{project_label}.schema_documentation: patterns must stay inside the worktree")
+            if not pattern.endswith((".yaml", ".yml", "*")):
+                raise ConfigError(f"{project_label}.schema_documentation: patterns name .yaml or .yml files")
+        put("schema_documentation", list(patterns), project_label)
     if "check_overrides" in batch:
         # Only a batch that sets them records them, so other fingerprints are unchanged.
         put("check_overrides", check_overrides(batch["check_overrides"], config["issues"], checks,

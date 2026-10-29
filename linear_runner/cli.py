@@ -46,6 +46,7 @@ def summarize(config):
                                if c["tier"] == "extended" else {}))
                        for c in config["checks"]],
             "documents_read_by_tests": config.get("documents_read_by_tests"),
+            "schema_documentation": config.get("schema_documentation"),
             "claude_auth": offline_auth_check(config),
             "contract": config["contract"], "interface": config.get("_interface"), "layers": config["_layers"]}
 

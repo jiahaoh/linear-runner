@@ -435,6 +435,30 @@ class LayeredConfigTests(unittest.TestCase):
                 self.assertNotEqual(status, 0)
                 self.assertIn(message, err)
 
+    def test_validate_config_lists_schema_documentation_and_refuses_bad_patterns(self):
+        # 3.3.2: YAML schemas whose documentation keywords no extended check's tests read.
+        base = {"inputs": ["schemas/*"], "cwd": ".", "command": ["${python}", "-c", "pass"]}
+        checks = [dict(base, name="fast", kind="code", tier="default"), dict(base, name="slow", kind="code", tier="extended")]
+        def outcome(label, **project):
+            root = self.root / label
+            root.mkdir()
+            home, path = make_home(root, self.repo, project=dict({"checks": checks}, **project))
+            return self.validate(path, home)
+        report, status, _ = outcome("good", schema_documentation=["workflow/schemas/*.yaml"])
+        self.assertEqual((status, report["schema_documentation"]), (0, ["workflow/schemas/*.yaml"]))
+        report, status, _ = outcome("unset")
+        self.assertEqual((status, report["schema_documentation"]), (0, None))
+        cases = [({"schema_documentation": "workflow/schemas/*.yaml"}, "schema_documentation: expected array"),
+                 ({"schema_documentation": ["/abs/schema.yaml"]}, "schema_documentation: patterns must stay inside the worktree"),
+                 ({"schema_documentation": ["../schema.yaml"]}, "schema_documentation: patterns must stay inside the worktree"),
+                 ({"schema_documentation": ["workflow/schemas/config.json"]}, "schema_documentation: patterns name .yaml or .yml files")]
+        for index, (project, message) in enumerate(cases):
+            with self.subTest(project=project):
+                report, status, err = outcome(f"bad-{index}", **project)
+                self.assertIsNone(report)
+                self.assertNotEqual(status, 0)
+                self.assertIn(message, err)
+
     def test_a_project_that_sets_neither_inert_key_keeps_its_fingerprint(self):
         # W-605: neither key enters the configuration unless the project sets it, so the
         # fingerprints of projects that set neither do not move.

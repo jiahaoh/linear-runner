@@ -30,6 +30,41 @@ its tier. The release procedure is in the README ("Releases").
   board saved last. Project impact: none. Canary tier: none needed (the board mod only)
   (`W-554`).
 
+## v3.3.2 — 2026-10-28
+
+A documentation-only change to a YAML schema no longer runs the extended checks (`W-659`). A
+project lists such schemas in the new key `schema_documentation` (fnmatch patterns, like
+`documents_read_by_tests`); a changed `.yaml` or `.yml` file that matches one is inert, rule
+`schema-documentation`, when both sides give the same lines once blank lines, full-line comments
+and the scalar values of the keywords `description`, `title` and `$comment` are removed
+(`linear_runner/engine/inert.py`, `without_schema_documentation`). A keyword under a property map
+(`properties`, `$defs` and the like) names a property and is compared; a trailing comment, a key,
+a type, a default or an enum is a difference; a tab in the indentation is never inert. The runner
+still needs no YAML library: the comparison works on lines, and anything it cannot read stays a
+difference. Jiahao asked for it on 2026-10-28: in hk-l-guides-20261028 a description edit in
+`workflow/schemas/config.schema.yaml` started 50 to 75 minutes of slow, learned and extended
+tests, and section 2.13 will change the workflow schema often.
+
+**Project impact:** none. A project that wants the rule sets `schema_documentation`; the key
+enters the configuration fingerprint only when set, and a paused batch adopts it with `recover
+repin-config`. Tests that read description text belong in a default check, which always runs.
+
+**Canary tier:** canary batch; the engine's check selection changes.
+
+## v3.3.1 — 2026-10-28
+
+`gpt-6.1-sol` at high effort becomes a named implement and repair entry in the Maintenance
+Standard pools and the `*` Deep pools of `registry/pools.json`. It is never a default: a batch
+selects it with `model_overrides` (for example `{"issues": {"W-1": {"implement": "gpt-6.1-sol",
+"repair": "gpt-6.1-sol"}}}`), and an escalation from it keeps it at the Deep pool's effort.
+Jiahao asked for it on 2026-10-28 so that a documentation batch spends less Claude usage, with
+Codex implementing and Claude reviewing. No code changes.
+
+**Project impact:** none. A batch that names `gpt-6.1-sol` for implement or repair needs this
+release; on 3.3.0 its preflight fails with the model outside that phase's pool.
+
+**Canary tier:** canary batch; a model becomes available to the implement and repair phases.
+
 ## v3.3.0 — 2026-10-27
 
 An extended check whose matched changes are all inert is not run (`W-605`). The controller

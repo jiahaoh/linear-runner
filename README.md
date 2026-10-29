@@ -112,7 +112,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `inert_changes`, `base_parity`, `environment`, `unset_environment`), optional `documents_read_by_tests` (see "Lifecycle" step 4), `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `inert_changes`, `base_parity`, `environment`, `unset_environment`), optional `documents_read_by_tests` and `schema_documentation` (see "Lifecycle" step 4), `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `check_overrides` (extended checks to run at a named issue, see "Lifecycle" step 4), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -905,10 +905,16 @@ elsewhere stops the batch for reconciliation.
    `.rst` file is inert (rule `documentation`) when the project sets `documents_read_by_tests`,
    `fnmatch` patterns inside the worktree like `inputs`, and the path matches none of them;
    without the key no document is inert, and an empty list states that no test or tested code
-   reads one. A file added, deleted or renamed since the base, whose Git mode changed (the
+   reads one. A `.yaml` or `.yml` file is inert (rule `schema-documentation`) when it matches the
+   project's `schema_documentation` patterns and both sides give the same lines once blank lines,
+   full-line comments and the scalar values of the JSON Schema keywords `description`, `title` and
+   `$comment` are removed; a key of such a name under a property map (`properties`, `$defs` and the
+   like) names a property and is compared, and a trailing comment, a changed key, type, default or
+   enum is a difference. List only a schema whose documentation no test of an extended check reads:
+   a test that reads description text belongs in a default check. A file added, deleted or renamed since the base, whose Git mode changed (the
    executable bit, a symlink), that is not a regular file on either side, that fails to parse
-   or decode on either side, or with any other suffix (YAML, TOML, JSON, notebooks, `.pyi`) is
-   never inert. At an issue that is neither the last nor named for the check, the base is the
+   or decode on either side, or with any other suffix (YAML outside `schema_documentation`, TOML, JSON, notebooks, `.pyi`)
+   is never inert. At an issue that is neither the last nor named for the check, the base is the
    issue's starting commit, and a check whose matched files are all inert is recorded in
    `checks.json` as `status: "skipped"` with `inert` (`base`, `scope: "issue"` and `files`, each
    with its `path` and `rule`) and the note "every changed file its inputs match is inert
