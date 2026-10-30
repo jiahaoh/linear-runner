@@ -32,6 +32,7 @@ the checkout root, which is also `${runner_root}`.
 | --- | --- |
 | `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `watch`, `wait`, `stop`, `watchdog`, `insert-issues`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
+| `docs/parallel-checks.md` | Design note for running a validation's checks at the same time (W-617): proposed, not implemented |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
 | `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |
 | `linear_runner/version.py` | The current release (`RELEASE`), `--version` and the batch `runner_version` check |
