@@ -146,7 +146,8 @@ and both paths use them.
 **Files and records.** Each check keeps its directory, `check-0.log` and `checks.json`, with
 `/usr/bin/time -v` inside its command. `checks.json` for the validation stays in configuration order.
 A record gains `cpu` when `check_cpus` is set. A check's timeout runs from its own start, so
-waiting for a CPU does not count against it.
+waiting for a CPU does not count against it. It is resolved to a poll: a check that exits within a second
+after its limit passes.
 
 **Stop and recovery.** Check children live in `self.check_children`; `self.child` remains the model
 session's. A timeout stops only its own process group, without holding up the others: today's `validate`

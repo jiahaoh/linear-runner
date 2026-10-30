@@ -794,7 +794,7 @@ def load_config(batch_path, home=None):
             raise ConfigError(f"{where}.inert_changes: a check of kind {spec['kind']!r} is never skipped for inert "
                               "changes (it may read documentation and docstrings); only a check of kind 'code' is")
         shared = sorted(set(project.get("check_directories", ())) & {*spec.get("environment", {}), *spec.get("unset_environment", [])})
-        if shared:
+        if shared and not spec.get("base_parity"):  # a base-parity check keeps the configured value
             raise ConfigError(f"{where} ({spec['name']}): {', '.join(shared)} is in check_directories, so the engine "
                               "gives each check its own; a check cannot set or unset it")
         both = sorted(set(spec.get("environment", {})) & set(spec.get("unset_environment", [])))

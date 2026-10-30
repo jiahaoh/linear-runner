@@ -15,6 +15,7 @@ from unittest.mock import patch
 from linear_runner.config import RESOLVED_NAME, live_child, load_config, pin_resolution
 from linear_runner.engine.intake import build as build_packet
 from linear_runner.engine.runner import CHECK_RUN_KEYS, Runner, fingerprint, git, stop_process_groups, write_json
+from linear_runner.engine import runner as runner_module
 from linear_runner.supervision import launcher, recovery
 from linear_runner.supervision.recovery import RecoveryError
 from linear_runner.supervision.supervisor import Supervisor, SupervisorRefused
@@ -329,6 +330,33 @@ class StopTests(Harness):
         self.assertEqual(len(seen[0]), 1)  # the handler found the child
         self.assertTrue(dead_or_zombie(seen[0][0]))
         self.assertEqual(signal.getsignal(signal.SIGTERM), interrupted)
+
+    def test_a_stop_reaches_a_group_whose_leader_has_already_exited(self):
+        script = self.root / "family.py"
+        script.write_text(FAMILY)
+        self.pids = self.root / "pids.txt"
+        wrapper = (f"import subprocess, sys\nsubprocess.Popen([sys.executable, {str(script)!r}, {str(self.pids)!r}])\n")
+        process = subprocess.Popen([sys.executable, "-c", wrapper], start_new_session=True)
+        self.addCleanup(process.wait)
+        process.wait()
+        pids = self.wait_for_pids(2)
+        stop_process_groups([process], grace_seconds=1)
+        for pid in pids:
+            self.assertTrue(dead_or_zombie(pid), pid)
+
+    def test_a_group_that_never_empties_still_frees_its_cpu(self):
+        # A zombie the adopter does not reap keeps the group visible; the pool does not wait for ever.
+        checks = [self.check("quick", tier="default"), self.check("stuck", 30, timeout_seconds=1), self.check("next")]
+        runner = self.runner(checks, cpus="1")
+        real = runner_module.signal_group
+
+        def visible(pid, number):
+            return True if number == 0 else real(pid, number)
+        with patch.object(runner_module, "signal_group", visible), patch.object(runner_module, "STOP_GRACE_SECONDS", 1), \
+                patch.object(runner_module, "STOP_SETTLE_SECONDS", 1):
+            records, _ = self.validate(runner, expect=False)
+        self.assertEqual(records["stuck"]["exit_code"], 124)
+        self.assertEqual(records["next"]["status"], "passed")
 
     def test_an_error_in_the_pool_stops_the_others(self):
         runner = self.runner([self.family()], cpus="1,2")

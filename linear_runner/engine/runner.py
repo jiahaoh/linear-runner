@@ -140,6 +140,7 @@ LAUNCH_VARIABLES = frozenset({"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_P
 # How often the checks that run at the same time are polled, and how long a stopped group has to exit (W-746).
 CHECK_POLL_SECONDS = 1
 STOP_GRACE_SECONDS = 10
+STOP_SETTLE_SECONDS = 5
 CHECK_RUN_KEYS = ("cwd", "command", "allow_empty", "timeout_seconds", "environment", "unset_environment")
 
 
@@ -163,11 +164,11 @@ def signal_group(pid, number):
 
 
 def stop_process_groups(processes, grace_seconds=STOP_GRACE_SECONDS):
-    """End the process group of each of ``processes`` that is still running: SIGTERM to all, one
-    deadline for the whole group to exit (a wrapper such as ``time`` may die first and leave the real
-    check to finish), then SIGKILL to what remains. A group seen empty is not signalled again, so a
-    later process that reuses its PID is safe."""
-    running = [process for process in processes if process.poll() is None]
+    """End the process group of each of ``processes``: SIGTERM to all, one deadline for the whole group
+    to exit (a wrapper such as ``time`` may die first and leave the real check to finish), then SIGKILL
+    to what remains. A group seen empty is not signalled again, so a later process that reuses its PID
+    is safe, and no wait is unbounded: a zombie the adopter has not reaped still counts as a member."""
+    running = [process for process in processes if process.poll() is None or signal_group(process.pid, 0)]
     for process in running:
         signal_group(process.pid, signal.SIGTERM)
     deadline = time.monotonic() + grace_seconds
@@ -180,9 +181,8 @@ def stop_process_groups(processes, grace_seconds=STOP_GRACE_SECONDS):
     for process in running:
         signal_group(process.pid, signal.SIGKILL)
     for process in processes:
-        with contextlib.suppress(ChildProcessError):
-            if process.returncode is None and process.poll() is None:
-                process.wait()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=STOP_SETTLE_SECONDS)
 
 
 @contextlib.contextmanager
@@ -790,7 +790,9 @@ class Runner:
 
     def stop_child(self):
         """End the model session or check of ``self.child`` and every check running at the same time."""
-        stop_process_groups([*([self.child] if self.child is not None else []), *self.check_children.values()])
+        # A finished model session or sequential check keeps what it left running, as it always has.
+        child = [self.child] if self.child is not None and self.child.poll() is None else []
+        stop_process_groups([*child, *self.check_children.values()])
 
     # --- Model sessions and check subprocesses ---------------------------------------
 
@@ -1025,7 +1027,8 @@ class Runner:
                     if "stop_by" in item:
                         if moment >= item["stop_by"]:
                             signal_group(pid, signal.SIGKILL)
-                        if returncode is None or signal_group(pid, 0):
+                        settled = moment >= item["stop_by"] + STOP_SETTLE_SECONDS  # a zombie may linger in the group
+                        if returncode is None or (signal_group(pid, 0) and not settled):
                             continue  # still stopping: its CPU is not free yet
                         returncode = 124
                     if returncode is None:

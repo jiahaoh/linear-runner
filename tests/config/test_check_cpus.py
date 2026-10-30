@@ -86,6 +86,8 @@ class CheckCpuConfigTests(unittest.TestCase):
         project = {"check_directories": ["TMPDIR"], "check_environment": {"TMPDIR": "/absolute/tmp"}}
         self.refused("is in check_directories", checks=[check(environment={"TMPDIR": "/other"})], **project)
         self.refused("is in check_directories", checks=[check(unset_environment=["TMPDIR"])], **project)
+        # A base-parity check keeps the configured value, so it may set its own.
+        self.load(checks=[check(environment={"TMPDIR": "/other"}, base_parity={"outputs": ["out.txt"]})], **project)
 
     def test_the_whole_list_is_for_a_default_check(self):
         self.load(checks=[check(command=("${python}", "${all_check_cpus}"))])
