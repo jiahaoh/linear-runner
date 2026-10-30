@@ -5,7 +5,8 @@
     "uv": "uv"
   },
   "variables": {
-    "scratch": "/absolute/path/to/local/scratch"
+    "scratch": "/absolute/path/to/local/scratch",
+    "check_cpus": "1"
   },
   "state_root": "/absolute/path/to/external-runs/controller",
   "artifact_root": "/absolute/path/to/external-runs/issues",

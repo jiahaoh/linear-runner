@@ -15,6 +15,32 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.4.0 — 2026-10-30
+
+With the new site variable `check_cpus` (for example `"2,4,5,6"`), the extended checks a validation
+selects run at the same time, one per CPU, longest first (`W-746`; design in `docs/parallel-checks.md`,
+`W-617`). Default, base-parity, launch-baseline and delivery checks still run one at a time, a failure
+stops nothing, and a check's time limit runs from its own start and stops only that check. The main thread
+polls the children, so records, the cache and the state need no lock. Check commands use `${check_cpu}`
+and, in a default check, `${all_check_cpus}`; the evidence key does not depend on the CPU, and the worker's
+packet shows `launcher.cpu_list` in their place. A new optional project key `check_directories` gives each
+check its own directory per validation for the variables it names, and removes it after a pass. `stop_child`
+ends every process group, including children that ignore SIGTERM or outlive their leader. The state gains
+`child_pids` beside `child_pid`; recoveries, launches and the supervisor refuse while either names a live
+process. Reports keep `check_seconds` and `validation_seconds` as sums, and a total's time and the run
+summary's "Checks" row use the new `check_wall_seconds`, the union of the checks' intervals. Replaying 101
+recorded validations gave 40.2 h in sequence and 21.9 h on four cores; four checks run by hand at the same
+time took 24.3 min against 52.5 min, each 2 to 7% slower.
+
+**Project impact:** none until a site sets `check_cpus`, which enters the configuration fingerprint, so a
+paused batch adopts it with `recover repin-config`. A project switches `${cpu_list}` in its check commands to
+`${check_cpu}`; a project file so switched requires this release, because an older runner refuses it with
+"undefined variable", so switch only when no batch on an older release is running or paused. Worker
+guidance that names a CPU stays as it is, and should avoid the check list and those CPUs' hyper-thread
+siblings. A batch that pins `runner_version` must pin this release to use the variables.
+
+**Canary tier:** canary batch; the engine's check execution changes.
+
 * `status --board` reads each issue's run directory only where the engine writes its records
   (the attempt directories' `session.json`, the run-level `checks.json` of `validation-*/` and
   `delivery/`), not the whole tree, and opens no check log; the time and token figures are

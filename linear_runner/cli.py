@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 
-from linear_runner.config import (PHASES, ConfigError, lineage_warnings, load_config, pid_alive, pin_resolution,
+from linear_runner.config import (PHASES, ConfigError, check_cpu_problem, lineage_warnings, load_config, pid_alive, pin_resolution,
                                   pinned_config, read_json, state_root, variable_overrides, write_json, write_resolved)
 from linear_runner.engine.runner import LockBusy, Runner, now, project_lock
 from linear_runner.linear.client import LinearClient
@@ -32,6 +32,7 @@ def summarize(config):
             "runner_version": {"pinned": pinned, "problem": pin_problem(config, RUNNER_ROOT)} if pinned else None,
             "supervision": config["supervision"], "attention": config["attention"],
             "launcher": {k: config["launcher"][k] for k in ("backend", "cpu_list", "stop_on_exit")},
+            "check_cpus": config.get("check_cpus"), "check_directories": config.get("check_directories"),
             "delivery_integrity": bool(config["delivery_integrity"]),
             "context_controls": config["context_controls"], "phase_overrides": config.get("phase_overrides", {}),
             "check_overrides": config.get("check_overrides", {}),
@@ -450,6 +451,9 @@ def main(argv=None):
         parser.error(str(error))
     if args.command == "validate-config":
         try:
+            problem = check_cpu_problem(config["check_cpus"]) if config.get("check_cpus") else None
+            if problem:
+                raise RuntimeError(problem)
             report = summarize(config)
         except RuntimeError as error:
             parser.error(str(error))

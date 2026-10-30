@@ -32,7 +32,7 @@ the checkout root, which is also `${runner_root}`.
 | --- | --- |
 | `runner.py` | Entry point for every command (`validate-config`, `dry-run`, `run`, `launch`, `supervise`, `recover`, `status`, `watch`, `wait`, `stop`, `watchdog`, `insert-issues`, `sync-linear-template`, and the offline `report` and `measure`; `--version`); launch units and comment commands run it by path |
 | `render_samples.py` | Entry point that writes (or `--check`s) `docs/template-samples.md` |
-| `docs/parallel-checks.md` | Design note for running a validation's checks at the same time (W-617): proposed, not implemented |
+| `docs/parallel-checks.md` | Design note for running a validation's checks at the same time (`W-617`, implemented in 3.4.0) |
 | `CHANGELOG.md` | One entry per release, each with its project impact and canary tier (see "Releases") |
 | `interface-migrations.json` | Machine-readable migrations of the runner-project interface (see "Interface version") |
 | `linear_runner/version.py` | The current release (`RELEASE`), `--version` and the batch `runner_version` check |
@@ -113,7 +113,7 @@ model does not allow) are errors.
 | --- | --- |
 | Site | `executables` (must include `codex`, and `claude` when a pool uses the Claude backend), `variables`, `state_root`, `artifact_root`, `model_catalog`, optional `claude` (`auth`: exactly one of `oauth_token_file` or `oauth_token_env`; see "Claude authentication"), optional `launcher`, optional `attention` |
 | Workspace | `slug` (matches the file name), `auth` (exactly one of `token_env` or `credentials_file`, optional `timeout_seconds`; with `credentials_file`, optional `refresh_command`, `auto_refresh` (`false`), `min_lifetime_minutes` (0: off) and `warn_lifetime_minutes` (720), see "Running a batch"), `assignee` (`"me"` or an exact name/email; default `"me"`), optional `states` renames, optional `attention` |
-| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `inert_changes`, `base_parity`, `environment`, `unset_environment`), optional `documents_read_by_tests` and `schema_documentation` (see "Lifecycle" step 4), `delivery_checks`, `delivery_integrity` |
+| Project | optional `interface_version`, `workspace`, `linear_project` (exact Linear project name), `repo`, `artifact_owner`, `retention`, optional `backup_status`, `guidance_files`, optional `context_files`, optional `criterion_lint` (see "Writing issues"), `contract_file`, optional `intake_mode` (only `compact`), `identity_files`, `check_environment`, optional `check_directories` (see "Lifecycle" step 4), `checks` (each: `name`, `kind`, `tier`, `inputs`, `cwd`, `command`, optional `allow_empty`, `timeout_seconds`, `last_issue`, `inert_changes`, `base_parity`, `environment`, `unset_environment`), optional `documents_read_by_tests` and `schema_documentation` (see "Lifecycle" step 4), `delivery_checks`, `delivery_integrity` |
 | Batch | optional `interface_version`, `id`, `project`, `issues` (ordered allowlist), `terminal_issue`, `branch`, optional `worktree` (defaults to the project `repo`), `guidance_files` (appended after the project's), `required_done`, `human_gates`, `supervision`, `context_controls`, `model_overrides`, `phase_overrides` (per-issue phase timeouts, see "Lifecycle"), `check_overrides` (extended checks to run at a named issue, see "Lifecycle" step 4), `variables` (values for site `variables` in this batch only, see below), `runner_version` (see "Releases"), `purpose`, `follows`, `reason`, `from_issues` (the batch's record for people, see below) |
 
 Supervisor, launcher and delivery-integrity fields:
@@ -860,7 +860,32 @@ elsewhere stops the batch for reconciliation.
    it the registry's `check_timeout_seconds` (1800) applies. A check that exceeds its limit
    is stopped and fails with exit code 124. `validate-config` lists each check's tier, time
    limit and last-issue rule under `checks`, with each extended check's `inert_changes` (below),
-   and the project's `documents_read_by_tests` (`null` when unset). Reuse is keyed on the check definition,
+   and the project's `documents_read_by_tests` (`null` when unset).
+
+   **Checks at the same time** (`W-746`, design in [`docs/parallel-checks.md`](docs/parallel-checks.md)).
+   With the site variable `check_cpus` (for example `"2,4,5,6"`, one CPU per physical core; a batch
+   overrides it in its `variables`), the extended checks a validation selects run at the same time,
+   one per CPU, longest first by the check cache and first of all a check with no record. Default,
+   base-parity, launch-baseline and delivery checks still run one at a time. A failure stops nothing,
+   and a check's time limit runs from its own start and stops only that check. Records stay in
+   configuration order and gain `cpu`. Check commands name their CPU with `${check_cpu}` (this run's)
+   and `${all_check_cpus}` (the whole list, for a default check that uses every core itself, such as
+   `pytest -n 4`, and refused in an extended check). The two are accepted only in the `command` of
+   `checks` and `delivery_checks`, not as its executable; the evidence key does not depend on the CPU,
+   and the worker's packet shows the batch's `launcher.cpu_list` in their place. Without `check_cpus`
+   both mean `launcher.cpu_list`, and every check runs in sequence. Loading refuses a bad list, an
+   overlap with `launcher.cpu_list` and a CPU variable with neither set; `validate-config` and the
+   launch preflight also refuse a CPU that is not online and two CPUs of one physical core. `check_cpus`
+   is in the configuration fingerprint: a paused batch changes it with `recover repin-config`. The
+   engine does not look at other batches: give two batches at once lists that do not overlap.
+
+   `check_directories` (project, optional) names variables of `check_environment` that hold absolute
+   paths. For a check that `run_checks` runs, other than base parity, the engine sets each to
+   `<value>/<validation directory name>/<check's configuration index>`, creates it, and removes it when
+   the check passes or is empty; a failed check's stays for inspection. Model sessions, the launch
+   baseline and delivery checks get the value unchanged.
+
+   Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured
    environment, the executable and `identity_files`. At the batch's last issue the key of an
    extended check also covers the whole worktree: the content of every tracked and untracked,

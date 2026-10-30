@@ -47,6 +47,8 @@ SEMANTICS = [
     "Invocations without a recorded finish (or starting after the cutoff) are pending and excluded from totals.",
     "Validation seconds sum executed runner validation checks; delivery checks are reported separately and both "
     "count in the batch check seconds. Reused records add nothing. Worker-authored check records are not read.",
+    "Checks may run at the same time, so a sum of check seconds can exceed the elapsed time. A total's time uses "
+    "the time when any check ran, the union of their intervals.",
     "Issue elapsed is first invocation start to last invocation end; active wall sums invocation wall time.",
 ]
 
@@ -117,16 +119,34 @@ def check_figure(checks):
     return add(figure(c.get("seconds")) for c in executed)
 
 
+def check_wall_figure(checks):
+    """Seconds during which at least one executed runner check ran: the union of their intervals, since
+    checks may run at the same time (W-746). A record without times adds its own seconds, if known."""
+    executed = [c for c in checks if not c.get("reused")]
+    timed = [(parse_time(c.get("started_at")), parse_time(c.get("finished_at"))) for c in executed]
+    intervals = sorted((start, end) for start, end in timed if start and end)
+    union, reach = 0.0, None
+    for start, end in intervals:
+        if reach is None or start > reach:
+            union, reach = union + (end - start).total_seconds(), end
+        elif end > reach:
+            union, reach = union + (end - reach).total_seconds(), end
+    others = [figure(c.get("seconds")) for c, (start, end) in zip(executed, timed) if not (start and end)]
+    return add([*([figure(union)] if intervals else []), *others])
+
+
 def totals(attempts, checks):
     """Totals over finished ``attempts`` (``build`` rows) and runner ``checks`` (audit or
-    ``find_checks`` records): every FIGURE_KEYS figure, ``check_seconds`` and ``seconds``
-    (model plus check time; waiting between them is not counted)."""
+    ``find_checks`` records): every FIGURE_KEYS figure, ``check_seconds`` (the sum over the checks),
+    ``check_wall_seconds`` (the time when any of them ran) and ``seconds`` (model plus check wall
+    time; waiting between them is not counted)."""
     rows = [attempt_figures(a) for a in attempts]
     result = {key: add(r[key] for r in rows) for key in FIGURE_KEYS}
     result["check_seconds"] = check_figure(checks)
+    result["check_wall_seconds"] = check_wall_figure(checks)
     time = [result["model_seconds"]] if attempts else []
     if any(not c.get("reused") for c in checks):
-        time.append(result["check_seconds"])
+        time.append(result["check_wall_seconds"])
     result["seconds"] = add(time)
     return result
 
@@ -183,6 +203,7 @@ def run_summary(result, issue):
     summary = next((s for s in result["summaries"] if s["issue"] == issue), None)
     return {"issue": issue, "attempts": len(attempts), "rows": rows,
             "checks": sum(not c.get("reused") for c in checks), "check_seconds": check_figure(checks),
+            "check_wall_seconds": check_wall_figure(checks),
             "total": summary["totals"] if summary else totals([], []),
             "pending": sum(p["issue"] == issue for p in result["pending"])}
 
@@ -289,7 +310,7 @@ def build(invocations, checks, *, issues=None, until=None, groups=None, captured
     audit = []
     for check in kept_checks:
         audit.append({k: check[k] for k in ("issue", "run_id", "stage", "name", "exit_code", "status", "reused", "started_at",
-                                             "seconds", "rss_kib", "log", "log_found", "hash_matches")})
+                                             "finished_at", "seconds", "rss_kib", "log", "log_found", "hash_matches")})
 
     comparison = []
     for label, members in (groups or {"all": wanted}).items():

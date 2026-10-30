@@ -24,7 +24,7 @@ import re
 import subprocess
 import tempfile
 
-from linear_runner.config import pid_alive, write_json
+from linear_runner.config import live_child, pid_alive, write_json
 from linear_runner.engine import intake as intake_module
 from linear_runner.engine.runner import (CONTRACT_RELATIONS, contract_fields, git, fingerprint,
                                          issue_contract, now, publication_form, published_issue, review_criteria,
@@ -119,8 +119,8 @@ def _preflight(runner, reason, authorized_by, *, check_config=True):
         raise RecoveryError(f"Recovery {runner.state['pending_recovery']['id']} is already pending; launch it first")
     if check_config:
         runner.verify_config()
-    pid = runner.state.get("child_pid")
-    if pid_alive(pid):
+    pid = live_child(runner.state, pid_alive)
+    if pid:
         raise RecoveryError(f"Previous worker PID {pid} may still be alive; inspect before recovery")
     if not runner.state_path.exists():
         raise RecoveryError("This batch has no saved state to recover")
@@ -623,8 +623,8 @@ def recover_repin_config(config, linear, *, reason, authorized_by, append_issues
     if status.get("status") == "running" and pid_alive(status.get("pid")):
         raise RecoveryError(f"Supervisor {status.get('launch_id')} (PID {status['pid']}) is still running; "
                             "the configuration can be re-pinned only while the batch is paused or stopped")
-    pid = state.get("child_pid")
-    if pid_alive(pid):
+    pid = live_child(state, pid_alive)
+    if pid:
         raise RecoveryError(f"Previous worker PID {pid} may still be alive; inspect before recovery")
     if state.get("phase") != "paused" and not (root / "STOP").exists():
         raise RecoveryError(f"The batch is {state.get('phase')!r} without a STOP marker; the configuration can be "
@@ -779,7 +779,7 @@ def park(runner, active, identifier, *, allow_restore, keep_commit):
     else:
         runner.manifest(active)
     runner.state.setdefault("parked", {})[active["issue_id"]] = {"active": active, "park": record}
-    runner.save(active=None, last_commit=head, child_pid=None)
+    runner.save(active=None, last_commit=head, child_pid=None, child_pids=[])
     return record
 
 

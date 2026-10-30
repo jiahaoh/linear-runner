@@ -28,7 +28,7 @@ import uuid
 from linear_runner import backends
 from linear_runner.linear import attention
 from linear_runner.config import (ATTENTION_DEFAULTS, MODEL_LABEL, PHASES, ConfigError, config_fingerprint, entry_name,
-                                  match_entry, pid_alive, pool_for, read_json, write_json)
+                                  live_child, match_entry, pid_alive, pool_for, read_json, write_json)
 from linear_runner.engine.delivery import (EMPTY_NOTE, FAIL_FAST_NOTE, INERT_NOTE, SKIPPED_NOTE, check_deferred,
                                            check_inert, check_not_applicable, check_outcome, check_passed,
                                            check_skipped, evidence_intact)
@@ -136,6 +136,8 @@ LAUNCH_VARIABLES = frozenset({"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_P
 
 # The keys of a check definition that ``validate`` runs; every caller passes these (W-524 added
 # a check's own environment, which the launch baseline and the base-parity run must pass too).
+# How often the checks that run at the same time are polled (W-746).
+CHECK_POLL_SECONDS = 1
 CHECK_RUN_KEYS = ("cwd", "command", "allow_empty", "timeout_seconds", "environment", "unset_environment")
 
 
@@ -147,6 +149,27 @@ def check_process_environment(config, environment, check):
     overrides = {k: v for k, v in dict(environment, **check.get("environment", {})).items() if k not in unset}
     process = {k: v for k, v in dict(inherited_environment(config), **overrides).items() if k not in unset}
     return process, overrides, unset
+
+
+def stop_process_groups(processes, grace_seconds=10):
+    """End the process group of each of ``processes`` that is still running: SIGTERM to all, one
+    deadline to exit, then SIGKILL to what remains of each group."""
+    running = [process for process in processes if process.poll() is None]
+
+    def signal_group(process, number):
+        try:
+            os.killpg(process.pid, number)
+        except (ProcessLookupError, PermissionError):
+            pass  # the group has already gone
+    for process in running:
+        signal_group(process, signal.SIGTERM)
+    deadline = time.monotonic() + grace_seconds
+    for process in running:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=max(deadline - time.monotonic(), 0))
+    for process in running:
+        signal_group(process, signal.SIGKILL)  # a child that ignored SIGTERM, or outlived its leader
+        process.wait()
 
 
 def evidence_environment(config):
@@ -696,6 +719,7 @@ class Runner:
             raise RuntimeError("This state directory belongs to a different project/configuration")
         self.state["identity"] = identity
         self.child = None
+        self.check_children = {}  # {pid: process} of the checks running at the same time (W-746)
         self.linear = linear or LinearClient(config["linear"])
         self.model_backends = {}  # the agent CLIs that run model sessions, by backend name
         # A recovery may restrict which model phases this process can start (None: all).
@@ -735,13 +759,8 @@ class Runner:
         self.state["config_sha256"] = digest
 
     def stop_child(self):
-        if self.child is not None and self.child.poll() is None:
-            os.killpg(self.child.pid, signal.SIGTERM)
-            try:
-                self.child.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.child.pid, signal.SIGKILL)
-                self.child.wait()
+        """End the model session or check of ``self.child`` and every check running at the same time."""
+        stop_process_groups([*([self.child] if self.child is not None else []), *self.check_children.values()])
 
     # --- Model sessions and check subprocesses ---------------------------------------
 
@@ -875,41 +894,138 @@ class Runner:
         """
         records = []
         for index, check in enumerate(checks):
-            command = [s.replace("{run_dir}", str(directory)) for s in check["command"]]
-            cwd = Path(root or self.repo) / check["cwd"]
-            log = directory / f"check-{index}.log"
-            timeout = check.get("timeout_seconds") or self.policy["phases"]["check_timeout_seconds"]
-            self.log(f"Validation: {' '.join(command)}")
-            started = now()
-            with log.open("wb") as output:
-                process_environment, overrides, unset = check_process_environment(self.config, environment, check)
-                self.child = subprocess.Popen(command, cwd=cwd, env=process_environment,
-                                              stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
-                self.save(child_pid=self.child.pid)
-                try:
-                    returncode = self.child.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    self.stop_child()
-                    returncode = 124
-                    self.log(f"Validation: stopped after {timeout} seconds (the check's time limit)")
-                finally:
-                    self.stop_child()
-                    self.child = None
-                    self.save(child_pid=None)
-            allow_empty = bool(check.get("allow_empty"))
-            record = {"command": command, "cwd": str(cwd), "environment_overrides": overrides, "started_at": started,
-                      "finished_at": now(), "exit_code": returncode, "status": check_outcome(returncode, allow_empty),
-                      "allow_empty": allow_empty, "timeout_seconds": timeout, "log": str(log),
-                      "sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
-            if unset:
-                record["unset_environment"] = unset
-            if record["status"] == "empty":
-                record["note"] = EMPTY_NOTE
-            elif returncode == 124:
-                record["note"] = f"stopped after {timeout} seconds (the check's time limit)"
-            records.append(record)
+            running = self.start_check(directory, index, check, environment, root=root)
+            self.child = running["process"]
+            self.save(child_pid=self.child.pid)
+            try:
+                returncode = self.child.wait(timeout=running["timeout"])
+            except subprocess.TimeoutExpired:
+                self.stop_child()
+                returncode = 124
+                self.log(f"Validation: stopped after {running['timeout']} seconds (the check's time limit)")
+            finally:
+                running["output"].close()
+                self.stop_child()
+                self.child = None
+                self.save(child_pid=None)
+            records.append(self.finish_check(running, returncode))
         write_json(directory / "checks.json", records)
         return all(check_passed(c) for c in records)
+
+    def check_cpu_for(self, cpu=None):
+        """``(this run's CPU, the whole list)``: ``cpu`` or the first of ``check_cpus``, and that list;
+        without ``check_cpus``, the supervisor's ``cpu_list`` for both (W-746)."""
+        cpus = self.config.get("check_cpus")
+        if cpus:
+            return cpu or cpus[0], ",".join(cpus)
+        own = (self.config.get("launcher") or {}).get("cpu_list") or ""
+        return own, own
+
+    def start_check(self, directory, index, check, environment, *, root=None, cpu=None):
+        """Start one check with its log open; finish_check turns the result into its record."""
+        this_cpu, all_cpus = self.check_cpu_for(cpu)
+        command = [s.replace("{run_dir}", str(directory)).replace("{check_cpu}", this_cpu)
+                   .replace("{all_check_cpus}", all_cpus) for s in check["command"]]
+        cwd = Path(root or self.repo) / check["cwd"]
+        log = directory / f"check-{index}.log"
+        timeout = check.get("timeout_seconds") or self.policy["phases"]["check_timeout_seconds"]
+        self.log(f"Validation: {' '.join(command)}")
+        started = now()
+        process_environment, overrides, unset = check_process_environment(self.config, environment, check)
+        output = log.open("wb")
+        try:
+            process = subprocess.Popen(command, cwd=cwd, env=process_environment,
+                                       stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        except BaseException:
+            output.close()
+            raise
+        return {"process": process, "output": output, "command": command, "cwd": cwd, "overrides": overrides,
+                "unset": unset, "started": started, "log": log, "timeout": timeout,
+                "deadline": time.monotonic() + timeout, "allow_empty": bool(check.get("allow_empty")),
+                "cpu": this_cpu if self.config.get("check_cpus") else None}
+
+    def finish_check(self, running, returncode):
+        """The record of a check that ``start_check`` started and that has ended."""
+        allow_empty, timeout, log = running["allow_empty"], running["timeout"], running["log"]
+        record = {"command": running["command"], "cwd": str(running["cwd"]),
+                  "environment_overrides": running["overrides"], "started_at": running["started"],
+                  "finished_at": now(), "exit_code": returncode, "status": check_outcome(returncode, allow_empty),
+                  "allow_empty": allow_empty, "timeout_seconds": timeout, "log": str(log),
+                  "sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
+        if running["cpu"]:
+            record["cpu"] = running["cpu"]
+        if running["unset"]:
+            record["unset_environment"] = running["unset"]
+        if record["status"] == "empty":
+            record["note"] = EMPTY_NOTE
+        elif returncode == 124:
+            record["note"] = f"stopped after {timeout} seconds (the check's time limit)"
+        return record
+
+    def run_pending(self, jobs, cpus, finished, poll_seconds=CHECK_POLL_SECONDS):
+        """Run ``jobs`` at the same time, one per CPU of ``cpus``, in the order given; call
+        ``finished(job)`` as each one ends, with its ``checks.json`` written (W-746).
+
+        A job is ``{"directory", "check", "environment"}``: nothing here knows check names or
+        evidence. One thread polls the children, so records, cache and state need no lock and a
+        signal handler works as it does for one child. A check's time limit runs from its own
+        start and stops only that check; a failure stops nothing."""
+        waiting, free, running = list(jobs), list(cpus), {}
+
+        def recorded():
+            self.save(child_pids=sorted(self.check_children))
+        try:
+            while waiting or running:
+                while waiting and free:
+                    job, cpu = waiting.pop(0), free.pop(0)
+                    item = self.start_check(job["directory"], 0, job["check"], job["environment"], cpu=cpu)
+                    pid = item["process"].pid
+                    running[pid] = dict(item, job=job, slot=cpu)
+                    self.check_children[pid] = item["process"]
+                    recorded()
+                for pid, item in list(running.items()):
+                    returncode = item["process"].poll()
+                    if returncode is None and time.monotonic() >= item["deadline"]:
+                        stop_process_groups([item["process"]])
+                        returncode = 124
+                        self.log(f"Validation: stopped after {item['timeout']} seconds (the check's time limit)")
+                    if returncode is None:
+                        continue
+                    item["output"].close()
+                    del running[pid], self.check_children[pid]
+                    write_json(item["job"]["directory"] / "checks.json", [self.finish_check(item, returncode)])
+                    recorded()
+                    free.append(item["slot"])
+                    finished(item["job"])
+                if running:
+                    time.sleep(poll_seconds)
+        finally:
+            self.stop_child()
+            for item in running.values():
+                item["output"].close()
+            self.check_children.clear()
+            if self.state.get("child_pids"):
+                self.save(child_pids=[])
+
+    def per_check_environment(self, validation, index):
+        """``check_environment`` for one check of a validation, with each ``check_directories`` variable
+        in a directory of its own (W-746). The validation's name is unique, so two batches never meet
+        and a retry never reuses a failed run's files; the index is safe in a path, as a name may not be."""
+        environment = dict(self.config["check_environment"])
+        for name in self.config.get("check_directories", ()):
+            environment[name] = str(Path(environment[name]) / validation / str(index))
+            Path(environment[name]).mkdir(parents=True, exist_ok=True)
+        return environment
+
+    def remove_check_directories(self, validation, index, record):
+        """Remove a check's own directories after it passed; a failed check's stay for inspection."""
+        if not check_passed(record):
+            return
+        for name in self.config.get("check_directories", ()):
+            base = Path(self.config["check_environment"][name]) / validation
+            shutil.rmtree(base / str(index), ignore_errors=True)
+            with contextlib.suppress(OSError):
+                base.rmdir()  # only once no other check of this validation holds one
 
     def manifest(self, active, result=None):
         directory = Path(active["run_dir"])
@@ -1817,6 +1933,19 @@ class Runner:
             seconds = expected_seconds(cache.get(spec["name"]))
             return (spec["tier"] != "default", seconds is None, seconds or 0.0, index)
         failed_default = None  # the first default check that failed: the extended checks then wait (W-552)
+        pending = []  # the extended checks to run at the same time, with a check CPU list (W-746)
+
+        def record_run(index, spec, subdir, key, launch_key, worktree, reason):
+            result = read_json(subdir / "checks.json")[0]
+            result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False, **reason)
+            if worktree:
+                result["reuse_scope"] = "worktree"
+            cache[spec["name"]] = result
+            results.append(result)
+            ran.append((spec, result, worktree))
+            write_json(cache_path, cache)
+            self.remove_check_directories(directory.name, index, result)
+            return result
         for index, spec in sorted(enumerate(self.config["checks"]), key=order):
             extended = spec["tier"] == "extended"
             if extended and last is None:
@@ -1882,22 +2011,31 @@ class Runner:
                 results.append(dict({k: v for k, v in previous.items() if k != "run_reason"}, reused=True, **reason))
                 continue
             subdir = directory / str(index); subdir.mkdir()
+            definition = {k: spec[k] for k in CHECK_RUN_KEYS if k in spec}
+            if extended and self.config.get("check_cpus") and not spec.get("base_parity"):
+                pending.append({"directory": subdir, "check": definition, "index": index, "spec": spec, "key": key,
+                                "launch_key": launch_key, "worktree": worktree, "reason": reason,
+                                "environment": self.per_check_environment(directory.name, index)})
+                continue
             if spec.get("base_parity"):
                 self.run_parity_check(subdir, spec, active["starting_commit"])
             else:
-                self.validate(subdir, [{k: spec[k] for k in CHECK_RUN_KEYS if k in spec}], self.config["check_environment"])
-            result = read_json(subdir / "checks.json")[0]
-            result.update(name=spec["name"], key=key, launch_key=launch_key, model=None, reused=False, **reason)
-            if worktree:
-                result["reuse_scope"] = "worktree"
-            cache[spec["name"]] = result
-            results.append(result)
-            ran.append((spec, result, worktree))
-            write_json(cache_path, cache)
+                self.validate(subdir, [definition], self.per_check_environment(directory.name, index))
+            result = record_run(index, spec, subdir, key, launch_key, worktree, reason)
             if not extended and failed_default is None and not check_passed(result):
                 failed_default = spec["name"]
                 self.log(f"Validation: {spec['name']} failed; the selected extended checks of this validation run "
                          "after the repair (W-552)")
+        # An extended failure stops nothing, so this order only affects the total: longest first, and
+        # first of all a check with no record, which may be long (W-746).
+        def longest_first(job):
+            seconds = expected_seconds(cache.get(job["spec"]["name"]))
+            return (seconds is not None, -(seconds or 0.0), job["index"])
+        pending.sort(key=longest_first)
+        if pending:
+            self.run_pending(pending, self.config["check_cpus"],
+                             lambda job: record_run(job["index"], job["spec"], job["directory"], job["key"],
+                                                    job["launch_key"], job["worktree"], job["reason"]))
         if fingerprint(self.repo) != before:
             raise RuntimeError("Validation modified source; reconcile before continuing")
         # The checks themselves write ignored files that their input patterns match (a test
@@ -2538,8 +2676,8 @@ class Runner:
         active or paused issue; only tests pass it, since an operator records a recovery and launches."""
         self.verify_config()
         self.verify_repo()
-        pid = self.state.get("child_pid")
-        if pid_alive(pid):
+        pid = live_child(self.state, pid_alive)
+        if pid:
             raise RuntimeError(f"Previous worker PID {pid} may still be alive; inspect before resuming")
         if dry_run:
             # The supervisor's dependency-aware selection, read-only (W-351): an issue that waits for

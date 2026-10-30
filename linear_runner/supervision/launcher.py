@@ -42,8 +42,8 @@ import time
 
 from linear_runner import backends
 from linear_runner.backends.codex import catalog_sha256
-from linear_runner.config import (BUILTIN_VARIABLES, RUNNER_ROOT, batch_argument, config_fingerprint, pid_alive,
-                                  read_json, write_json)
+from linear_runner.config import (BUILTIN_VARIABLES, RUNNER_ROOT, batch_argument, check_cpu_problem, config_fingerprint,
+                                  live_child, pid_alive, read_json, write_json)
 from linear_runner.supervision import backend_start, wait
 from linear_runner.engine import lint as criterion_lint
 from linear_runner.version import pin_problem
@@ -310,6 +310,13 @@ def preflight(config, runner, *, launch_id, force=False):
         return {"fingerprint": ids["config"]["fingerprint"], "layers": config["_layers"], "runner": config["runner"],
                 "runner_version": config.get("runner_version")}
     step("config", ["config"], check_config)
+    if config.get("check_cpus"):
+        def check_cpus():
+            problem = check_cpu_problem(config["check_cpus"])
+            if problem:
+                raise LaunchError(problem)
+            return {"check_cpus": config["check_cpus"]}
+        step("check_cpus", [], check_cpus, live=True)
     step("worktree", ["source", "config"], lambda: _check_worktree(runner))
     step("model_catalog", ["model_catalog", "config"], lambda: _check_catalog(config))
     if config.get("claude_auth"):
@@ -560,8 +567,9 @@ def _launch(config, linear, *, root, launch_id, backend, stop_after, scope, clea
             raise LaunchError(f"Supervisor {previous['launch_id']} (PID {previous['pid']}) is still running")
         runner = runner or Runner(config, linear)
         runner.verify_config()
-        if pid_alive(runner.state.get("child_pid")):
-            raise LaunchError(f"Previous worker PID {runner.state['child_pid']} may still be alive; inspect first")
+        pid = live_child(runner.state, pid_alive)
+        if pid:
+            raise LaunchError(f"Previous worker PID {pid} may still be alive; inspect first")
         stop = root / "STOP"
         cleared = None
         if stop.exists():

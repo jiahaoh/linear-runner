@@ -26,6 +26,9 @@ DEFAULT_HOME = "~/.config/linear-runner"
 RESOLVED_NAME = "resolved-config.json"
 # ${home} and ${runner_root} everywhere; ${batch} and ${worktree} in project/batch values.
 BUILTIN_VARIABLES = ("home", "runner_root", "batch", "worktree")
+# Accepted only in the ``command`` of a check, and resolved to literals that ``validate`` replaces
+# when the process starts, so that a check's definition does not name a CPU (W-746).
+CHECK_CPU_VARIABLES = {"check_cpu": "{check_cpu}", "all_check_cpus": "{all_check_cpus}"}
 # Bookkeeping keys that are not configuration and never enter the fingerprint.
 META_KEYS = ("_sources", "_layers", "_interface")
 # The runner-project interface (not a policy layer) and its migration table.
@@ -115,7 +118,7 @@ def batch_variables(values, site, where):
     resolved = {}
     for name, value in values.items():
         label = f"{where}.variables.{name}"
-        if name in BUILTIN_VARIABLES:
+        if name in BUILTIN_VARIABLES or name in CHECK_CPU_VARIABLES:
             raise ConfigError(f"{label}: {name} is a built-in variable and cannot be overridden")
         if name in site.get("executables", {}):
             raise ConfigError(f"{label}: {name} is a site executable; a batch may override only site variables")
@@ -177,6 +180,66 @@ def file_sha256(path):
 def pid_alive(pid):
     """Whether process ``pid`` exists on this host; no PID is not alive."""
     return bool(pid) and Path(f"/proc/{pid}").exists()
+
+
+def live_child(state, alive=pid_alive):
+    """The first process a batch's state records that is still alive, or None: the model session or
+    check of ``child_pid``, or a check running at the same time as others, in ``child_pids`` (W-746).
+    A state written before ``child_pids`` existed has only ``child_pid``."""
+    for pid in (state.get("child_pid"), *(state.get("child_pids") or ())):
+        if alive(pid):
+            return pid
+    return None
+
+
+def cpu_numbers(text, where):
+    """The CPUs of a list such as ``2,4-6``, in its order, as strings."""
+    if not re.fullmatch(r"[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*", text):
+        raise ConfigError(f"{where}: invalid CPU list {text!r}")
+    cpus = []
+    for part in text.split(","):
+        first, _, last = part.partition("-")
+        if last and int(last) < int(first):
+            raise ConfigError(f"{where}: invalid CPU range {part!r}")
+        cpus.extend(str(cpu) for cpu in range(int(first), int(last or first) + 1))
+    if len(set(cpus)) != len(cpus):
+        raise ConfigError(f"{where}: a CPU is listed twice in {text!r}")
+    return cpus
+
+
+def check_cpu_problem(cpus, root="/sys/devices/system/cpu"):
+    """What is wrong with a check CPU list on this host, or None: a CPU that is not online, or two
+    CPUs of one physical core. A file that cannot be read checks nothing."""
+    root = Path(root)
+    try:
+        online = cpu_numbers((root / "online").read_text().strip(), "online CPUs")
+    except (OSError, ConfigError):
+        online = None
+    if online is not None:
+        missing = [cpu for cpu in cpus if cpu not in online]
+        if missing:
+            return f"check_cpus: CPU {', '.join(missing)} is not online on this host"
+    cores = {}
+    for cpu in cpus:
+        try:
+            siblings = (root / f"cpu{cpu}" / "topology" / "thread_siblings_list").read_text().strip()
+            core = frozenset(cpu_numbers(siblings, f"CPU {cpu}'s siblings"))
+        except (OSError, ConfigError):
+            continue
+        if core in cores:
+            return (f"check_cpus: CPUs {cores[core]} and {cpu} are hyper-threads of one physical core; "
+                    "a check list holds one CPU per core")
+        cores[core] = cpu
+    return None
+
+
+def checks_for_worker(config):
+    """``config["checks"]`` as a worker reads it: the CPU literals are replaced by the batch's own
+    ``cpu_list``, so that a command the worker copies stays on the worker's CPU (W-746)."""
+    cpu = config.get("launcher", {}).get("cpu_list") or ",".join(config.get("check_cpus") or ())
+    return [dict(check, command=[arg.replace("{check_cpu}", cpu).replace("{all_check_cpus}", cpu)
+                                 for arg in check["command"]])
+            for check in config["checks"]]
 
 
 # --- Minimal JSON Schema subset (no third-party dependency) -----------------
@@ -494,6 +557,14 @@ def state_root(home=None):
     return _path(site["state_root"], home, {"home": str(home), "runner_root": str(RUNNER_ROOT)}, "site.state_root")
 
 
+def check_command(argv, variables, where):
+    """A check's argv with its variables, among them the CPU literals (not as its executable)."""
+    command = [substitute(arg, dict(variables, **CHECK_CPU_VARIABLES), where) for arg in argv]
+    if "{check_cpu}" in command[0] or "{all_check_cpus}" in command[0]:
+        raise ConfigError(f"{where}.command: a CPU variable cannot be the executable")
+    return command
+
+
 def substitute(text, variables, where):
     def replace(match):
         name = match.group(1)
@@ -596,7 +667,7 @@ def load_config(batch_path, home=None):
     variables = {"home": str(home), "runner_root": str(RUNNER_ROOT), "batch": batch["id"]}
     for group in ("executables", "variables"):
         for name, value in site.get(group, {}).items():
-            if name in variables or name in BUILTIN_VARIABLES:
+            if name in variables or name in BUILTIN_VARIABLES or name in CHECK_CPU_VARIABLES:
                 raise ConfigError(f"site.{group}.{name}: variable is already defined")
             variables[name] = os.path.expanduser(value)
     # Batch variables replace site variables of the same name for this batch only. Executables,
@@ -729,11 +800,22 @@ def load_config(batch_path, home=None):
         if "environment" in spec:
             own["environment"] = {name: substitute(value, variables, f"{where}.environment.{name}")
                                   for name, value in spec["environment"].items()}
+        command = check_command(spec["command"], variables, where)
+        if spec["tier"] != "default" and any("{all_check_cpus}" in arg for arg in command):
+            raise ConfigError(f"{where}.command: ${{all_check_cpus}} is for a default check, which runs before "
+                              "the extended checks start; an extended check takes one CPU, ${check_cpu}")
         checks.append(dict(spec, cwd=inside(substitute(spec["cwd"], variables, where), where),
-                           command=[substitute(arg, variables, where) for arg in spec["command"]], **own))
+                           command=command, **own))
     if len({c["name"] for c in checks}) != len(checks):
         raise ConfigError(f"{project_label}.checks: names must be unique")
     put("checks", checks, project_label)
+    if "check_directories" in project:
+        # Only a project that sets it records it, so other fingerprints are unchanged (W-746).
+        for name in project["check_directories"]:
+            if not Path(environment.get(name, "")).is_absolute():
+                raise ConfigError(f"{project_label}.check_directories: {name} must be an absolute path in "
+                                  "check_environment")
+        put("check_directories", list(project["check_directories"]), project_label)
     if "documents_read_by_tests" in project:
         # Only a project that sets it records it, so other fingerprints are unchanged (W-605).
         for pattern in project["documents_read_by_tests"]:
@@ -758,7 +840,7 @@ def load_config(batch_path, home=None):
     for index, spec in enumerate(project.get("delivery_checks", [])):
         where = f"{project_label}.delivery_checks[{index}]"
         delivery.append({"cwd": inside(substitute(spec["cwd"], variables, where), where),
-                         "command": [substitute(arg, variables, where) for arg in spec["command"]]})
+                         "command": check_command(spec["command"], variables, where)})
     put("delivery_checks", delivery, project_label)
     integrity = copy.deepcopy(project.get("delivery_integrity"))
     if integrity:
@@ -852,6 +934,19 @@ def load_config(batch_path, home=None):
     launcher["environment"] = {name: substitute(value, variables, f"site.launcher.environment.{name}")
                                for name, value in launcher["environment"].items()}
     put("launcher", launcher, site_label)
+    if "check_cpus" in variables:
+        check_cpus = cpu_numbers(variables["check_cpus"], "variables.check_cpus")
+        if launcher.get("cpu_list") is not None:
+            shared = sorted(set(check_cpus) & set(cpu_numbers(launcher["cpu_list"], "site.launcher.cpu_list")), key=int)
+            if shared:
+                raise ConfigError(f"variables.check_cpus: CPU {', '.join(shared)} is also in site.launcher.cpu_list, "
+                                  "which pins the supervisor")
+        # Only a site or batch that sets it records it, so other fingerprints are unchanged (W-746).
+        put("check_cpus", check_cpus, sources.get("variables.check_cpus", site_label))
+    elif launcher.get("cpu_list") is None and any("{check_cpu}" in arg or "{all_check_cpus}" in arg
+                                                  for check in (*checks, *delivery) for arg in check["command"]):
+        raise ConfigError(f"{project_label}: a check names ${{check_cpu}} or ${{all_check_cpus}}, but neither "
+                          "variables.check_cpus nor site.launcher.cpu_list is set")
     attention = copy.deepcopy(ATTENTION_DEFAULTS)
     for label, block in ((workspace_label, workspace.get("attention", {})), (site_label, site.get("attention", {}))):
         for key, value in block.items():

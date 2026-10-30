@@ -534,7 +534,7 @@ def run_summary_table(summary):
     """(table, notes) for ``trajectory.run_summary`` output."""
     rows = [[row["stage"], row["model"] or UNKNOWN, row["effort"] or UNKNOWN, *figure_cells(row)]
             for row in summary["rows"]]
-    rows.append(["Checks", UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, figure_text(summary["check_seconds"], duration)])
+    rows.append(["Checks", UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, figure_text(summary["check_wall_seconds"], duration)])
     total = ["Total", "", "", *figure_cells(summary["total"])]
     # The Checks row's dashes mean "not applicable"; they need no note.
     return markdown_table(RUN_HEADER, rows, total), usage_notes([c for row in rows[:-1] + [total] for c in row])

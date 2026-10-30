@@ -26,6 +26,8 @@ import hashlib
 from pathlib import Path
 import re
 
+from linear_runner.config import checks_for_worker
+
 SCHEMA = "linear-runner.intake/2"
 ISSUE_FIELDS = ("id", "title", "url", "labels", "projectMilestone", "relations", "status", "description")
 
@@ -104,5 +106,5 @@ def build(config, active, selection, notes, snapshot=None):
                if not contract or path != contract["path"]]
     return compact_packet(issue=issue, starting_commit=active["starting_commit"], guidance=guidance,
                           contract=dict(contract) if contract else None, context_files=context,
-                          checks=config["checks"], selection=selection, operator_notes=notes,
+                          checks=checks_for_worker(config), selection=selection, operator_notes=notes,
                           issue_snapshot=snapshot)

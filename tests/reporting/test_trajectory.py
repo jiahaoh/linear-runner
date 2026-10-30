@@ -214,6 +214,24 @@ class UpperBoundTests(unittest.TestCase):
 
 
 class FigureTests(unittest.TestCase):
+    def test_overlapping_checks_count_once_in_wall_time_and_in_full_in_the_sum(self):
+        # W-746: 10:00-10:10 and 10:05-10:20 overlap, 11:00-11:01 is apart, and a record without times adds its seconds.
+        def check(start, end, seconds, **fields):
+            return dict({"started_at": start, "finished_at": end, "seconds": seconds}, **fields)
+        checks = [check("2026-10-30T10:00:00+00:00", "2026-10-30T10:10:00+00:00", 600),
+                  check("2026-10-30T10:05:00+00:00", "2026-10-30T10:20:00+00:00", 900),
+                  check("2026-10-30T11:00:00+00:00", "2026-10-30T11:01:00+00:00", 60),
+                  check("2026-10-30T12:00:00+00:00", "2026-10-30T12:30:00+00:00", 1800, reused=True),
+                  check(None, None, 30)]
+        self.assertEqual(trajectory.check_figure(checks), {"value": 1590, "bound": "exact"})
+        self.assertEqual(trajectory.check_wall_figure(checks), {"value": 1290.0, "bound": "exact"})
+        total = trajectory.totals([], checks)
+        self.assertEqual(total["check_seconds"]["value"], 1590)
+        self.assertEqual(total["check_wall_seconds"]["value"], 1290.0)
+        self.assertEqual(total["seconds"]["value"], 1290.0)
+        self.assertIsNone(trajectory.check_wall_figure([])["value"])
+        self.assertEqual(trajectory.check_wall_figure([check(None, None, None)]), {"value": None, "bound": None})
+
     def test_add_marks_totals(self):
         f, add = trajectory.figure, trajectory.add
         self.assertEqual(add([f(1), f(2)]), f(3))

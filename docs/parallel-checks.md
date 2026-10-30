@@ -1,7 +1,7 @@
 # Parallel checks: design note (W-617)
 
-Status: proposed, for the owner's review. Nothing here is implemented. The implementation is
-release 3.4.0.
+Status: implemented in release 3.4.0 (`W-746`). Before a canary batch has run, the pool has been
+tested only with fake commands.
 
 ## The problem
 

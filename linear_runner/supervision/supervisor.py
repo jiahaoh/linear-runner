@@ -34,7 +34,7 @@ import os
 from pathlib import Path
 import signal
 
-from linear_runner.config import config_fingerprint, file_sha256, pid_alive, read_json, write_json
+from linear_runner.config import config_fingerprint, file_sha256, live_child, pid_alive, read_json, write_json
 from linear_runner.linear import messages
 from linear_runner.supervision.recovery import append_log, block_record, defer, expected_state, park
 from linear_runner.supervision.rules import RuleError, evaluate, parse_rules
@@ -343,8 +343,9 @@ class Supervisor:
         r = self.r
         r.verify_config()
         r.verify_repo()
-        if pid_alive(self.state.get("child_pid")):
-            raise SupervisorRefused(f"Previous worker PID {self.state['child_pid']} may still be alive")
+        pid = live_child(self.state, pid_alive)
+        if pid:
+            raise SupervisorRefused(f"Previous worker PID {pid} may still be alive")
         self.check_preflight()
         if r.stop_requested():
             raise SupervisorRefused("STOP marker present; clear it (launch --clear-stop) after inspection")
