@@ -188,6 +188,25 @@ class PoolTests(Harness):
         self.assertEqual(records["waits"]["status"], "passed")
         self.assertEqual({t["name"] for t in self.traced()}, {"quick", "waits", "other"})
 
+    def test_a_slow_stop_holds_up_neither_the_others_nor_a_free_cpu(self):
+        stubborn = self.root / "stubborn.py"
+        stubborn.write_text("import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)\n")
+        spec = {"name": "stubborn", "kind": "code", "tier": "extended", "inputs": ["lib.txt"], "cwd": ".",
+                "timeout_seconds": 1, "command": ["${python}", str(stubborn), "${check_cpu}"]}
+        checks = [self.check("quick", tier="default"), spec, self.check("next1", 2.5), self.check("next2")]
+        runner = self.runner(checks, cpus="1,2")
+        write_json(runner.root / "check-cache.json", {
+            name: {"status": "passed", "exit_code": 0, "key": "stale", "started_at": "2026-10-22T00:00:00+00:00",
+                   "finished_at": f"2026-10-22T00:00:{seconds:02d}+00:00"}
+            for name, seconds in (("stubborn", 30), ("next1", 20), ("next2", 1))})
+        with patch("linear_runner.engine.runner.STOP_GRACE_SECONDS", 4):
+            records, _ = self.validate(runner, expect=False)
+        self.assertEqual(records["stubborn"]["exit_code"], 124)
+        trace = {t["name"]: t for t in self.traced()}
+        self.assertEqual(records["next1"]["status"], "passed")
+        # next1 ended during stubborn's four seconds of grace, and next2 took its CPU at once.
+        self.assertLess(trace["next2"]["start"] - trace["next1"]["end"], 0.9)
+
     def test_keys_do_not_depend_on_the_cpu_or_the_length_of_the_list(self):
         checks = [self.check("quick", tier="default"), self.check("a")]
         first, second = self.runner(checks, cpus="1,2,3"), self.runner(checks, cpus="5")
@@ -210,7 +229,7 @@ class StopTests(Harness):
         script.write_text(FAMILY)
         self.pids = self.root / "pids.txt"
         return {"name": "family", "kind": "code", "tier": "extended", "inputs": ["lib.txt"], "cwd": ".",
-                "command": ["${python}", str(script), str(self.pids)]}
+                "command": ["${python}", str(script), str(self.pids), "${check_cpu}"]}
 
     def wait_for_pids(self, count):
         deadline = time.monotonic() + 30
@@ -257,6 +276,59 @@ class StopTests(Harness):
         self.assertEqual(runner.check_children, {})
         self.assertEqual(runner.state["child_pids"], [])
         self.assertIsNone(live_child(runner.state))
+
+    def test_a_finished_checks_leftover_is_killed_before_its_cpu_is_reused(self):
+        leftover = self.root / "leftover.txt"
+        code = ("import subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'], start_new_session=False)\n"
+                f"open({str(leftover)!r}, 'w').write(str(child.pid))\n")
+        checks = [self.check("quick", tier="default"),
+                  {"name": "leaves", "kind": "code", "tier": "extended", "inputs": ["lib.txt"], "cwd": ".",
+                   "command": ["${python}", "-c", code, "${check_cpu}"]}]
+        records, _ = self.validate(self.runner(checks))
+        self.assertEqual(records["leaves"]["status"], "passed")
+        self.assertTrue(dead_or_zombie(int(leftover.read_text())))
+
+    def test_a_group_has_the_whole_grace_period_when_its_leader_dies_first(self):
+        # A wrapper such as `time -v` dies on SIGTERM at once; the real check still finishes its work.
+        finished = self.root / "finished.txt"
+        child = ("import signal, sys, time\n"
+                 "signal.signal(signal.SIGTERM, lambda *a: (time.sleep(0.5), "
+                 f"open({str(finished)!r}, 'w').write('x'), sys.exit(0)))\n"
+                 "print('ready', flush=True)\ntime.sleep(600)\n")
+        wrapper = ("import subprocess, sys\n"
+                   f"child = subprocess.Popen([sys.executable, '-c', {child!r}], stdout=subprocess.PIPE, text=True)\n"
+                   "child.stdout.readline()\nprint('up', flush=True)\nimport time; time.sleep(600)\n")
+        process = subprocess.Popen([sys.executable, "-c", wrapper], stdout=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(process.stdout.close)
+        process.stdout.readline()
+        stop_process_groups([process], grace_seconds=20)
+        self.assertTrue(finished.exists())
+
+    def test_sigterm_while_starting_a_check_is_held_until_it_is_registered(self):
+        runner = self.runner([self.family()], cpus="1")
+        jobs = self.jobs(runner, 1)
+        seen = []
+        real = runner.start_check
+
+        def signalled_start(*args, **kwargs):
+            item = real(*args, **kwargs)
+            os.kill(os.getpid(), signal.SIGTERM)  # the worst moment: started, not yet registered
+            time.sleep(0.05)
+            self.assertEqual(seen, [])
+            return item
+
+        def interrupted(signum, frame):
+            seen.append(sorted(runner.check_children))
+            runner.stop_child()
+            raise KeyboardInterrupt(f"Signal {signum}")
+        previous = signal.signal(signal.SIGTERM, interrupted)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        with patch.object(runner, "start_check", signalled_start), self.assertRaises(KeyboardInterrupt):
+            runner.run_pending(jobs, ["1"], lambda job: None, poll_seconds=0.05)
+        self.assertEqual(len(seen[0]), 1)  # the handler found the child
+        self.assertTrue(dead_or_zombie(seen[0][0]))
+        self.assertEqual(signal.getsignal(signal.SIGTERM), interrupted)
 
     def test_an_error_in_the_pool_stops_the_others(self):
         runner = self.runner([self.family()], cpus="1,2")
@@ -342,9 +414,15 @@ class RecoveryTests(Harness):
             with self.assertRaisesRegex(launcher.LaunchError, "CPU 9 is not online"):
                 launcher.preflight(runner.config, runner, launch_id="L-test")
 
-    def test_reconcile_clears_both_fields(self):
-        source = (Path(recovery.__file__)).read_text()
-        self.assertIn("child_pid=None, child_pids=[]", source)
+    def test_parking_clears_both_fields(self):
+        runner = self.runner([self.check("quick", tier="default")])
+        run = self.root / "runs" / "parked"; run.mkdir(parents=True)
+        runner.save(child_pid=None, child_pids=[12345])
+        active = {"issue_id": "DEV-1", "run_dir": str(run), "step": "implement", "issue": {"id": "DEV-1"},
+                  "starting_commit": git(self.repo, "rev-parse", "HEAD")}
+        recovery.park(runner, active, "DEV-1", allow_restore=False, keep_commit=False)
+        self.assertEqual(runner.state["child_pids"], [])
+        self.assertIsNone(runner.state["child_pid"])
 
 
 class DirectoryTests(Harness):
@@ -363,7 +441,7 @@ class DirectoryTests(Harness):
 
     def spec(self, name, code=0, tier="extended"):
         return {"name": name, "kind": "code", "tier": tier, "inputs": ["lib.txt"], "cwd": ".",
-                "command": ["${python}", str(self.script_for(name, code))]}
+                "command": ["${python}", str(self.script_for(name, code)), "${check_cpu}"]}
 
     def test_each_check_has_its_own_and_a_passed_checks_is_removed(self):
         runner = self.runner([self.spec("quick", tier="default"), self.spec("good"), self.spec("bad", code=1),
@@ -396,6 +474,10 @@ class DirectoryTests(Harness):
         self.assertTrue(runner.validate(directory, [{k: runner.config["checks"][0][k] for k in CHECK_RUN_KEYS
                                                      if k in runner.config["checks"][0]}],
                                         runner.config["check_environment"]))
+        self.assertEqual(self.traced()[0]["tmp"], str(self.root / "scratch" / "tmp"))
+        self.trace.unlink()
+        baseline = self.root / "baseline"; baseline.mkdir()
+        launcher._baseline_checks(runner, baseline, reuse=False)
         self.assertEqual(self.traced()[0]["tmp"], str(self.root / "scratch" / "tmp"))
 
 

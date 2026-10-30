@@ -235,7 +235,8 @@ def check_cpu_problem(cpus, root="/sys/devices/system/cpu"):
 
 def checks_for_worker(config):
     """``config["checks"]`` as a worker reads it: the CPU literals are replaced by the batch's own
-    ``cpu_list``, so that a command the worker copies stays on the worker's CPU (W-746)."""
+    ``cpu_list`` (the check list, if the batch has none), so that a command the worker copies stays
+    on the worker's CPU (W-746)."""
     cpu = config.get("launcher", {}).get("cpu_list") or ",".join(config.get("check_cpus") or ())
     return [dict(check, command=[arg.replace("{check_cpu}", cpu).replace("{all_check_cpus}", cpu)
                                  for arg in check["command"]])
@@ -792,6 +793,10 @@ def load_config(batch_path, home=None):
         if spec.get("inert_changes") == "skip" and spec["kind"] != "code":
             raise ConfigError(f"{where}.inert_changes: a check of kind {spec['kind']!r} is never skipped for inert "
                               "changes (it may read documentation and docstrings); only a check of kind 'code' is")
+        shared = sorted(set(project.get("check_directories", ())) & {*spec.get("environment", {}), *spec.get("unset_environment", [])})
+        if shared:
+            raise ConfigError(f"{where} ({spec['name']}): {', '.join(shared)} is in check_directories, so the engine "
+                              "gives each check its own; a check cannot set or unset it")
         both = sorted(set(spec.get("environment", {})) & set(spec.get("unset_environment", [])))
         if both:
             raise ConfigError(f"{where} ({spec['name']}): {', '.join(both)} both set in environment and listed in "
@@ -941,6 +946,12 @@ def load_config(batch_path, home=None):
             if shared:
                 raise ConfigError(f"variables.check_cpus: CPU {', '.join(shared)} is also in site.launcher.cpu_list, "
                                   "which pins the supervisor")
+        unpinned = [check["name"] for check in checks
+                    if check["tier"] == "extended" and not check.get("base_parity")
+                    and not any("{check_cpu}" in arg for arg in check["command"])]
+        if unpinned:
+            raise ConfigError(f"variables.check_cpus: {', '.join(unpinned)} would run at the same time as other checks "
+                              "without naming ${check_cpu}, so they could share a CPU; switch their commands first")
         # Only a site or batch that sets it records it, so other fingerprints are unchanged (W-746).
         put("check_cpus", check_cpus, sources.get("variables.check_cpus", site_label))
     elif launcher.get("cpu_list") is None and any("{check_cpu}" in arg or "{all_check_cpus}" in arg

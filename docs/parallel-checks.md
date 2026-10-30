@@ -85,7 +85,8 @@ replaced at run time and model sessions inherit `check_environment`. Three thing
 * A runner older than this release refuses a project file that uses them, with "undefined variable".
   No `interface_version` bump is needed: existing project files stay valid.
 * The issue packet carries `config["checks"]`, so a worker would see the literals. The packet replaces
-  both with the batch's `cpu_list`, so that a command a worker copies stays on the worker's own CPU.
+  both with the batch's `cpu_list` (the check list, if it has none), so that a command a worker copies
+  stays on the worker's own CPU. A repair prompt says the same of the records it points to.
 
 **Who runs where:**
 
@@ -111,11 +112,13 @@ For a check that `run_checks` runs, other than base parity, the engine sets each
 per validation, so two batches with one base never meet and a retry never reuses a failed run's files,
 and an index cannot hold `/` or `..` as a check's name can. It removes the directory after a passed or
 empty check and keeps it after a failed one; the number of repairs bounds what stays. The launch baseline,
-delivery checks and model sessions get the value unchanged. Unset, this key stays out of the fingerprint.
+delivery checks and model sessions get the value unchanged. A check cannot set or unset such a variable
+itself. Unset, this key stays out of the fingerprint.
 
 **Refusals.** Configuration loading refuses, for every command: a list that does not parse; a CPU also in
-`launcher.cpu_list`; the uses of the two variables named above; and `${check_cpu}` with neither
-`check_cpus` nor `launcher.cpu_list` set. `validate-config` and the launch preflight also read the host and
+`launcher.cpu_list`; the uses of the two variables named above; `${check_cpu}` with neither
+`check_cpus` nor `launcher.cpu_list` set; and a list while an extended check other than base parity does
+not name `${check_cpu}`, since it could share a CPU with another check. `validate-config` and the launch preflight also read the host and
 refuse a CPU that is not online and two CPUs of one physical core, where the sysfs file can be read.
 
 ## The engine
@@ -134,8 +137,10 @@ first 23.2 h.
 
 **One thread and a poll loop, no thread pool.** The main thread starts a check whenever a CPU is free,
 and polls every running child about once a second. It writes the records, the cache and the state
-itself, so nothing needs a lock. A SIGTERM handler still runs where it does today, and the code can be
-tested with fake commands. `validate`'s body splits into starting a process and finishing a record,
+itself, so nothing needs a lock. A SIGTERM handler still runs where it does today, held only while a
+process is started and registered, and the code can be tested with fake commands. A CPU is free again
+only when the check's whole process group has gone: what a finished check left running is killed, since
+the next check would share its CPU. `validate`'s body splits into starting a process and finishing a record,
 and both paths use them.
 
 **Files and records.** Each check keeps its directory, `check-0.log` and `checks.json`, with
@@ -144,9 +149,10 @@ A record gains `cpu` when `check_cpus` is set. A check's timeout runs from its o
 waiting for a CPU does not count against it.
 
 **Stop and recovery.** Check children live in `self.check_children`; `self.child` remains the model
-session's. A timeout stops only its own process group: today's `validate` calls `stop_child`, which would
-end the whole pool. `stop_child` sends SIGTERM to every process group, waits on one shared deadline rather
-than ten seconds each, then sends SIGKILL. The state gains `child_pids` beside `child_pid`, and the five
+session's. A timeout stops only its own process group, without holding up the others: today's `validate`
+calls `stop_child`, which would end the whole pool. `stop_child` sends SIGTERM to every process group, gives
+the whole group one shared deadline (a wrapper such as `time` may die first and leave the real check to
+finish), then sends SIGKILL to what remains. The state gains `child_pids` beside `child_pid`, and the five
 readers use one helper that accepts both, so a state written by an older release still works:
 `recovery.py` (two), `launcher.py`, `supervisor.py`, `runner.py`. The write at `recovery.py`'s reconcile
 clears both.

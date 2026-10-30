@@ -22,6 +22,7 @@ import signal
 import subprocess
 import tarfile
 import textwrap
+import threading
 import time
 import uuid
 
@@ -136,8 +137,9 @@ LAUNCH_VARIABLES = frozenset({"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_P
 
 # The keys of a check definition that ``validate`` runs; every caller passes these (W-524 added
 # a check's own environment, which the launch baseline and the base-parity run must pass too).
-# How often the checks that run at the same time are polled (W-746).
+# How often the checks that run at the same time are polled, and how long a stopped group has to exit (W-746).
 CHECK_POLL_SECONDS = 1
+STOP_GRACE_SECONDS = 10
 CHECK_RUN_KEYS = ("cwd", "command", "allow_empty", "timeout_seconds", "environment", "unset_environment")
 
 
@@ -151,25 +153,53 @@ def check_process_environment(config, environment, check):
     return process, overrides, unset
 
 
-def stop_process_groups(processes, grace_seconds=10):
-    """End the process group of each of ``processes`` that is still running: SIGTERM to all, one
-    deadline to exit, then SIGKILL to what remains of each group."""
-    running = [process for process in processes if process.poll() is None]
+def signal_group(pid, number):
+    """Signal the process group ``pid``; False when the group has gone. Signal 0 only asks."""
+    try:
+        os.killpg(pid, number)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
 
-    def signal_group(process, number):
-        try:
-            os.killpg(process.pid, number)
-        except (ProcessLookupError, PermissionError):
-            pass  # the group has already gone
+
+def stop_process_groups(processes, grace_seconds=STOP_GRACE_SECONDS):
+    """End the process group of each of ``processes`` that is still running: SIGTERM to all, one
+    deadline for the whole group to exit (a wrapper such as ``time`` may die first and leave the real
+    check to finish), then SIGKILL to what remains. A group seen empty is not signalled again, so a
+    later process that reuses its PID is safe."""
+    running = [process for process in processes if process.poll() is None]
     for process in running:
-        signal_group(process, signal.SIGTERM)
+        signal_group(process.pid, signal.SIGTERM)
     deadline = time.monotonic() + grace_seconds
+    while running and time.monotonic() < deadline:
+        for process in running:
+            process.poll()  # reaps a leader that has exited, which empties a group of one
+        running = [process for process in running if signal_group(process.pid, 0)]
+        if running:
+            time.sleep(0.05)
     for process in running:
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=max(deadline - time.monotonic(), 0))
-    for process in running:
-        signal_group(process, signal.SIGKILL)  # a child that ignored SIGTERM, or outlived its leader
-        process.wait()
+        signal_group(process.pid, signal.SIGKILL)
+    for process in processes:
+        with contextlib.suppress(ChildProcessError):
+            if process.returncode is None and process.poll() is None:
+                process.wait()
+
+
+@contextlib.contextmanager
+def sigterm_deferred():
+    """Hold SIGTERM while a process is started and registered, so that a stop finds every child; its
+    handler runs on leaving. Signals are not blocked: a blocked signal would stay blocked in the child."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    pending = []
+    previous = signal.signal(signal.SIGTERM, lambda number, frame: pending.append(number))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        if pending:
+            signal.raise_signal(signal.SIGTERM)
 
 
 def evidence_environment(config):
@@ -969,7 +999,9 @@ class Runner:
         A job is ``{"directory", "check", "environment"}``: nothing here knows check names or
         evidence. One thread polls the children, so records, cache and state need no lock and a
         signal handler works as it does for one child. A check's time limit runs from its own
-        start and stops only that check; a failure stops nothing."""
+        start and stops only that check, without holding up the others; a failure stops nothing.
+        A CPU is free again only when the check's whole process group has gone: what a finished
+        check left running is killed, since the next check would share its CPU."""
         waiting, free, running = list(jobs), list(cpus), {}
 
         def recorded():
@@ -978,26 +1010,34 @@ class Runner:
             while waiting or running:
                 while waiting and free:
                     job, cpu = waiting.pop(0), free.pop(0)
-                    item = self.start_check(job["directory"], 0, job["check"], job["environment"], cpu=cpu)
-                    pid = item["process"].pid
-                    running[pid] = dict(item, job=job, slot=cpu)
-                    self.check_children[pid] = item["process"]
+                    with sigterm_deferred():
+                        item = self.start_check(job["directory"], 0, job["check"], job["environment"], cpu=cpu)
+                        pid = item["process"].pid
+                        running[pid] = dict(item, job=job, slot=cpu)
+                        self.check_children[pid] = item["process"]
                     recorded()
                 for pid, item in list(running.items()):
-                    returncode = item["process"].poll()
-                    if returncode is None and time.monotonic() >= item["deadline"]:
-                        stop_process_groups([item["process"]])
-                        returncode = 124
+                    returncode, moment = item["process"].poll(), time.monotonic()
+                    if returncode is None and "stop_by" not in item and moment >= item["deadline"]:
+                        signal_group(pid, signal.SIGTERM)
+                        item["stop_by"] = moment + STOP_GRACE_SECONDS
                         self.log(f"Validation: stopped after {item['timeout']} seconds (the check's time limit)")
+                    if "stop_by" in item:
+                        if moment >= item["stop_by"]:
+                            signal_group(pid, signal.SIGKILL)
+                        if returncode is None or signal_group(pid, 0):
+                            continue  # still stopping: its CPU is not free yet
+                        returncode = 124
                     if returncode is None:
                         continue
+                    signal_group(pid, signal.SIGKILL)  # what a finished check left running in its group
                     item["output"].close()
                     del running[pid], self.check_children[pid]
                     write_json(item["job"]["directory"] / "checks.json", [self.finish_check(item, returncode)])
                     recorded()
                     free.append(item["slot"])
                     finished(item["job"])
-                if running:
+                if running and not (waiting and free):
                     time.sleep(poll_seconds)
         finally:
             self.stop_child()
@@ -2436,6 +2476,9 @@ class Runner:
             task = (f"Repair ONLY failing in-scope checks in {active['validation_dir']}/checks.json. "
                     "Read failure excerpts/logs as needed; no full-suite rerun, commits or Linear mutations. "
                     "Return readiness with evidence, or blocked. Preserve scientific contracts.")
+            if self.config.get("check_cpus"):
+                task += (" The commands and directories in those records are the controller's check CPUs and "
+                         "directories: run your own commands on your own CPU, with your usual environment.")
         escalation_profile = self.policy["profiles"]["escalation_profile"]
         selected = resolve_profile(self.config, active["issue"], "repair", active.get("escalation"))
         escalated = False

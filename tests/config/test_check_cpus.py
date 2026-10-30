@@ -75,6 +75,18 @@ class CheckCpuConfigTests(unittest.TestCase):
         self.refused("cannot be the executable", checks=[check(command=("${check_cpu}", "-c", "pass"))])
         self.refused("cannot be the executable", checks=[check(command=("${all_check_cpus}",))])
 
+    def test_a_list_needs_every_pooled_check_to_name_its_cpu(self):
+        unpinned = check(name="unpinned", tier="extended", command=("${python}", "-c", "pass"))
+        self.refused("unpinned would run at the same time", checks=[unpinned])
+        self.assertEqual(self.load(None, checks=[unpinned])["checks"][0]["name"], "unpinned")  # no list, no rule
+        self.load(checks=[dict(unpinned, base_parity={"outputs": ["out.txt"]})])  # base parity runs in sequence
+        self.load(checks=[check(name="default", command=("${python}", "-c", "pass"))])  # so do default checks
+
+    def test_a_check_cannot_set_or_unset_a_per_check_directory(self):
+        project = {"check_directories": ["TMPDIR"], "check_environment": {"TMPDIR": "/absolute/tmp"}}
+        self.refused("is in check_directories", checks=[check(environment={"TMPDIR": "/other"})], **project)
+        self.refused("is in check_directories", checks=[check(unset_environment=["TMPDIR"])], **project)
+
     def test_the_whole_list_is_for_a_default_check(self):
         self.load(checks=[check(command=("${python}", "${all_check_cpus}"))])
         self.refused("is for a default check", checks=[check(tier="extended", command=("${python}", "${all_check_cpus}"))])

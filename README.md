@@ -866,15 +866,17 @@ elsewhere stops the batch for reconciliation.
    With the site variable `check_cpus` (for example `"2,4,5,6"`, one CPU per physical core; a batch
    overrides it in its `variables`), the extended checks a validation selects run at the same time,
    one per CPU, longest first by the check cache and first of all a check with no record. Default,
-   base-parity, launch-baseline and delivery checks still run one at a time. A failure stops nothing,
-   and a check's time limit runs from its own start and stops only that check. Records stay in
-   configuration order and gain `cpu`. Check commands name their CPU with `${check_cpu}` (this run's)
+   base-parity, launch-baseline and delivery checks still run one at a time. An extended failure stops
+   no other check, a check's time limit runs from its own start and stops only that check, and a CPU is
+   free again only when the check's whole process group has gone. Records stay in configuration order
+   and gain `cpu`. Check commands name their CPU with `${check_cpu}` (this run's)
    and `${all_check_cpus}` (the whole list, for a default check that uses every core itself, such as
    `pytest -n 4`, and refused in an extended check). The two are accepted only in the `command` of
    `checks` and `delivery_checks`, not as its executable; the evidence key does not depend on the CPU,
-   and the worker's packet shows the batch's `launcher.cpu_list` in their place. Without `check_cpus`
-   both mean `launcher.cpu_list`, and every check runs in sequence. Loading refuses a bad list, an
-   overlap with `launcher.cpu_list` and a CPU variable with neither set; `validate-config` and the
+   and the worker's packet shows the batch's `launcher.cpu_list` (the check list, if it has none) in
+   their place. Without `check_cpus` both mean `launcher.cpu_list`, and every check runs in sequence.
+   Loading refuses a bad list, an overlap with `launcher.cpu_list`, a CPU variable with neither set, and
+   a list while an extended check other than base parity does not name `${check_cpu}`; `validate-config` and the
    launch preflight also refuse a CPU that is not online and two CPUs of one physical core. `check_cpus`
    is in the configuration fingerprint: a paused batch changes it with `recover repin-config`. The
    engine does not look at other batches: give two batches at once lists that do not overlap.
@@ -882,8 +884,8 @@ elsewhere stops the batch for reconciliation.
    `check_directories` (project, optional) names variables of `check_environment` that hold absolute
    paths. For a check that `run_checks` runs, other than base parity, the engine sets each to
    `<value>/<validation directory name>/<check's configuration index>`, creates it, and removes it when
-   the check passes or is empty; a failed check's stays for inspection. Model sessions, the launch
-   baseline and delivery checks get the value unchanged.
+   the check passes or is empty; a failed check's stays for inspection. A check cannot set or unset such
+   a variable itself. Model sessions, the launch baseline and delivery checks get the value unchanged.
 
    Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured
