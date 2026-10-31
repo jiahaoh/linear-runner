@@ -700,7 +700,12 @@ cache and writes no file.
   the batch stopped on it), its title, and its time and tokens. An issue opens to its link in
   Linear, the result summary, when it was accepted and at which commit, its time, its input,
   cached and output tokens with the report's bounds ("≥" at least, "≤" at most), how often the
-  review and the worker blocked it, and the files made for the owner.
+  review and the worker blocked it, and the files made for the owner. Board 0.3.4 shows finished
+  and total checks during validation, the running checks and check wall seconds (the union of
+  execution intervals, excluding queue time). The finished validation keeps the report's exact
+  `check_wall_seconds`. Optional `checks` data extends `linear-runner.board/1`: older mods ignore
+  it, and newer mods still draw records from older runners that omit it. The engine writes compact
+  progress records directly under run directories; the board opens no check log and walks no tree.
 * **Lineage**: the batches as a graph, each under the batch its `follows` names. With the
   pointer on a batch the graph shows what the batch is for and its issues; on the line between
   two it shows the `reason` and `from_issues`. The terminal shows the same as a list.
@@ -885,7 +890,10 @@ elsewhere stops the batch for reconciliation.
    paths. For a check that `run_checks` runs, other than base parity, the engine sets each to
    `<value>/<validation directory name>/<check's configuration index>`, creates it, and removes it when
    the check passes or is empty; a failed check's stays for inspection. A check cannot set or unset such
-   a variable itself. Model sessions, the launch baseline and delivery checks get the value unchanged.
+   a variable itself. Once a recovered validation finishes, the engine also removes nonfailed
+   checks' directories from earlier interrupted validations of the same run, including directories
+   of checks that never started; a failed check's directory in either validation stays.
+   Model sessions, the launch baseline and delivery checks get the value unchanged.
 
    Reuse is keyed on the check definition,
    matching input bytes (including ignored fixtures), the inherited and configured

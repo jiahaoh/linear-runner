@@ -494,6 +494,79 @@ class DirectoryTests(Harness):
         self.assertNotEqual(retry["bad"]["tmp"], trace["bad"]["tmp"])
         self.assertTrue((Path(trace["bad"]["tmp"]) / "left.txt").is_file())
 
+    def interrupted_recovery(self, code):
+        checks = [self.spec("first", code=code), self.spec("a/../b"), self.spec("waiting")]
+        runner = self.runner(checks, cpus="1", project=self.PROJECT)
+        run = self.root / "runs" / "DEV-1" / "20260101T000000Z-00000001"
+        run.mkdir(parents=True)
+        active = {"run_dir": str(run), "issue_id": "DEV-1", "starting_commit": self.base}
+        original_sleep = time.sleep
+
+        def interrupted(signum, frame):
+            runner.stop_child()
+            raise KeyboardInterrupt("stopped during pool")
+
+        def stop_after_first(seconds):
+            # Stop with the second check registered and a third still waiting for the CPU.
+            if list(run.glob("validation-*/0/checks.json")) and runner.check_children:
+                os.kill(os.getpid(), signal.SIGTERM)
+            original_sleep(seconds)
+
+        previous = signal.signal(signal.SIGTERM, interrupted)
+        try:
+            with patch.object(runner_module.time, "sleep", stop_after_first):
+                with self.assertRaisesRegex(KeyboardInterrupt, "stopped during pool"):
+                    runner.run_checks(active)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        [old] = run.glob("validation-*")
+        self.assertFalse((old / "checks.json").exists())
+        self.assertFalse(runner.check_children)
+        from linear_runner.reporting.board import check_progress
+        stopped = check_progress(run)
+        self.assertEqual(stopped["running"], [])
+        self.assertEqual(stopped["finished"], 1)
+        self.assertEqual(check_progress(run), stopped)  # a stopped check's time no longer advances
+        for variable in self.PROJECT["check_directories"]:
+            base = Path(runner.config["check_environment"][variable]) / old.name
+            self.assertTrue((base / "1").is_dir())  # stopped
+            self.assertTrue((base / "2").is_dir())  # never started
+        # Resume validation in the same run with a fresh Runner and the saved cache.
+        recovered = Runner(runner.config, self.linear)
+        self.assertEqual(recovered.run_checks(active), code == 0)
+        return recovered, old, active
+
+    def test_recovery_removes_all_interrupted_directories_after_sigterm(self):
+        runner, old, _ = self.interrupted_recovery(0)
+        for variable in self.PROJECT["check_directories"]:
+            self.assertFalse((Path(runner.config["check_environment"][variable]) / old.name).exists())
+
+    def test_recovery_keeps_completed_failures_in_both_validations(self):
+        runner, old, active = self.interrupted_recovery(1)
+        for variable in self.PROJECT["check_directories"]:
+            base = Path(runner.config["check_environment"][variable])
+            self.assertEqual(sorted(p.name for p in (base / old.name).iterdir()), ["0"])
+            self.assertTrue((base / Path(active["validation_dir"]).name / "0").is_dir())
+        self.assertTrue((self.root / "scratch" / "tmp" / old.name / "0" / "left.txt").is_file())
+
+    def test_interrupted_cleanup_refuses_path_names_and_symlinks(self):
+        runner = self.runner([self.spec("a/../../b")], project=self.PROJECT)
+        run = self.root / "run"; run.mkdir()
+        old = run / "validation-20260101T000000Z-00000001"; old.mkdir()
+        outside = self.root / "keep"; outside.mkdir()
+        (outside / "evidence").write_text("keep")
+        for variable in self.PROJECT["check_directories"]:
+            base = Path(runner.config["check_environment"][variable]) / old.name
+            base.mkdir(parents=True)
+            (base / "0").symlink_to(outside, target_is_directory=True)
+            (base / "other").mkdir()
+        runner.remove_interrupted_check_directories(run, run / "current")
+        self.assertEqual((outside / "evidence").read_text(), "keep")
+        for variable in self.PROJECT["check_directories"]:
+            base = Path(runner.config["check_environment"][variable]) / old.name
+            self.assertTrue((base / "0").is_symlink())
+            self.assertTrue((base / "other").is_dir())
+
     def test_a_model_session_the_baseline_and_delivery_get_the_value_unchanged(self):
         runner = self.runner([self.spec("quick", tier="default")], project=self.PROJECT)
         self.assertEqual(runner.config["check_environment"]["TMPDIR"], str(self.root / "scratch" / "tmp"))

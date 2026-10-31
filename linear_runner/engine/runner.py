@@ -929,6 +929,7 @@ class Runner:
             running = self.start_check(directory, index, check, environment, root=root)
             self.child = running["process"]
             self.save(child_pid=self.child.pid)
+            returncode = None
             try:
                 returncode = self.child.wait(timeout=running["timeout"])
             except subprocess.TimeoutExpired:
@@ -940,6 +941,8 @@ class Runner:
                 self.stop_child()
                 self.child = None
                 self.save(child_pid=None)
+                if returncode is None:
+                    self.record_check_progress(directory, interrupted_at=now())
             records.append(self.finish_check(running, returncode))
         write_json(directory / "checks.json", records)
         return all(check_passed(c) for c in records)
@@ -964,12 +967,14 @@ class Runner:
         self.log(f"Validation: {' '.join(command)}")
         started = now()
         process_environment, overrides, unset = check_process_environment(self.config, environment, check)
+        self.record_check_progress(directory, started_at=started)
         output = log.open("wb")
         try:
             process = subprocess.Popen(command, cwd=cwd, env=process_environment,
                                        stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         except BaseException:
             output.close()
+            self.record_check_progress(directory, interrupted_at=now())
             raise
         return {"process": process, "output": output, "command": command, "cwd": cwd, "overrides": overrides,
                 "unset": unset, "started": started, "log": log, "timeout": timeout,
@@ -992,6 +997,7 @@ class Runner:
             record["note"] = EMPTY_NOTE
         elif returncode == 124:
             record["note"] = f"stopped after {timeout} seconds (the check's time limit)"
+        self.record_check_progress(log.parent, **{k: record[k] for k in ("started_at", "finished_at", "status")})
         return record
 
     def run_pending(self, jobs, cpus, finished, poll_seconds=CHECK_POLL_SECONDS):
@@ -1046,9 +1052,51 @@ class Runner:
             self.stop_child()
             for item in running.values():
                 item["output"].close()
+                self.record_check_progress(item["job"]["directory"], interrupted_at=now())
             self.check_children.clear()
             if self.state.get("child_pids"):
                 self.save(child_pids=[])
+
+    def record_check_progress(self, check_directory, **fields):
+        """Update only validation checks, where the board already reads shallow records (W-752)."""
+        path = Path(check_directory).parent.parent / "check-progress.json"
+        if path.is_file():
+            progress = read_json(path)
+            if progress.get("validation") != Path(check_directory).parent.name:
+                return
+            index = Path(check_directory).name
+            entry = progress["checks"].setdefault(index, {"name": self.config["checks"][int(index)]["name"]})
+            entry.update(fields)
+            write_json(path, progress)
+
+    def remove_interrupted_check_directories(self, run, current):
+        """After recovery finishes, remove earlier unfinished validations' nonfailed scratch.
+
+        Derive paths only from validated directory names and numeric indices, never check names
+        or environment overrides in records; refuse symlinks that could lead outside a base.
+        Older runners' per-check checks.json records suffice, with no progress record required.
+        """
+        for validation in Path(run).glob("validation-*"):
+            if (validation == current or validation.is_symlink()
+                    or not re.fullmatch(r"validation-\d{8}T\d{6}Z-[0-9a-f]{8}", validation.name)
+                    or (validation / "checks.json").exists()):
+                continue
+            for name in self.config.get("check_directories", ()):
+                root = Path(self.config["check_environment"][name]).resolve()
+                base = root / validation.name
+                if base.is_symlink() or not base.is_dir():
+                    continue
+                for scratch in base.iterdir():
+                    if not re.fullmatch(r"0|[1-9][0-9]*", scratch.name) or scratch.is_symlink():
+                        continue
+                    evidence = validation / scratch.name / "checks.json"
+                    records = read_json(evidence) if evidence.is_file() else []
+                    # A completed failure stays, even if the rest of its validation was stopped.
+                    if any(not check_passed(record) for record in records):
+                        continue
+                    shutil.rmtree(scratch, ignore_errors=True)
+                with contextlib.suppress(OSError):
+                    base.rmdir()
 
     def per_check_environment(self, validation, index):
         """``check_environment`` for one check of a validation, with each ``check_directories`` variable
@@ -1935,6 +1983,10 @@ class Runner:
     def run_checks(self, active):
         directory = Path(active["run_dir"]) / ("validation-" + run_id())
         directory.mkdir()
+        progress_path = directory.parent / "check-progress.json"
+        progress_fields = ("name", "started_at", "finished_at", "reused")
+        if self.config.get("check_cpus"):
+            write_json(progress_path, {"validation": directory.name, "checks": {}})
         changed = git(self.repo, "diff", "--name-only", active["starting_commit"]).splitlines()
         changed += git(self.repo, "ls-files", "--others", "--exclude-standard").splitlines()
         cache_path = self.root / "check-cache.json"
@@ -2075,6 +2127,13 @@ class Runner:
             seconds = expected_seconds(cache.get(job["spec"]["name"]))
             return (seconds is not None, -(seconds or 0.0), job["index"])
         pending.sort(key=longest_first)
+        if progress_path.exists():
+            # Selection is complete: include reused/skipped results and every waiting pool job.
+            position = {spec["name"]: index for index, spec in enumerate(self.config["checks"])}
+            progress = {str(position[r["name"]]): dict(
+                {k: r[k] for k in progress_fields if k in r}, finished=True) for r in results}
+            progress.update({str(job["index"]): {"name": job["spec"]["name"]} for job in pending})
+            write_json(progress_path, {"validation": directory.name, "checks": progress})
         if pending:
             self.run_pending(pending, self.config["check_cpus"],
                              lambda job: record_run(job["index"], job["spec"], job["directory"], job["key"],
@@ -2096,6 +2155,11 @@ class Runner:
         position = {spec["name"]: index for index, spec in enumerate(self.config["checks"])}
         results.sort(key=lambda record: position.get(record["name"], len(position)))
         write_json(directory / "checks.json", results)
+        if progress_path.exists():
+            progress = {str(position[r["name"]]): dict(
+                {k: r[k] for k in progress_fields if k in r}, finished=True) for r in results}
+            write_json(progress_path, {"validation": directory.name, "checks": progress, "finished": True})
+        self.remove_interrupted_check_directories(active["run_dir"], directory)
         active["validation_dir"] = str(directory)
         active["validated_fingerprint"] = before
         self.save(active=active)

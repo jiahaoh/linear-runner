@@ -15,6 +15,18 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.4.1 — 2026-10-31
+
+Reports show summed check seconds beside check wall seconds in per-issue totals and batch
+comparisons. Progress board 0.3.4 shows finished and total checks, running check names and the
+validation's check wall time from compact engine records, without walking evidence trees (W-752).
+After a recovered validation finishes, scratch directories left by an interrupted validation of
+the same run are removed; failed checks' directories remain for inspection.
+
+**Project impact:** none.
+
+**Canary tier:** canary batch.
+
 ## v3.4.0 — 2026-10-30
 
 With the new site variable `check_cpus` (for example `"2,4,5,6"`), the extended checks a validation

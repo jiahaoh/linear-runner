@@ -270,6 +270,52 @@ class BoardTests(Recorded):
         self.assertEqual(launches(), [first])
 
 
+class ParallelBoardTests(unittest.TestCase):
+    def test_live_progress_and_final_wall_time_match_the_report(self):
+        from tests.engine.test_parallel_checks import Harness
+        harness = Harness()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        runner = harness.runner([harness.check("quick", tier="default"), harness.check("one", 0.1),
+                                 harness.check("two", 0.1), harness.check("waiting", 0.1)], cpus="1,2")
+        run = harness.root / "runs" / "DEV-1" / "20260101T000000Z-00000001"
+        run.mkdir(parents=True)
+        active = {"run_dir": str(run), "issue_id": "DEV-1", "starting_commit": harness.base, "step": "validate"}
+        runner.save(active=active)
+        reads = []
+
+        def read():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["status", "--board", "--home", str(harness.root / "home"),
+                      "--batch", str(harness.root / "home" / "batches" / "fixture.json")])
+            return json.loads(out.getvalue())["issues"][0]["checks"]
+
+        original = runner.start_check
+        def started(*args, **kwargs):
+            item = original(*args, **kwargs)
+            progress = board.check_progress(run)
+            if len(progress["running"]) == 2:
+                with patch.object(Path, "rglob", side_effect=AssertionError("recursive board read")), \
+                        patch.object(records, "_resolve_log", side_effect=AssertionError("board opened a log")):
+                    reads.append(read())
+            return item
+
+        with patch.object(runner, "start_check", started):
+            self.assertTrue(runner.run_checks(active))
+        self.assertTrue(reads)
+        self.assertEqual(reads[0]["finished"], 1)
+        self.assertEqual(reads[0]["total"], 4)
+        self.assertEqual(reads[0]["running"], ["one", "two"])
+        self.assertGreater(reads[0]["check_wall_seconds"]["value"], 0)
+        final = read()
+        self.assertEqual((final["finished"], final["total"], final["running"], final["complete"]), (4, 4, [], True))
+        report, _ = report_json(run)
+        self.assertEqual(final["check_wall_seconds"], report["summaries"][0]["totals"]["check_wall_seconds"])
+        self.assertEqual(read(), final)  # time stops at the recorded finish
+
+
+
 class UnclaimedBatchTests(Recorded):
     """A batch that has no state yet: every issue is queued, and a dry-run gives the titles."""
 

@@ -38,6 +38,8 @@ type Issue = {
   elapsed_seconds: number | null
   tokens: { input_tokens: Count; cached_input_tokens: Count; output_tokens: Count }
   pending_invocations: number
+  // Optional addition to board/1; older runners simply omit it, older mods ignore it.
+  checks?: { finished: number; total: number; running: string[]; check_wall_seconds: Count; complete: boolean }
 }
 // Why a batch exists and which batch it stems from: the batch file's own keys, or, while a batch file has none,
 // its entry in a file of `<runner home>/lineage/`.
@@ -469,6 +471,7 @@ function stageOf(board: Board | undefined, id: string): Stage {
   }
   // Any other stage is the step the active issue is at.
   const step = issue.stage
+  const checks = step === 'validate' && issue.checks ? `, ${issue.checks.finished}/${issue.checks.total} checks` : ''
   const repairs = issue.repairs ? `, repair ${issue.repairs}` : ''
   if (board.batch.supervisor.status === 'running') {
     const icon = pie(step, true)
@@ -477,7 +480,7 @@ function stageOf(board: Board | undefined, id: string): Stage {
       kind: 'running',
       glyph: pieGlyph(icon.part ?? 0.25),
       icon,
-      label: (board.batch.phase ?? step) + repairs,
+      label: (board.batch.phase ?? step) + repairs + checks,
       color: STEPS[step]?.color ?? 'warning',
     }
   }
@@ -488,7 +491,7 @@ function stageOf(board: Board | undefined, id: string): Stage {
     kind: 'stopped',
     glyph: hasFailed ? '!' : '⏸',
     icon: hasFailed ? { shape: 'alert', hex: HEX.failed } : { shape: 'pause', hex: HEX.stopped },
-    label: `${how} at ${step}${repairs}`,
+    label: `${how} at ${step}${repairs}${checks}`,
     color: hasFailed ? 'error' : 'warning',
   }
 }
@@ -744,6 +747,13 @@ function details(board: Board | undefined, id: string) {
   if (isDone) {
     const when = issue.accepted_at ? localTime(issue.accepted_at, true) : 'at an unrecorded time'
     lines.push({ label: 'Accepted', text: `${when}${issue.commit ? `, commit ${issue.commit.slice(0, 9)}` : ''}` })
+  }
+  if (issue.checks) {
+    const checks = issue.checks
+    const wall = checks.check_wall_seconds.value
+    const time = wall === null ? 'unknown wall time' : `${wall.toFixed(1)}s wall time`
+    lines.push({ label: 'Checks', text: `${checks.finished}/${checks.total} finished, ${time}` })
+    if (checks.running.length) lines.push({ label: 'Running checks', text: checks.running.join(', ') })
   }
   if (issue.summary) {
     lines.push({ label: isDone ? 'Result' : 'Latest result', text: cut(issue.summary.replace(/\s+/g, ' '), 600) })
@@ -1151,6 +1161,13 @@ export const register: Register = (on, options) => {
                             </Box>
                             {cost && <Text dimColor>{cost}</Text>}
                           </Box>
+                          {held?.stage === 'validate' && held.checks && (
+                            <Box marginLeft={4}>
+                              <Text dimColor wrap="wrap">
+                                {`${held.checks.check_wall_seconds.value?.toFixed(1) ?? 'unknown'}s check wall · ${held.checks.running.length ? 'running: ' + held.checks.running.join(', ') : 'no checks running'}`}
+                              </Text>
+                            </Box>
+                          )}
                           {expanded === key && (
                             <Box
                               flexDirection="column"

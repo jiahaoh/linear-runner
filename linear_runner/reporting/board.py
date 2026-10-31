@@ -70,6 +70,28 @@ def launch_times(root):
     return (times[0], times[-1]) if times else (None, None)
 
 
+def check_progress(run):
+    """Latest validation's compact engine record, with no log reads or recursive discovery.
+
+    Extend running intervals to this read's time and use the report's union calculation. Once
+    finished, the same saved endpoints give exactly its check_wall_seconds (not time in queue).
+    The optional field keeps board/1 readers in both directions compatible.
+    """
+    saved = records.read_json(Path(run) / "check-progress.json") if run else None
+    if not saved:
+        return None
+    entries = list(saved.get("checks", {}).values())
+    captured = dt.datetime.now(dt.timezone.utc).isoformat()
+    running = [c for c in entries if c.get("started_at") and not c.get("finished_at")
+               and not c.get("finished") and not c.get("interrupted_at")]
+    timed = [dict(c, finished_at=c.get("finished_at") or c.get("interrupted_at") or captured) for c in entries
+             if c.get("started_at") and not c.get("reused")]
+    return {"finished": sum(bool(c.get("finished") or c.get("finished_at")) for c in entries),
+            "total": len(entries), "running": [c["name"] for c in running],
+            "check_wall_seconds": trajectory.check_wall_figure(timed),
+            "complete": bool(saved.get("finished"))}
+
+
 def record(config, report):
     """The board record of ``config``'s batch; ``report`` is ``cli.status_report(config)``."""
     root = Path(config["state_dir"])
@@ -96,6 +118,7 @@ def record(config, report):
         spent = usage[identifier]
         files = (done.get("deliverables") or [] if done else
                  [*(held.get("deliverables") or []), *(held.get("delivery_deliverables") or [])])
+        checks = check_progress(latest.get(identifier))
         issues.append({
             "id": identifier,
             "title": known.get("title") or saved.get("title"),
@@ -111,7 +134,8 @@ def record(config, report):
             "files": [Path(item["path"]).name for item in files],
             "elapsed_seconds": spent["issue_elapsed_seconds"],
             "tokens": {key: spent["totals"][key] for key in USAGE_KEYS},
-            "pending_invocations": spent["pending"]})
+            "pending_invocations": spent["pending"],
+            **({"checks": checks} if checks is not None else {})})
     return {"schema": SCHEMA,
             "batch": {"id": config["batch_id"], "phase": report.get("phase"),
                       "supervisor": {"status": supervisor.get("status"), "outcome": supervisor.get("outcome")},

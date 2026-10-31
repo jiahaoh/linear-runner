@@ -303,6 +303,31 @@ test('a batch under way shows its step, its repairs and totals that are bounds',
   }
 })
 
+test('parallel checks show counts, running names and wall time, then the final recorded time', async ($, on) => {
+  host(on)
+  const checks = { finished: 1, total: 4, running: ['one', 'two'], check_wall_seconds: exact(12.5), complete: false }
+  boards.demo = { ...DEMO, issues: DEMO.issues.map(issue => issue.id === 'T-2' ? { ...issue, checks } : issue) }
+  await $.command.run({ ...COMMAND, args: 'add demo' })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'runner-board', surface, ...PANE })
+    expect((await ui.find({ key: 'issue-demo/T-2' }))?.text).toContain('1/4 checks')
+    expect(await ui.find({ type: 'Text', text: /12\.5s check wall · running: one, two/ })).toBeDefined()
+    await ui.press({ key: 'issue-demo/T-2' })
+    expect(await ui.find({ type: 'Text', text: /1\/4 finished, 12\.5s wall time/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^one, two$/ })).toBeDefined()
+    await ui.press({ key: 'issue-demo/T-2' })
+    await ui.unmount()
+  }
+  checks.finished = 4
+  checks.running = []
+  checks.complete = true
+  checks.check_wall_seconds = exact(20.5)
+  await $.command.run({ ...COMMAND, args: '' })
+  const ui = await $.ui.mount({ plugin: 'runner-board', surface: 'terminal', ...PANE })
+  expect((await ui.find({ key: 'issue-demo/T-2' }))?.text).toContain('4/4 checks')
+  expect(await ui.find({ type: 'Text', text: /20\.5s check wall · no checks running/ })).toBeDefined()
+})
+
 test('purpose and predecessor come from the batch file, and from the lineage file while a batch file has none', async ($, on) => {
   host(on)
   await $.command.run({ ...COMMAND, args: 'add demo demo-b' })

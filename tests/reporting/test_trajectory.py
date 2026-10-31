@@ -28,6 +28,29 @@ class TrajectoryTests(unittest.TestCase):
     def setUp(self):
         self.result = trajectory.from_roots(ROOTS, groups=GROUPS)
 
+    def test_parallel_wall_and_sum_are_rendered_from_json_totals(self):
+        checks = records.find_checks(ROOTS)[:2]
+        for check, start, end in zip(checks, (0, 5), (10, 20)):
+            check.update(issue="TEAM-1", reused=False, seconds=float(end - start),
+                         started_at=f"2026-10-30T10:00:{start:02d}+00:00",
+                         finished_at=f"2026-10-30T10:00:{end:02d}+00:00")
+        result = trajectory.build([], checks)
+        # Round-trip the JSON, then check both rendered tables against those figures.
+        saved = json.loads(json.dumps(result))
+        markdown, html = trajectory.render_markdown(result), trajectory.render_html(result)
+        for rows in (saved["summaries"], saved["comparison"]):
+            self.assertEqual(rows[0]["totals"]["check_seconds"]["value"], 25.0)
+            self.assertEqual(rows[0]["totals"]["check_wall_seconds"]["value"], 20.0)
+        for title, _, header, rows in trajectory.tables(saved):
+            if title not in ("Usage and time per issue", "Batch comparison"):
+                continue
+            self.assertEqual(header[-2:], ["Check sum s", "Check wall s"])
+            self.assertEqual(rows[0][-2:], [25.0, 20.0])
+        self.assertEqual(markdown.count("| Check sum s | Check wall s |"), 2)
+        self.assertEqual(markdown.count("| 25.0 | 20.0 |"), 2)
+        self.assertEqual(html.count("<th>Check wall s</th>"), 2)
+        self.assertEqual(html.count('<td class="n">25.0</td><td class="n">20.0</td></tr>'), 2)
+
     def test_reproduces_recorded_totals_exactly(self):
         expected_trajectory = json.loads((FIXTURE / "expected-trajectory.json").read_text())
         expected_comparison = json.loads((FIXTURE / "expected-comparison.json").read_text())

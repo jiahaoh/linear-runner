@@ -426,10 +426,11 @@ def tables(result):
     """(title, intro, header, rows) for every section; shared by Markdown and HTML."""
     usage_header = ["Issue", "Attempts", "Sessions", "Covered", "Active wall s", "Elapsed s", "Validation s",
                     "Delivery checks s", "Input", "Cached (subset)", "Output", "Reasoning (subset)", "Tool calls",
-                    "Failed tool calls"]
+                    "Failed tool calls", "Check sum s", "Check wall s"]
     usage_rows = [[s["issue"], s["attempts"], s["sessions"], s["covered_sessions"], s["active_agent_wall_seconds"],
                    s["issue_elapsed_seconds"], s["validation_seconds"], s["delivery_check_seconds"],
-                   *(figure_cell(s["totals"][k]) for k in (*USAGE_KEYS, "tool_calls", "failed_tool_calls"))]
+                   *(figure_cell(s["totals"][k]) for k in (*USAGE_KEYS, "tool_calls", "failed_tool_calls",
+                                                          "check_seconds", "check_wall_seconds"))]
                   for s in result["summaries"]]
     attempt_header = ["Issue", "Attempt", "Stage", "Profile", "Model/effort", "Status", "Wall s", "Prompt bytes",
                       "Tool output bytes", "Tool calls", "Cumulative input", "Delta input", "Copies"]
@@ -450,10 +451,10 @@ def tables(result):
     audit_rows = [[c["issue"], c["stage"], c["name"], c["exit_code"], records.outcome_text(c.get("status")), c["reused"],
                    c["seconds"], c["rss_kib"], c["hash_matches"]] for c in result["validation_audit"]]
     comparison_header = ["Batch", "Issues", "Invocations", "Sessions", "Covered", "Active s", "Check s", "Input",
-                         "Cached (subset)", "Output", "Reasoning (subset)", "Tool calls"]
+                         "Cached (subset)", "Output", "Reasoning (subset)", "Tool calls", "Check sum s", "Check wall s"]
     comparison_rows = [[c["batch"], c["issues"], c["recorded_invocations"], c["sessions"], c["covered"],
                         c["active_seconds"], c["recorded_check_seconds"],
-                        *(figure_cell(c["totals"][k]) for k in (*USAGE_KEYS, "tool_calls"))]
+                        *(figure_cell(c["totals"][k]) for k in (*USAGE_KEYS, "tool_calls", "check_seconds", "check_wall_seconds"))]
                        for c in result["comparison"]]
     sections = [
         ("Usage and time per issue", "Totals per issue from the saved session and check records. ≥ N marks a "
