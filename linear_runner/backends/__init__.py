@@ -104,6 +104,9 @@ class Backend(Protocol):
     def failure(self, events: list[dict]) -> str | None:
         """A CLI-reported error to name in the stop message, or None."""
 
+    def at_capacity(self, events: list[dict]) -> bool:
+        """Whether the failed turn has this backend's observed model-capacity message."""
+
     def result(self, request: SessionRequest, events: list[dict]) -> dict:
         """The structured result; RuntimeError when it is missing."""
 

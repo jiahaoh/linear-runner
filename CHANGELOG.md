@@ -15,6 +15,24 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.5.0 — 2026-11-02
+
+The model registry adds Sonnet 5.5, Haiku 5.5, Fable 5.1 and GPT-6.1 Terra, expands accepted
+efforts from saved backend probes and the host catalog, and retains Sonnet 5 as superseded
+but available (W-757). Pools and defaults stay unchanged.
+
+A Codex turn that reports model capacity retries the same phase, model and effort after
+120 and 600 seconds, resuming its session when one started. Each attempt has its own records,
+and each retry is saved in state and announced in a new issue comment. Exhausted retries
+and other backend failures still stop as environment errors with the existing recovery action.
+Claude has no capacity retry pattern without an observed or documented message.
+
+**Project impact:** none for existing configurations; to select a new model, add it to a
+private registry pool and name it in the batch's model overrides as before. Existing batches
+and their saved selections are not rewritten.
+
+**Canary tier:** canary batch.
+
 ## v3.4.1 — 2026-10-31
 
 Reports show summed check seconds beside check wall seconds in per-issue totals and batch

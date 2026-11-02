@@ -185,6 +185,10 @@ class CodexBackend:
         text = error.get("message") if isinstance(error, dict) else error
         return " ".join(str(text or errors[-1].get("type")).split())[:300]
 
+    def at_capacity(self, events):
+        # Observed turn.failed message (W-757); do not retry generic API or CLI errors.
+        return "Selected model is at capacity" in (self.failure(events) or "")
+
     def result(self, request, events):
         path = self.result_path(request)
         if not path.exists():

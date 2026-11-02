@@ -86,6 +86,17 @@ class ContractChanged(RuntimeError):
     event = "contract_changed"
 
 
+CAPACITY_RETRY_DELAYS = (120, 600)  # Seconds; two retries of the same phase, never repair slots.
+
+
+class SessionFailure(RuntimeError):
+    """A failed backend turn, with enough evidence to retry only model capacity failures."""
+
+    def __init__(self, message, *, at_capacity, session_id, detail):
+        super().__init__(message)
+        self.at_capacity, self.session_id, self.detail = at_capacity, session_id, detail
+
+
 class IssueBlocked(RuntimeError):
     """An issue-level stop (the work itself is blocked), as opposed to a batch-level failure.
 
@@ -882,7 +893,7 @@ class Runner:
                                 session = backend.session_id(event)
                                 meta["session_id"] = session
                                 write_json(directory / "session.json", meta)
-                                if (writable or resume) and self.state.get("active"):
+                                if writable and self.state.get("active"):
                                     self.state["active"]["session_id"] = session
                                     self.save()
                                 self.log(f"session {session} ({directory.name})")
@@ -909,8 +920,9 @@ class Runner:
             self.save(child_pid=None)
         if returncode != 0 or not backend.finished(events):
             detail = backend.failure(events)
-            raise RuntimeError(f"{backend.label} failed or did not finish a turn{': ' + detail if detail else ''}; "
-                               f"see {directory}")
+            raise SessionFailure(f"{backend.label} failed or did not finish a turn{': ' + detail if detail else ''}; "
+                                 f"see {directory}", at_capacity=backend.at_capacity(events),
+                                 session_id=meta["session_id"], detail=detail)
         return backend.result(request, events), events, meta["session_id"]
 
     def validate(self, directory, checks, environment, *, root=None):
@@ -1541,6 +1553,21 @@ class Runner:
 
     # --- Model phases and checks ------------------------------------------------
 
+    def wait_for_capacity(self, seconds):
+        """Wait without a model child; honor STOP and keep watchdog progress current."""
+        deadline = time.monotonic() + seconds
+        heartbeat = time.monotonic() + 30
+        while True:
+            if self.stop_requested():
+                raise RuntimeError("STOP marker during model capacity retry pause")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            if time.monotonic() >= heartbeat:
+                self.save()
+                heartbeat = time.monotonic() + 30
+            time.sleep(min(1, remaining))
+
     def model_phase(self, active, phase, prompt, *, resume=None, writable=True, result_schema=None, session_meta=None,
                     repair_source=None):
         """Run one model phase of ``active``. ``repair_source`` ("review") marks a repair of an
@@ -1552,40 +1579,65 @@ class Runner:
         selection = resolve_profile(self.config, active["issue"], phase, active.get("escalation"), light)
         self.verify_model(selection)
         active["selection"] = selection
-        attempt = Path(active["run_dir"]) / (phase + "-" + run_id())
-        # What ran at each stage, for the Linear comments (model, effort, backend and source).
-        active.setdefault("stages", []).append(
-            {k: selection[k] for k in ("phase", "profile", "backend", "model", "effort", "model_source")}
-            | {"attempt": str(attempt), "at": now()} | ({"repair_source": repair_source} if repair_source else {}))
-        self.save(active=active)
-        prompt += self.outbox_instructions(phase, attempt / "outbox")
-        if writable:
-            prompt += self.handoff_instructions(attempt)
-        try:
-            result, events, session = self.run_session(prompt, attempt, phase=phase, model=selection["model"],
-                                                       effort=selection["effort"], writable=writable, resume=resume,
-                                                       schema=result_schema, compact_limit=self.compact_limit(phase),
-                                                       watch=lambda: self.poll_outbox(active, phase, attempt),
-                                                       backend=selection["backend"])
-        finally:
-            try:  # progress drafts written before a failed or timed-out session are still posted
-                self.poll_outbox(active, phase, attempt, final=True)
-            except Exception as error:
-                self.log(f"Outbox poll failed (will retry): {error}")
-            if (attempt / "session.json").exists():
-                meta = read_json(attempt / "session.json")
-                meta["selection"] = selection
-                meta["prompt_bytes"] = len(prompt.encode())
-                meta["compact_token_limit"] = self.compact_limit(phase)
-                if session_meta:
-                    meta["handoff"] = session_meta
-                if repair_source:
-                    meta["repair_source"] = repair_source
-                captured = locals().get("events")
-                if captured is None and (attempt / "events.jsonl").exists():
-                    captured = [json.loads(line) for line in (attempt / "events.jsonl").read_text().splitlines() if line.strip()]
-                meta["tool_output_bytes"] = self.backend(selection["backend"]).tool_output_bytes(captured or [])
-                write_json(attempt / "session.json", meta)
+        retry_record = None
+        for retry in range(len(CAPACITY_RETRY_DELAYS) + 1):
+            attempt = Path(active["run_dir"]) / (phase + "-" + run_id())
+            # What ran at each stage, for the Linear comments (model, effort, backend and source).
+            active.setdefault("stages", []).append(
+                {k: selection[k] for k in ("phase", "profile", "backend", "model", "effort", "model_source")}
+                | {"attempt": str(attempt), "at": now()} | ({"repair_source": repair_source} if repair_source else {}))
+            if retry_record is not None:
+                retry_record["retry_attempt"] = str(attempt)
+                retry_record["started_at"] = now()
+            self.save(active=active)
+            attempt_prompt = prompt + self.outbox_instructions(phase, attempt / "outbox")
+            if writable:
+                attempt_prompt += self.handoff_instructions(attempt)
+            failure, events = None, None
+            try:
+                result, events, session = self.run_session(
+                    attempt_prompt, attempt, phase=phase, model=selection["model"], effort=selection["effort"],
+                    writable=writable, resume=resume, schema=result_schema, compact_limit=self.compact_limit(phase),
+                    watch=lambda: self.poll_outbox(active, phase, attempt), backend=selection["backend"])
+            except SessionFailure as error:
+                failure = error
+            finally:
+                try:  # progress drafts written before a failed or timed-out session are still posted
+                    self.poll_outbox(active, phase, attempt, final=True)
+                except Exception as error:
+                    self.log(f"Outbox poll failed (will retry): {error}")
+                if (attempt / "session.json").exists():
+                    meta = read_json(attempt / "session.json")
+                    meta["selection"] = selection
+                    meta["prompt_bytes"] = len(attempt_prompt.encode())
+                    meta["compact_token_limit"] = self.compact_limit(phase)
+                    if session_meta:
+                        meta["handoff"] = session_meta
+                    if repair_source:
+                        meta["repair_source"] = repair_source
+                    if retry_record is not None:
+                        meta["capacity_retry"] = copy.deepcopy(retry_record)
+                    captured = events
+                    if captured is None and (attempt / "events.jsonl").exists():
+                        captured = [json.loads(line) for line in (attempt / "events.jsonl").read_text().splitlines() if line.strip()]
+                    meta["tool_output_bytes"] = self.backend(selection["backend"]).tool_output_bytes(captured or [])
+                    write_json(attempt / "session.json", meta)
+            if failure is None:
+                break
+            if not failure.at_capacity or retry == len(CAPACITY_RETRY_DELAYS):
+                raise failure
+            resume = failure.session_id
+            retry_record = {"at": now(), "phase": phase, "backend": selection["backend"],
+                            "model": selection["model"], "effort": selection["effort"],
+                            "retry": retry + 1, "maximum": len(CAPACITY_RETRY_DELAYS),
+                            "delay_seconds": CAPACITY_RETRY_DELAYS[retry],
+                            "failure": failure.detail, "session_id": resume, "failed_attempt": str(attempt)}
+            active.setdefault("capacity_retries", []).append(retry_record)
+            self.save(active=active)
+            self.emit(active["issue_id"], "capacity-retry",
+                      messages.capacity_retry(self.ctx, issue=active["issue_id"], record=retry_record),
+                      dedupe=str(attempt))
+            self.wait_for_capacity(retry_record["delay_seconds"])
         write_json(attempt / "phase-result.json", result)
         if writable:
             active["session_id"] = session

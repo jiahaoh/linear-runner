@@ -286,6 +286,12 @@ def samples():
                                issues=messages.issues_prose(done=["TEAM-10", "TEAM-11"], paused="TEAM-12",
                                                             pending=["TEAM-13", "TEAM-14"]),
                                evidence_paths=[f"{STATE}/terminal-report.html", f"{STATE}/terminal-report.json"])),
+        ("Capacity retry", "capacity-retry.md", "runner", "before retrying a turn that hit model capacity",
+         "TEAM-12", "capacity-retry",
+         messages.capacity_retry(CTX, issue="TEAM-12", record={"phase": "implement", "backend": "codex",
+             "model": "gpt-6.1-sol", "effort": "high", "retry": 1, "maximum": 2, "delay_seconds": 120,
+             "failure": "Selected model is at capacity; Please try a different model.",
+             "session_id": "fixture-session", "failed_attempt": f"{RUN}/implement-20260923T101500Z-5e6f7a8b"})),
         ("Watchdog alert", "watchdog.md", "runner (model-free watchdog)",
          "when the supervisor vanished without an outcome, or stalled", "TEAM-12", "watchdog",
          messages.watchdog(CTX, condition="gone", subject="TEAM-12", observed=(

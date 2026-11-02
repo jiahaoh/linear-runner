@@ -53,11 +53,15 @@ import subprocess
 import time
 import uuid
 
-# Models verified with real probes (W-190) on Claude Code 2.1.281; each accepts every effort
+# Models verified with real probes (W-757) on Claude Code 2.1.308; each accepts every effort
 # of the CLI's --effort. A model not listed here fails preflight until it is probed and added.
+# Saved calls: runs/W-757/20261102T155144Z-controller-probes/ (see registry/models.json).
 KNOWN_MODELS = {
     "claude-opus-5-5": ("low", "medium", "high", "xhigh", "max"),
     "claude-sonnet-5": ("low", "medium", "high", "xhigh", "max"),
+    "claude-sonnet-5-5": ("low", "medium", "high", "xhigh", "max"),
+    "claude-haiku-5-5": ("low", "medium", "high", "xhigh", "max"),
+    "claude-fable-5-1": ("low", "medium", "high", "xhigh", "max"),
 }
 # claude-opus-5-5 needs 2.1.280 or newer (an older CLI returns an API 400 error result).
 MIN_VERSION = (2, 1, 280)
@@ -461,6 +465,10 @@ class ClaudeBackend:
         if status == 401 or AUTH_ERROR.search(text):
             return auth_failure(self.auth_mode, message)
         return message
+
+    def at_capacity(self, events):
+        # No documented or observed Claude capacity message in the W-757 evidence.
+        return False
 
     def result(self, request, events):
         result = self.last_result(events)

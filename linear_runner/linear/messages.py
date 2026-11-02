@@ -16,6 +16,18 @@ from linear_runner.linear.updates import (first_sentence, issue_mentions, neutra
 AUTH = '--reason "<why>" --authorized-by "<your name>"'
 
 
+def capacity_retry(ctx, *, issue, record):
+    """The recorded pause before another attempt of a turn that hit model capacity."""
+    return render("capacity-retry", {"issue": issue, "phase": record["phase"],
+                                    "failure": said(record["failure"], 300),
+                                    "retry": record["retry"], "maximum": record["maximum"],
+                                    "seconds": record["delay_seconds"], "model": record["model"],
+                                    "effort": record["effort"], "backend": record["backend"],
+                                    "session": ("The started session is resumed." if record["session_id"] else
+                                                "No session started, so the retry starts fresh."),
+                                    "evidence": record["failed_attempt"]})
+
+
 def context(config):
     """Values every message needs, from a resolved configuration."""
     from linear_runner.config import DEFAULT_HOME, batch_argument, find_home

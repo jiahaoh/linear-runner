@@ -343,7 +343,26 @@ site changes the configuration fingerprint of its batches, so a paused batch the
 The Claude reviewer's read-only guarantee is Claude Code's permission rules, not an OS
 sandbox; the runner's frozen-source check after the review still stops the issue if the
 worktree changed. A Claude error result (for example an unavailable model) stops as an
-`environment` stop with the CLI's message, never a silent retry.
+`environment` stop with the CLI's message. Model capacity is the one bounded automatic retry: Codex's observed
+"Selected model is at capacity" failure retries the same phase, model and effort after 120
+and then 600 seconds, resuming a started session or starting fresh otherwise. Each attempt
+keeps its own directory, each retry is recorded in active state and posted as a new issue
+comment, and no repair or review slot is used. After two retries the usual environment stop
+and recovery action apply. Claude has no capacity pattern: no documented or observed message
+was available. Other failures stop immediately, and retries are never silent.
+
+The registry includes Claude Opus 5.5, Sonnet 5 (superseded but still available), Sonnet 5.5,
+Haiku 5.5 and Fable 5.1, plus Codex GPT-6 Astra, GPT-6 Luna, GPT-6.1 Sol and GPT-6.1 Terra.
+`registry/models.json` records all catalog-confirmed or probe-confirmed efforts for these
+models and identifies efforts without a session probe; its notes name the checked CLI
+versions and saved evidence. New models stay outside public pools pending the owner's pool
+decision. A private registry may add them to a pool, then a batch names the model and effort
+through the existing override mechanism.
+
+Capacity pauses have no live model child and run outside the per-call phase timeout; the
+runner checks STOP each second and refreshes state every 30 seconds for the watchdog.
+The supervisor waits synchronously for the phase, and the watchdog's default stall threshold
+is 120 minutes, so a ten-minute pause does not look like a stalled session.
 
 ### Claude authentication
 
@@ -1460,7 +1479,7 @@ Every pause is recorded in `state.stops` with a class. The rule is in
 | --- | --- |
 | `needs-decision` | worker or review blocked, soft budget exceeded, or something changed outside the runner (issue state, scope, gates, Git history, configuration) |
 | `technical-block` | checks still failing after the allowed repairs, delivery failed, or another runner-raised stop |
-| `environment` | Linear or model CLI errors (authentication, HTTP, timeouts, error results, missing results), OS errors and signals |
+| `environment` | Linear or model CLI errors (authentication, HTTP, timeouts, error results, missing results), OS errors and signals; model capacity stops only after its two recorded automatic retries (other errors stop immediately) |
 | `runner-defect` | any other exception type (a bug in the runner) |
 
 On a pause the runner posts a NEW `blocked` comment on the issue that stopped (the terminal

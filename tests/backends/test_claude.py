@@ -181,16 +181,17 @@ class SelectionCheckTests(unittest.TestCase):
     def test_known_model_and_effort_pass(self):
         backend = self.backend()
         backend.check_selection({"model": "claude-opus-5-5", "effort": "medium"})
+        # Fable is now probe-verified (W-757); keep the negative case explicitly unprobed.
         report = backend.catalog_report([{"model": "claude-opus-5-5", "effort": "high"},
-                                         {"model": "claude-fable-5-1", "effort": "high"}])
+                                         {"model": "claude-unprobed", "effort": "high"}])
         self.assertEqual(report["registry_pool_entries_available"],
-                         {"claude-opus-5-5/high": True, "claude-fable-5-1/high": False})
+                         {"claude-opus-5-5/high": True, "claude-unprobed/high": False})
         self.assertEqual(report["auth"], {"loggedIn": True, "authMethod": "claude.ai"})
         self.assertNotIn("example.invalid", json.dumps(report))
 
     def test_unprobed_model_old_cli_and_other_logins_stop(self):
         with self.assertRaisesRegex(RuntimeError, "unavailable in host CLI catalog"):
-            self.backend().check_selection({"model": "claude-fable-5-1", "effort": "high"})
+            self.backend().check_selection({"model": "claude-unprobed", "effort": "high"})
         with self.assertRaisesRegex(RuntimeError, "CLI version 2.1.272 is unsupported") as caught:
             self.backend(version="2.1.272").check_selection({"model": "claude-opus-5-5", "effort": "medium"})
         self.assertEqual(classify_stop(caught.exception), "environment")
