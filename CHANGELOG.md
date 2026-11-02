@@ -26,6 +26,9 @@ A Codex turn that reports model capacity retries the same phase, model and effor
 and each retry is saved in state and announced in a new issue comment. Exhausted retries
 and other backend failures still stop as environment errors with the existing recovery action.
 Claude has no capacity retry pattern without an observed or documented message.
+Resumed reviews keep their phase's read-only isolation; resumed workers keep workspace-write
+isolation. Before 3.5.0, no earlier path resumed a review: ordinary reviews, `recover review`,
+review budget recovery and recovery after a stopped review all started a fresh review session.
 
 **Project impact:** none for existing configurations; to select a new model, add it to a
 private registry pool and name it in the batch's model overrides as before. Existing batches

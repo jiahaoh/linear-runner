@@ -123,6 +123,13 @@ print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "outpu
         self.assertEqual(self.active["session_id"], "worker-session")
         self.assertEqual(self.active["repairs"], 1)
         self.assertEqual(self.pauses, [120, 600])
+        for call in self.calls():
+            command = call["argv"]
+            self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+            self.assertNotIn("--approve-for-me", command)
+            self.assertNotIn("--add-dir", command)
+            if "resume" in command:
+                self.assertLess(command.index("--sandbox"), command.index("resume"))
         stop = self.runner.record_stop(caught.exception)
         self.assertIn("recover review", self.runner.blocked_body(stop))
 
@@ -134,6 +141,19 @@ print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "outpu
                 self.run_phase([{"error": CAPACITY}, {}], phase, writable=phase != "review")
                 self.assertIn("resume", self.calls()[1]["argv"])
                 self.assertIn("test-session", self.calls()[1]["argv"])
+                command = self.calls()[1]["argv"]
+                if phase == "review":
+                    self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+                    for option in ("--sandbox", 'approval_policy="on-request"', 'approvals_reviewer="auto_review"'):
+                        self.assertLess(command.index(option), command.index("resume"))
+                    self.assertNotIn("--approve-for-me", command)
+                    self.assertNotIn("--add-dir", command)
+                    self.assertEqual(self.records()[-1]["backend_details"]["isolation"],
+                                     "OS sandbox: --sandbox read-only")
+                else:
+                    self.assertLess(command.index("--approve-for-me"), command.index("resume"))
+                    self.assertIn("--add-dir", command)
+                    self.assertIn("sandbox_workspace_write.network_access=false", command)
                 record = self.active["capacity_retries"][-1]
                 self.assertEqual(record["session_id"], "test-session")
                 self.assertEqual(record["phase"], phase)

@@ -60,6 +60,35 @@ class CodexCommandTests(unittest.TestCase):
                 self.assertEqual(meta["execution_evidence"]["usage_events"][0]["usage"]["input_tokens"], 10)
                 self.assertIsNone(meta["execution_evidence"]["observed_models"])
 
+    def test_phase_isolation_and_description_agree_on_fresh_and_resumed_calls(self):
+        for writable in (False, True):
+            for resume in (None, "original-session"):
+                with self.subTest(writable=writable, resume=resume):
+                    directory = self.root / f"isolation-{writable}-{bool(resume)}"
+                    self.runner.run_session("test only", directory, phase="repair" if writable else "review",
+                                            model="astra", effort="high", writable=writable, resume=resume)
+                    meta = json.loads((directory / "session.json").read_text())
+                    command = meta["command"]
+                    boundary = command.index("resume" if resume else "-C")
+                    if writable:
+                        expected = ["--approve-for-me", "--add-dir", self.config["artifact_root"],
+                                    "-c", "sandbox_workspace_write.network_access=false"]
+                        isolation = "workspace write with --approve-for-me, network off"
+                        self.assertNotIn("--sandbox", command)
+                    else:
+                        expected = ["--sandbox", "read-only", "-c", 'approval_policy="on-request"',
+                                    "-c", 'approvals_reviewer="auto_review"']
+                        isolation = "OS sandbox: --sandbox read-only"
+                        self.assertNotIn("--approve-for-me", command)
+                        self.assertNotIn("--add-dir", command)
+                        self.assertNotIn("sandbox_workspace_write.network_access=false", command)
+                    self.assertEqual(command[2:boundary], expected)
+                    self.assertEqual(meta["backend_details"]["isolation"], isolation)
+                    if resume:
+                        self.assertEqual(command[boundary + 1], resume)
+                        self.assertNotIn("-C", command)
+                        self.assertGreater(command.index("--model"), boundary)
+
     def test_custom_schema_reaches_cli_unchanged(self):
         custom = {"type": "object", "properties": {"issue_id": {"type": "string", "enum": ["DEV-1"]}}, "required": ["issue_id"], "additionalProperties": False}
         result, _, _ = self.runner.run_session("schema fixture", self.root / "custom", phase="review", model="astra", effort="high", schema=custom)

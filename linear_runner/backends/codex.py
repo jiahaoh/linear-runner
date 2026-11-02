@@ -138,8 +138,8 @@ class CodexBackend:
         """``codex exec`` argv; ``compact_limit`` becomes ``-c model_auto_compact_token_limit=<N>``
         on fresh and resumed calls, and ``None`` leaves the Codex default."""
         command = [self.config["codex"], "exec"]
-        # Parent options precede the subcommand so resumed turns keep the same approvals.
-        if request.writable or request.resume:
+        # Parent options precede the subcommand so resumed turns keep their phase's isolation.
+        if request.writable:
             command += ["--approve-for-me", "--add-dir", self.config["artifact_root"]]
             # Workers stay offline whatever the host's Codex config says; -c overrides the file.
             command += ["-c", "sandbox_workspace_write.network_access=false"]
@@ -163,7 +163,7 @@ class CodexBackend:
         return dict(base)
 
     def describe(self, request):
-        return {"isolation": "workspace write with --approve-for-me, network off" if request.writable or request.resume
+        return {"isolation": "workspace write with --approve-for-me, network off" if request.writable
                 else "OS sandbox: --sandbox read-only"}
 
     # --- Reading the JSONL events and the result ---------------------------------------

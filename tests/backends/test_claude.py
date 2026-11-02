@@ -9,7 +9,7 @@ import unittest
 import uuid
 
 from linear_runner import backends
-from linear_runner.backends.claude import ClaudeBackend, normalized_usage
+from linear_runner.backends.claude import ClaudeBackend, REVIEWER_PROMPT, normalized_usage
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import RESULT_SCHEMA, Runner, usage_totals, write_json
 from linear_runner.linear.attention import classify_stop
@@ -140,6 +140,26 @@ class CommandTests(unittest.TestCase):
                          ["Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)"])
         self.assertFalse([a for a in allowed if a == "Bash" or a.startswith(("Edit", "Write"))])
         self.assertNotIn("--add-dir", reviewer)
+
+    def test_resumed_review_keeps_reviewer_settings_tools_and_prompt(self):
+        fresh = self.backend.command(self.request("fresh-review", writable=False))
+        resumed = self.backend.command(self.request("resumed-review", writable=False, resume="review-session"))
+        self.assertEqual(self.option(resumed, "--resume"), "review-session")
+        self.assertNotIn("--session-id", resumed)
+        self.assertNotIn("--add-dir", resumed)
+        self.assertEqual(self.option(resumed, "--permission-mode"), "dontAsk")
+        self.assertEqual(self.option(resumed, "--tools").split(","), ["Read", "Grep", "Glob", "Bash"])
+        self.assertEqual(self.option(resumed, "--append-system-prompt"), REVIEWER_PROMPT)
+        for option in ("--permission-mode", "--permission-prompts", "--tools", "--append-system-prompt"):
+            self.assertEqual(self.option(resumed, option), self.option(fresh, option))
+        for argv in (fresh, resumed):
+            settings = json.loads(Path(self.option(argv, "--settings")).read_text())
+            self.assertEqual(settings["permissions"]["defaultMode"], "dontAsk")
+            self.assertEqual(settings, json.loads(Path(self.option(fresh, "--settings")).read_text()))
+        self.assertEqual(resumed[resumed.index("--allowedTools") + 1:resumed.index("--disallowedTools")],
+                         fresh[fresh.index("--allowedTools") + 1:fresh.index("--disallowedTools")])
+        self.assertEqual(resumed[resumed.index("--disallowedTools") + 1:resumed.index("--append-system-prompt")],
+                         ["Edit", "Write", "NotebookEdit"])
 
     def test_fresh_sessions_get_an_id_and_resumes_continue_it(self):
         fresh = self.backend.command(self.request("implement"))
