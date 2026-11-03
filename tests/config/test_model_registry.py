@@ -25,9 +25,11 @@ class ModelRegistryTests(unittest.TestCase):
             policy, _, _ = load_registry(root / "absent-home")
             entries = [{"backend": policy["models"]["models"][model]["backend"], "model": model, "effort": effort}
                        for model in NEW_MODELS for effort in policy["models"]["models"][model]["efforts"]]
-            # Public defaults are untouched: a private pool must permit a batch's named entry.
+            # Public defaults are untouched: a private pool must permit a batch's named entry. Entries the public
+            # pool already has (3.5.1's named Claude entries, W-794) are not repeated: a pool lists an entry once.
             reg = {"pools": {"pools": {"*": {}}}}
-            phases = {p: list(policy["pools"]["pools"]["*"]["Standard"][p]) + entries
+            public = policy["pools"]["pools"]["*"]["Standard"]
+            phases = {p: list(public[p]) + [e for e in entries if e not in public[p]]
                       for p in ("implement", "repair", "review")}
             set_pools(reg, "Standard", phases)
             for entry in entries:

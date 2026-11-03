@@ -9,7 +9,8 @@
     "Accepted cost trade-off: in the W-186 canary a gpt-6-luna max review used 876k input tokens in 336 s, more than the astra-medium implementation it reviewed (378k in 145 s); astra-medium reviews used 327-544k in 127-175 s. Luna stays at max effort.",
     "Not in any pool for now: gpt-6-sol and claude-fable-5-1.",
     "gpt-6.1-sol reviews first in the * Standard pool (high effort) and the * Economy pool (medium effort, reached by the low-risk review rule); the earlier defaults follow as named alternatives. The Deep and Research review pools and every implement and repair pool are unchanged (Jiahao, 2026-10-19, W-528).",
-    "gpt-6.1-sol (high effort) is a named implement and repair entry in the Maintenance Standard pools and the * Deep pools, never a default: a batch names it with model_overrides, and an escalation from it keeps it (Jiahao, 2026-10-28, hk-l-guides-20261028, to spend less Claude usage)."
+    "gpt-6.1-sol (high effort) is a named implement and repair entry in the Maintenance Standard pools and the * Deep pools, never a default: a batch names it with model_overrides, and an escalation from it keeps it (Jiahao, 2026-10-28, hk-l-guides-20261028, to spend less Claude usage).",
+    "claude-sonnet-5-5 and claude-opus-5-5 (high effort) are named implement and repair entries, never defaults, in the Standard and Economy pools of *, Implementation and Maintenance, so that batches can name Claude implementers by issue (Jiahao, 2026-11-03, W-794: \"以后的 batch 用 opus5.5 和 Sonnet5.5 做 implementation\"). Sonnet 5.5 is not added to the Deep pools: an escalation keeps a named model that the Deep pool has, so Sonnet there would repeat the same model instead of escalating. Review pools are unchanged."
   ],
   "pools": {
     "*": {
@@ -32,11 +33,15 @@
       "Standard": {
         "implement": [
           {"backend": "codex", "model": "gpt-6-astra", "effort": "medium"},
-          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ],
         "repair": [
           {"backend": "codex", "model": "gpt-6-astra", "effort": "medium"},
-          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ],
         "review": [
           {"backend": "codex", "model": "gpt-6.1-sol", "effort": "high"},
@@ -47,11 +52,15 @@
       "Economy": {
         "implement": [
           {"backend": "codex", "model": "gpt-6-luna", "effort": "max"},
-          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ],
         "repair": [
           {"backend": "codex", "model": "gpt-6-luna", "effort": "max"},
-          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ],
         "review": [
           {"backend": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
@@ -64,11 +73,15 @@
       "Standard": {
         "implement": [
           {"backend": "codex", "model": "gpt-6-luna", "effort": "max"},
-          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ],
         "repair": [
           {"backend": "codex", "model": "gpt-6-luna", "effort": "max"},
-          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ]
       }
     },
@@ -77,12 +90,16 @@
         "implement": [
           {"backend": "codex", "model": "gpt-6-luna", "effort": "max"},
           {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
-          {"backend": "codex", "model": "gpt-6.1-sol", "effort": "high"}
+          {"backend": "codex", "model": "gpt-6.1-sol", "effort": "high"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ],
         "repair": [
           {"backend": "codex", "model": "gpt-6-luna", "effort": "max"},
           {"backend": "claude", "model": "claude-opus-5-5", "effort": "medium"},
-          {"backend": "codex", "model": "gpt-6.1-sol", "effort": "high"}
+          {"backend": "codex", "model": "gpt-6.1-sol", "effort": "high"},
+          {"backend": "claude", "model": "claude-sonnet-5-5", "effort": "high"},
+          {"backend": "claude", "model": "claude-opus-5-5", "effort": "high"}
         ]
       }
     },

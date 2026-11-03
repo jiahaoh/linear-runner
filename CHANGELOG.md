@@ -15,6 +15,22 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.5.1 — 2026-11-03
+
+The implement and repair pools gain two named entries, `claude-sonnet-5-5` at high effort and `claude-opus-5-5` at
+high effort, in the Standard and Economy pools of `*`, `Implementation` and `Maintenance` (W-794). Defaults, order of
+the existing entries, the Deep and Research pools and every review pool are unchanged. Sonnet 5.5 is not added to the
+Deep pools, so that an escalation from it still moves to the Deep pool's default. Before 3.5.1, a batch could name these
+models for a Standard or Economy issue only through a private registry, which applies to every batch of the home and
+which an earlier release that lacks Sonnet 5.5 refuses to load.
+
+**Project impact:** none for existing configurations; a batch that pins `runner_version` "3.5.1" may name
+`claude-sonnet-5-5@high` or `claude-opus-5-5@high` in its `model_overrides` for a Standard or Economy issue.
+
+The first 3.5.1 batch also serves as the canary of 3.5.0, which no batch has run.
+
+**Canary tier:** canary batch.
+
 ## v3.5.0 — 2026-11-02
 
 The model registry adds Sonnet 5.5, Haiku 5.5, Fable 5.1 and GPT-6.1 Terra, expands accepted
