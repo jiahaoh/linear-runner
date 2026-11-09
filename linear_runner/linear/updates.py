@@ -361,7 +361,8 @@ def neutralize_issue_mentions(text):
 
 
 _MENTION_MARKUP = re.compile(r'<issue\b(?P<attrs>[^>]*)>(?P<id>[A-Z][A-Z0-9]{0,9}-\d+)</issue>'
-                             r'|\[(?P<link>[A-Z][A-Z0-9]{0,9}-\d+)\]\((?P<url>https://linear\.app/[^)\s]*)\)')
+                             r'|\[(?P<link>[A-Z][A-Z0-9]{0,9}-\d+)\]\('
+                             r'(?P<url><https://linear\.app/[^<>\s]*>|https://linear\.app/[^)<>\s]*)\)')
 
 
 def plain_mentions(text):
@@ -369,15 +370,17 @@ def plain_mentions(text):
 
     Linear links a plain identifier it knows when it saves a description: ``W-242`` comes
     back as ``<issue id="…" href="https://linear.app/<workspace>/issue/W-242/<slug>">W-242</issue>``
-    (W-242, written before that issue existed), or as a Markdown link to the issue. Markup
-    whose ``href`` or URL names a different issue than its text is left as it is. Text read
-    from Linear is written back in this form: re-saving its own markup, Linear misplaced the
-    backticks of code spans in the same paragraph (W-483, W-484).
+    (W-242, written before that issue existed), or as a Markdown link to the issue with a
+    bare or angle-bracket URL. Markup whose ``href`` or URL names a different issue than its
+    text is left as it is. Text read from Linear is written back in this form: re-saving its
+    own markup, Linear misplaced the backticks of code spans in the same paragraph (W-483, W-484).
     """
     def plain(match):
         identifier = match.group("id") or match.group("link")
         target = re.search(r'href="([^"]*)"', match.group("attrs") or "")
         url = match.group("url") or (target.group(1) if target else None)
+        if url and url.startswith("<"):
+            url = url[1:-1]
         if url is not None and not re.search(rf"/issue/{re.escape(identifier)}(?:[/?#]|$)", url, re.I):
             return match.group(0)
         return identifier

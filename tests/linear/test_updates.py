@@ -644,6 +644,16 @@ class MessageTests(unittest.TestCase):
 class MentionTests(unittest.TestCase):
     """Runner comments that quote people's or models' words must not make Linear link issues."""
 
+    def test_plain_mentions_accepts_angle_bracket_urls_only_for_the_same_issue(self):
+        for target in ("W-622", "W-622/slug", "W-622?view=detail", "W-622#notes"):
+            with self.subTest(target=target):
+                link = f"[W-622](<https://linear.app/example/issue/{target}>)"
+                self.assertEqual(updates.plain_mentions(f"See {link}'s notes."), "See W-622's notes.")
+        for target in ("W-623/slug", "W-6220", "W-622-other"):
+            with self.subTest(target=target):
+                link = f"[W-622](<https://linear.app/example/issue/{target}>)"
+                self.assertEqual(updates.plain_mentions(link), link)
+
     def test_bare_identifiers_and_linear_urls_become_inline_code(self):
         cases = {
             "Filing W-194 auto-added a related link to W-193.": "Filing `W-194` auto-added a related link to `W-193`.",

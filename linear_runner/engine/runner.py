@@ -12,6 +12,7 @@ import datetime as dt
 import fcntl
 import fnmatch
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -562,14 +563,14 @@ def publication_form(description):
     ``*Accepted (*<issue>…</issue>*, 2026-09-27, at* `…`*)*`` came back without the middle
     pair), and it turns a plain issue identifier into mention markup (``updates.plain_mentions``).
     None of these changes a word, link target or code span, so checked items become ``[x]``,
-    mention markup becomes its identifier, and ``*`` outside code spans is dropped, except a
-    line's ``* `` bullet.
+    mention markup becomes its identifier, and ``*`` (including backslash-escaped asterisks)
+    outside code spans is dropped, except a line's ``* `` bullet (W-777).
     """
     lines = []
     for line in re.sub(r"^(\s*[-*] )\[X\]", r"\1[x]", updates.plain_mentions(description), flags=re.M).split("\n"):
         bullet = re.match(r"\s*(?:\* )?", line).group()
         parts = re.split(r"(`+[^`]*`+)", line[len(bullet):])
-        lines.append(bullet + "".join(p if i % 2 else p.replace("*", "") for i, p in enumerate(parts)))
+        lines.append(bullet + "".join(p if i % 2 else re.sub(r"\\?\*", "", p) for i, p in enumerate(parts)))
     return "\n".join(lines)
 
 
@@ -2525,7 +2526,14 @@ class Runner:
                                   and published_contract_matches(i, active["issue"]))
             self.verify_issue(confirmed, completed=True)
             if not published_contract_matches(confirmed, active["issue"]):
-                raise RuntimeError("Published checklist read-back mismatch")
+                expected = publication_form(published["description"]).split("\n")
+                actual = publication_form(confirmed.get("description", "")).split("\n")
+                detail = ""
+                for number, (before, after) in enumerate(itertools.zip_longest(expected, actual), 1):
+                    if before != after:
+                        detail = f" at line {number}: expected {before!r}; read back {after!r}"
+                        break
+                raise RuntimeError("Published checklist read-back mismatch" + detail)
             if confirmed.get("projectMilestone"):
                 self.linear.call("get_milestone", project=self.config["project_id"], query=confirmed["projectMilestone"]["id"])
             active["step"] = "done"; self.save(active=active)

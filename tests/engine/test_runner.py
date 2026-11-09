@@ -1188,6 +1188,75 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(published_contract_matches(
             dict(live, description=self.RESERIALIZED + "\n- [X] Produce validated output"), original))
 
+    def test_w212_escaped_emphasis_compares_equal_and_completes_publication(self):
+        # W-212's snapshot fragment quoted in W-777, with a public placeholder for the markup.
+        published = '**<issue id="fixture">W-649</issue>\'s U9**'
+        live = r"W-649\*\*'s U9\*\*"
+        self.assertEqual(publication_form(published), "W-649's U9")
+        self.assertEqual(publication_form(published), publication_form(live))
+        self.assertNotEqual(publication_form(published), publication_form(live.replace("U9", "U8")))
+        self.linear.data["description"] = published + "\n\n- [ ] Produce validated output"
+        original = self.linear.call
+        def serialize(name, **args):
+            result = original(name, **args)
+            if name == "save_issue" and "description" in args:
+                self.linear.data["description"] = live + "\n\n- [X] Produce validated output"
+            return result
+        self.linear.call = serialize
+        self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["phase"], "queue_complete")
+
+    def test_escaped_emphasis_keeps_code_spans_and_other_backslashes(self):
+        text = r"* [X] \*Bold\* `a\*b` ``c\*d`` path\name \_text\_ \~text\~"
+        self.assertEqual(publication_form(text),
+                         r"* [x] Bold `a\*b` ``c\*d`` path\name \_text\_ \~text\~")
+        self.assertNotEqual(publication_form(r"`a\*b`"), publication_form("`ab`"))
+
+    def test_w654_angle_link_and_escaped_emphasis_compare_equal(self):
+        # W-654's accepted list item 3 as quoted in W-777; only the workspace and slug are placeholders.
+        published = "3. W-622**'s notes** say …"
+        link = "[W-622](<https://linear.app/example/issue/W-622/slug>)"
+        live = "3. " + link + r"\*\*'s notes\*\* say …"
+        self.assertEqual(publication_form(published), publication_form(live))
+        self.assertNotEqual(publication_form(published),
+                            publication_form(live.replace("/W-622/", "/W-623/")))
+        self.assertNotEqual(publication_form(published), publication_form(live.replace("notes", "report")))
+
+    def publication_mismatch(self, expected, actual):
+        self.linear.data["description"] = expected
+        original = self.linear.call
+        def serialize(name, **args):
+            result = original(name, **args)
+            if name == "save_issue" and "description" in args:
+                self.linear.data["description"] = actual
+            return result
+        self.linear.call = serialize
+        with self.assertRaisesRegex(RuntimeError, "Published checklist read-back mismatch") as raised:
+            self.runner.execute(limit=1)
+        self.assertEqual(self.runner.state["active"]["step"], "publish")
+        self.assertFalse(self.runner.state["history"])
+        return str(raised.exception)
+
+    def test_publication_mismatch_stop_names_first_differing_normalized_line(self):
+        error = self.publication_mismatch("**Context**\n\nExpected word\nLater difference\n"
+                                          "- [ ] Produce validated output",
+                                          "Context\n\nChanged word\nAnother difference\n"
+                                          "- [X] Produce validated output")
+        self.assertEqual(error, "Published checklist read-back mismatch at line 3: "
+                                "expected 'Expected word'; read back 'Changed word'")
+
+    def test_publication_mismatch_stop_names_missing_line(self):
+        error = self.publication_mismatch("- [ ] Produce validated output\nExpected tail",
+                                          "- [X] Produce validated output")
+        self.assertEqual(error, "Published checklist read-back mismatch at line 2: "
+                                "expected 'Expected tail'; read back None")
+
+    def test_publication_mismatch_stop_names_added_line(self):
+        error = self.publication_mismatch("- [ ] Produce validated output",
+                                          "- [X] Produce validated output\nAdded tail")
+        self.assertEqual(error, "Published checklist read-back mismatch at line 2: "
+                                "expected None; read back 'Added tail'")
+
     # The W-242 shape: a plain identifier written before that issue existed came back as a mention.
     PLAIN = "- [ ] Draft the amendment as DEV-42 and link it from the report."
     MENTION = ('- [X] Draft the amendment as <issue id="fixture-uuid" href="https://linear.app/example/issue/DEV-42/'

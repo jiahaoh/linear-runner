@@ -15,6 +15,15 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+Publication read-back accepts Linear's backslash-escaped asterisks outside code spans and
+issue mentions written as Markdown links with angle-bracket URLs when the target matches
+the identifier (W-777, including W-657). Substantive text and mismatched link targets still
+block publication; the mismatch stop names the first differing line of the publication forms.
+
+**Project impact:** none; existing configurations need no change.
+
+**Canary tier:** canary batch; the engine's publication comparison changes.
+
 ## v3.5.1 — 2026-11-03
 
 The implement and repair pools gain two named entries, `claude-sonnet-5-5` at high effort and `claude-opus-5-5` at
