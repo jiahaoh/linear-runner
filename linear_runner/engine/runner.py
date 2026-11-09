@@ -2299,6 +2299,8 @@ class Runner:
         return (f"Independently assess {issue}. Read {active['run_dir']}/intake.json, "
                 f"{active['validation_dir']}/checks.json, the implementation result and delivery evidence in {active['run_dir']}, "
                 f"and the Git diff {active['starting_commit']}..{active['commit']} in {self.repo}. "
+                f"Your working directory is {self.repo}. Read the diff with this single Bash command: "
+                f"`git diff --no-ext-diff --no-textconv {active['starting_commit']}..{active['commit']} --`. "
                 "Assess every original acceptance criterion and relevant source; do not rely only on the worker's claims. "
                 "Return the readiness schema with criterion-level evidence and the current full commit. Copy each original unchecked checklist item verbatim into criterion. "
                 "No mutations of files, Git or Linear. Unmet/uncertain criteria mean blocked. "

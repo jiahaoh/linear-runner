@@ -100,7 +100,15 @@ WORKER_PROMPT = ("You are a non-interactive worker session started by linear-run
                  "start other agents. Work only in the project worktree and the artifact paths the task names. "
                  "Your final message must be the JSON result the task asks for.")
 REVIEWER_PROMPT = ("You are a non-interactive, read-only reviewer session started by linear-runner. Do not change "
-                   "any file, Git state or Linear; read files and run read-only Git commands only. Your final "
+                   "any file, Git state or Linear; read files and run read-only Git commands only. "
+                   "Bash permits only these command prefixes: git diff, git log, git show, git status, "
+                   "git rev-parse, git ls-files, git grep, git blame. Use one plain Git command per Bash call, "
+                   "starting with the permitted prefix: no variable assignments or expansions, pipes, redirections, "
+                   "command substitutions, chained commands or cd. The session already starts in the repository "
+                   "named by the task; do not prepend git -C or other global options. Run the task's exact diff "
+                   "command before assessing the changes. If a compound command is denied, retry the plain "
+                   "permitted command; do not infer that Bash is unavailable or substitute files at HEAD for the "
+                   "diff. If the diff still cannot be read, report that limitation and mark the review blocked. Your final "
                    "message must be the JSON result the task asks for.")
 
 

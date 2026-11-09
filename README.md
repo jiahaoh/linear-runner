@@ -342,7 +342,10 @@ site changes the configuration fingerprint of its batches, so a paused batch the
 
 The Claude reviewer's read-only guarantee is Claude Code's permission rules, not an OS
 sandbox; the runner's frozen-source check after the review still stops the issue if the
-worktree changed. A Claude error result (for example an unavailable model) stops as an
+worktree changed. The review task supplies a plain `git diff` command for `starting_commit..commit`
+in the session's repository working directory. Claude reviewers are told to run one allowlisted
+Git command per Bash call, without variables, pipes, `cd` or chained commands, and to block
+the review if they cannot read the diff. A Claude error result (for example an unavailable model) stops as an
 `environment` stop with the CLI's message. Model capacity is the one bounded automatic retry: Codex's observed
 "Selected model is at capacity" failure retries the same phase, model and effort after 120
 and then 600 seconds, resuming a started session or starting fresh otherwise. Each attempt

@@ -161,6 +161,22 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(resumed[resumed.index("--disallowedTools") + 1:resumed.index("--append-system-prompt")],
                          ["Edit", "Write", "NotebookEdit"])
 
+    def test_reviewer_prompt_explains_the_unchanged_read_only_git_allowlist(self):
+        """W-756: teach the reviewer the forms dontAsk permits, without granting more tools."""
+        argv = self.backend.command(self.request("review-git-forms", writable=False))
+        allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+        prefixes = ("git diff", "git log", "git show", "git status", "git rev-parse", "git ls-files",
+                    "git grep", "git blame")
+        self.assertEqual(allowed, ["Read", "Grep", "Glob"] + [f"Bash({prefix}:*)" for prefix in prefixes])
+        prompt = self.option(argv, "--append-system-prompt")
+        for prefix in prefixes:
+            self.assertIn(prefix, prompt)
+        for instruction in ("one plain Git command per Bash call", "no variable assignments or expansions",
+                            "pipes, redirections", "command substitutions, chained commands or cd",
+                            "session already starts in the repository", "do not prepend git -C",
+                            "retry the plain permitted command", "mark the review blocked"):
+            self.assertIn(instruction, prompt)
+
     def test_fresh_sessions_get_an_id_and_resumes_continue_it(self):
         fresh = self.backend.command(self.request("implement"))
         self.assertEqual(str(uuid.UUID(self.option(fresh, "--session-id"))), self.option(fresh, "--session-id"))

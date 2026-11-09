@@ -6,6 +6,9 @@ import contextlib
 import copy
 import json
 from pathlib import Path
+import re
+import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -87,6 +90,35 @@ class ClaudeEngineTests(unittest.TestCase):
         """A fresh repository, Linear issue and state root for another run in the same test."""
         self.tmp.cleanup()
         self.setUp()
+
+    def test_review_prompt_command_reads_the_pinned_diff_including_removed_lines(self):
+        """W-756: run the exact command delivered to the Claude reviewer, without a model."""
+        spaced_repo = self.root / "repo with spaces"
+        self.repo.rename(spaced_repo); self.repo = spaced_repo
+        runner = self.runner([{"write": {"result.txt": "ready", "README.md": "replacement\n"}}, {}])
+        runner.execute(limit=1)
+        review = self.calls()[1]
+        history = runner.state["history"][0]
+        command = re.search(r"single Bash command: `([^`]+)`", review["prompt"])
+        self.assertIsNotNone(command)
+        args = shlex.split(command.group(1))
+        self.assertEqual(args, ["git", "diff", "--no-ext-diff", "--no-textconv",
+                                f"{history['starting_commit']}..{history['commit']}", "--"])
+        session = next(Path(history["run_dir"]).glob("review-*/session.json"))
+        review_cwd = json.loads(session.read_text())["cwd"]
+        self.assertEqual(review_cwd, str(self.repo))
+        self.assertIn(f"Your working directory is {self.repo}.", review["prompt"])
+        argv = review["argv"]
+        allowed = argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+        self.assertIn(f"Bash({' '.join(args[:2])}:*)", allowed)
+        # A later HEAD must not change the review's pinned endpoint.
+        (self.repo / "README.md").write_text("later unrelated change\n")
+        git(self.repo, "add", "README.md"); git(self.repo, "commit", "-qm", "later change")
+        diff = subprocess.run(args, cwd=review_cwd, capture_output=True, text=True, check=True).stdout
+        self.assertIn("-fixture", diff)
+        self.assertIn("+replacement", diff)
+        self.assertIn("+ready", diff)
+        self.assertNotIn("later unrelated change", diff)
 
     def test_lifecycle_records_selection_backend_and_claim(self):
         runner = self.runner([{"write": {"result.txt": "ready"}}, {}])

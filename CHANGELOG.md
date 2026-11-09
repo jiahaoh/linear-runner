@@ -15,6 +15,17 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.5.2 — 2026-11-09
+
+Claude reviewers receive an exact `git diff` command for `starting_commit..commit` and
+instructions to use one plain allowlisted Git command per Bash call in the repository,
+retry a denied compound call in that form, and block if the diff cannot be read (W-756).
+The read-only Git allowlist is unchanged.
+
+**Project impact:** none; existing configurations need no change.
+
+**Canary tier:** canary batch; the review task and Claude reviewer prompt change.
+
 Controller commit bodies keep the worker's summary without the former 600-character cut
 (W-817). The filter removes only explicit stale commit-state statements, preserving substantive
 mentions of commits and suggested commit-message points. Worker guidance explains that requested
