@@ -15,6 +15,16 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+Controller commit bodies keep the worker's summary without the former 600-character cut
+(W-817). The filter removes only explicit stale commit-state statements, preserving substantive
+mentions of commits and suggested commit-message points. Worker guidance explains that requested
+commit-message content belongs in the summary.
+
+**Project impact:** none; existing configurations need no change, and running batches keep
+their pinned release until they adopt a new one.
+
+**Canary tier:** canary batch; the engine's commit-message generation and worker prompt change.
+
 Publication read-back accepts Linear's backslash-escaped asterisks outside code spans and
 issue mentions written as Markdown links with angle-bracket URLs when the target matches
 the identifier (W-777, including W-657). Substantive text and mismatched link targets still

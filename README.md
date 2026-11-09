@@ -1021,9 +1021,11 @@ elsewhere stops the batch for reconciliation.
 6. **Commit.** The controller commits the validated, unchanged source itself. Any worker
    commit or other history change stops the batch. The message says what the issue delivers:
    the title is `feat(<issue>): <the Linear issue title>` (first letter lower-cased, cut at a
-   word boundary to 72 characters with `…`), the body is the worker's summary (at most 600
-   characters, wrapped at 72, without its sentences about commits, which the worker wrote
-   before the controller committed) and the last line is the trailer `Linear-Issue: <issue>`. A
+   word boundary to 72 characters with `…`), the body is the worker's summary (without a length
+   cap, wrapped at 72). Only explicit stale commit-state statements such as "Changes are
+   uncommitted" or a final "; nothing was committed" clause are removed; substantive mentions
+   of commits and suggested commit-message points are kept. Workers put any commit-message
+   content the owner requests in their summary. The last line is the trailer `Linear-Issue: <issue>`. A
    state without the issue title keeps `feat(<issue>): implement validated issue deliverables`.
 7. **Delivery.** Optional `delivery_checks` receive `RUNNER_DELIVERY_CONTEXT` (a JSON file
    with the revision, validation records, issue, `issue_run_dir` and `delivery_dir`). With

@@ -699,8 +699,8 @@ def commit_message(active, *, review_fix=False):
     ``feat(w-241): add a calibrated synthetic preset version with lognormal…`` replaces the
     uninformative ``feat(w-241): implement validated issue deliverables`` (W-251); a repair of
     review findings is ``fix(w-253): address review findings (document the codebook-aware…)``.
-    Sentences of the summary that mention commits are left out: the worker wrote them before
-    the controller committed. An issue snapshot without a title keeps the old wording.
+    Explicit stale worktree commit-state statements are left out; the rest of the summary
+    is kept without a length cap. An issue snapshot without a title keeps the old wording.
     """
     issue = active["issue_id"]
     title = " ".join(str((active.get("issue") or {}).get("title") or "").split()).rstrip(".")
@@ -719,12 +719,21 @@ def commit_message(active, *, review_fix=False):
         prefix = f"feat({issue.lower()}): "
         what = fit(title or "implement validated issue deliverables", COMMIT_TITLE_CHARS - len(prefix))
     summary = " ".join(str((active.get("last_result") or {}).get("summary") or "").split())
-    # The worker writes its summary before the controller commits, so what it says about
-    # commits ("Changes are uncommitted.") is stale in the commit message: drop those sentences.
-    summary = " ".join(sentence for sentence in re.split(r"(?<=[.!?])\s+", summary)
-                       if not re.search(r"commit", sentence, re.I))
-    if len(summary) > 600:
-        summary = summary[:600].rsplit(" ", 1)[0] + " …"
+    # Remove only explicit state statements, including a final semicolon clause. Mentions
+    # such as "Suggested commit message points" carry content the owner asked to retain.
+    sentences = []
+    stale_state = (r"(?:(?:the )?(?:changes|worktree) (?:are|is|remain|remains) uncommitted"
+                   r"|nothing (?:was|has been) committed|no commit (?:was|has been) made)")
+    for sentence in re.split(r"(?<=[.!?])\s+", summary):
+        stale = re.search(r"(?:^|;\s*)" + stale_state + r"[.!?]?$", sentence, re.I)
+        if stale:
+            ending = sentence[-1] if sentence.endswith((".", "!", "?")) else ""
+            sentence = sentence[:stale.start()].rstrip()
+            if sentence:
+                sentence += ending
+        if sentence:
+            sentences.append(sentence)
+    summary = " ".join(sentences)
     paragraphs = [prefix + what]
     if summary:
         paragraphs.append(textwrap.fill(summary, 72, break_long_words=False, break_on_hyphens=False))

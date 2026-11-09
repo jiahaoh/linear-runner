@@ -2264,6 +2264,58 @@ class PureFunctionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_commit_body_keeps_substantive_commit_mentions_and_drops_stale_state(self):
+        kept = ("The commit names the four goldens. Suggested commit message points: preserve the cache effect. "
+                "The committed fixture documents the result. The report quotes Changes are uncommitted. "
+                "The focused option check passes.")
+        summary = ("The commit names the four goldens. Changes are uncommitted. "
+                   "Suggested commit message points: preserve the cache effect. "
+                   "The committed fixture documents the result. The report quotes Changes are uncommitted. "
+                   "The focused option check passes; nothing was committed.")
+        for review_fix in (False, True):
+            with self.subTest(review_fix=review_fix):
+                message = runner_module.commit_message(
+                    {"issue_id": "W-817", "last_result": {"summary": summary}}, review_fix=review_fix)
+                self.assertEqual(" ".join(message.split("\n\n")[1].split()), kept)
+        for state in ("Changes are uncommitted.", "The worktree remains uncommitted!",
+                      "Nothing has been committed.", "No commit was made."):
+            with self.subTest(state=state):
+                message = runner_module.commit_message({"issue_id": "W-817", "last_result": {"summary": state}})
+                self.assertEqual(message.split("\n\n"), ["feat(w-817): implement validated issue deliverables",
+                                                        "Linear-Issue: W-817"])
+
+    def test_commit_body_has_no_600_character_cut_even_with_one_long_sentence(self):
+        for summary in ("Verified the output. " * 60,
+                        "Validated " + "the report output and its cache effect " * 30 + "successfully."):
+            for review_fix in (False, True):
+                with self.subTest(single_sentence=summary.startswith("Validated"), review_fix=review_fix):
+                    self.assertGreater(len(summary.strip()), 600)
+                    message = runner_module.commit_message(
+                        {"issue_id": "W-817", "last_result": {"summary": summary}}, review_fix=review_fix)
+                    self.assertEqual(" ".join(message.split("\n\n")[1].split()), summary.strip())
+                    self.assertTrue(all(len(line) <= 72 for line in message.splitlines()))
+                    self.assertTrue(message.endswith("Linear-Issue: W-817"))
+
+    def test_w807_repair_summary_keeps_both_requested_commit_message_points(self):
+        # The saved W-807 repair phase-result summary, whose filter and cut prompted W-817.
+        summary = (
+            "The repair, left uncommitted on top of 456084d, adds the regression the review asked for. "
+            "In `test_the_report_task_reads_what_the_fov_segment_and_assign_tasks_wrote` the tasks themselves "
+            "write the records on tiny_sample, with no hand-written record. The hand-written-records test "
+            "is kept and its docstring corrected. Only test/test_workflow_report_tasks.py changed. "
+            "Suggested repair commit message points: (1) The cut-off sentence of 456084d, "
+            "\"I did not run the controller's …\", meant that I did not run the controller's full checks "
+            "(pytest-quick, pytest-fast-tier, pytest-extended, pytest-nextflow) or the a19-parity check, "
+            "which does not apply because no assignment or segmentation code changed, and ran only focused tests. "
+            "(2) The four plan goldens test_workflow_plan/after-fusion.json, molecules-only.json, per-fov.json "
+            "and supplied-xml.json changed only in the `blocks` list of the report task, which now includes "
+            "`assignment`. The effect is that every report task gets a new cache token, so an engine that "
+            "compares it reruns each existing report task once. The ruling accepting that edit stands.")
+        self.assertGreater(len(summary), 600)
+        message = runner_module.commit_message({"issue_id": "W-807", "last_result": {"summary": summary}},
+                                               review_fix=True)
+        self.assertEqual(" ".join(message.split("\n\n")[1].split()), summary)
+
     def test_delivery_integrity_accepts_only_evidenced_empty_outcomes(self):
         from linear_runner.engine.delivery import check_outcome, check_passed
         self.assertEqual([check_outcome(0), check_outcome(5), check_outcome(5, True), check_outcome(1, True)],
