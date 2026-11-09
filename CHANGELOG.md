@@ -21,9 +21,13 @@ The Claude reviewer prompt builds its list of permitted Git commands from the sa
 `REVIEWER_ALLOWED`, so the two cannot drift apart (W-823). The prompt text and the allowlist
 are unchanged; a test compares the prompt's list with the allowlist.
 
+The commit-body filter of 3.5.2 (W-817) also drops "Nothing is committed.", "No commit is made."
+and "Changes are not committed.": 3.5.2's canary kept the first in W-823's commit body.
+
 **Project impact:** none; existing configurations need no change.
 
-**Canary tier:** canary batch; the Claude reviewer prompt's construction changes.
+**Canary tier:** canary batch; the Claude reviewer prompt's construction and the engine's
+commit-body filter change.
 
 ## v3.5.2 — 2026-11-09
 

@@ -722,8 +722,8 @@ def commit_message(active, *, review_fix=False):
     # Remove only explicit state statements, including a final semicolon clause. Mentions
     # such as "Suggested commit message points" carry content the owner asked to retain.
     sentences = []
-    stale_state = (r"(?:(?:the )?(?:changes|worktree) (?:are|is|remain|remains) uncommitted"
-                   r"|nothing (?:was|has been) committed|no commit (?:was|has been) made)")
+    stale_state = (r"(?:(?:the )?(?:changes|worktree) (?:are|is|remain|remains) (?:uncommitted|not committed)"
+                   r"|nothing (?:is|was|has been) committed|no commit (?:is|was|has been) made)")
     for sentence in re.split(r"(?<=[.!?])\s+", summary):
         stale = re.search(r"(?:^|;\s*)" + stale_state + r"[.!?]?$", sentence, re.I)
         if stale:

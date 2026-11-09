@@ -2278,7 +2278,9 @@ class PureFunctionTests(unittest.TestCase):
                     {"issue_id": "W-817", "last_result": {"summary": summary}}, review_fix=review_fix)
                 self.assertEqual(" ".join(message.split("\n\n")[1].split()), kept)
         for state in ("Changes are uncommitted.", "The worktree remains uncommitted!",
-                      "Nothing has been committed.", "No commit was made."):
+                      "Nothing has been committed.", "No commit was made.",
+                      # W-823's summary ended this way, and 3.5.2 kept it in the commit body.
+                      "Nothing is committed.", "Changes are not committed.", "No commit is made."):
             with self.subTest(state=state):
                 message = runner_module.commit_message({"issue_id": "W-817", "last_result": {"summary": state}})
                 self.assertEqual(message.split("\n\n"), ["feat(w-817): implement validated issue deliverables",
