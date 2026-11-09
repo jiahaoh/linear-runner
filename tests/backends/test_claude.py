@@ -3,13 +3,14 @@ claude_samples/), the argv and isolation it builds, preflight checks and a full 
 through the engine with a fake `claude` executable. No model, network or Linear."""
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import unittest
 import uuid
 
 from linear_runner import backends
-from linear_runner.backends.claude import ClaudeBackend, REVIEWER_PROMPT, normalized_usage
+from linear_runner.backends.claude import ClaudeBackend, REVIEWER_ALLOWED, REVIEWER_PROMPT, normalized_usage
 from linear_runner.config import load_config, pin_resolution
 from linear_runner.engine.runner import RESULT_SCHEMA, Runner, usage_totals, write_json
 from linear_runner.linear.attention import classify_stop
@@ -176,6 +177,32 @@ class CommandTests(unittest.TestCase):
                             "session already starts in the repository", "do not prepend git -C",
                             "retry the plain permitted command", "mark the review blocked"):
             self.assertIn(instruction, prompt)
+
+    def test_reviewer_prompt_names_exactly_the_git_commands_the_allowlist_permits(self):
+        """W-823: the prompt's Git command list and REVIEWER_ALLOWED cannot drift apart."""
+        permitted = {match.group(1) for entry in REVIEWER_ALLOWED
+                     for match in [re.fullmatch(r"Bash\((git [a-z-]+):\*\)", entry)] if match}
+        self.assertEqual(len(permitted), 8)
+        self.assertEqual({entry for entry in REVIEWER_ALLOWED if entry.startswith("Bash")},
+                         {f"Bash({command}:*)" for command in permitted})
+        listed = re.search(r"command prefixes: ([^.]*)\.", REVIEWER_PROMPT).group(1).split(", ")
+        self.assertEqual(sorted(listed), sorted(permitted))
+        self.assertEqual(set(re.findall(r"\bgit [a-z][a-z-]*", REVIEWER_PROMPT)), permitted)
+
+    def test_reviewer_prompt_text_is_unchanged_from_3_5_2(self):
+        """W-823: only the way the Git list is produced changed; the list keeps its order and ', ' separators."""
+        self.assertEqual(REVIEWER_PROMPT, (
+            "You are a non-interactive, read-only reviewer session started by linear-runner. Do not change "
+            "any file, Git state or Linear; read files and run read-only Git commands only. "
+            "Bash permits only these command prefixes: git diff, git log, git show, git status, "
+            "git rev-parse, git ls-files, git grep, git blame. Use one plain Git command per Bash call, "
+            "starting with the permitted prefix: no variable assignments or expansions, pipes, redirections, "
+            "command substitutions, chained commands or cd. The session already starts in the repository "
+            "named by the task; do not prepend git -C or other global options. Run the task's exact diff "
+            "command before assessing the changes. If a compound command is denied, retry the plain "
+            "permitted command; do not infer that Bash is unavailable or substitute files at HEAD for the "
+            "diff. If the diff still cannot be read, report that limitation and mark the review blocked. Your final "
+            "message must be the JSON result the task asks for."))
 
     def test_fresh_sessions_get_an_id_and_resumes_continue_it(self):
         fresh = self.backend.command(self.request("implement"))

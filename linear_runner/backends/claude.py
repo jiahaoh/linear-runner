@@ -91,8 +91,10 @@ WORKER_DENIED = tuple(f"Bash({command}:*)" for command in (
     "git branch", "git tag", "git stash", "git worktree", "git cherry-pick", "git revert", "git am",
     "claude", "codex"))
 REVIEWER_TOOLS = ("Read", "Grep", "Glob", "Bash")
-REVIEWER_ALLOWED = ("Read", "Grep", "Glob") + tuple(f"Bash({command}:*)" for command in (
-    "git diff", "git log", "git show", "git status", "git rev-parse", "git ls-files", "git grep", "git blame"))
+# The one list of Git commands the reviewer's Bash may run: REVIEWER_ALLOWED and REVIEWER_PROMPT both use it.
+REVIEWER_GIT = ("git diff", "git log", "git show", "git status", "git rev-parse", "git ls-files", "git grep",
+                "git blame")
+REVIEWER_ALLOWED = ("Read", "Grep", "Glob") + tuple(f"Bash({command}:*)" for command in REVIEWER_GIT)
 REVIEWER_DENIED = ("Edit", "Write", "NotebookEdit")
 
 WORKER_PROMPT = ("You are a non-interactive worker session started by linear-runner. The runner owns Linear, "
@@ -101,8 +103,8 @@ WORKER_PROMPT = ("You are a non-interactive worker session started by linear-run
                  "Your final message must be the JSON result the task asks for.")
 REVIEWER_PROMPT = ("You are a non-interactive, read-only reviewer session started by linear-runner. Do not change "
                    "any file, Git state or Linear; read files and run read-only Git commands only. "
-                   "Bash permits only these command prefixes: git diff, git log, git show, git status, "
-                   "git rev-parse, git ls-files, git grep, git blame. Use one plain Git command per Bash call, "
+                   f"Bash permits only these command prefixes: {', '.join(REVIEWER_GIT)}. "
+                   "Use one plain Git command per Bash call, "
                    "starting with the permitted prefix: no variable assignments or expansions, pipes, redirections, "
                    "command substitutions, chained commands or cd. The session already starts in the repository "
                    "named by the task; do not prepend git -C or other global options. Run the task's exact diff "

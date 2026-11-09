@@ -15,6 +15,16 @@ its tier. The release procedure is in the README ("Releases").
 
 ## Unreleased
 
+## v3.5.3 — 2026-11-09
+
+The Claude reviewer prompt builds its list of permitted Git commands from the same tuple as
+`REVIEWER_ALLOWED`, so the two cannot drift apart (W-823). The prompt text and the allowlist
+are unchanged; a test compares the prompt's list with the allowlist.
+
+**Project impact:** none; existing configurations need no change.
+
+**Canary tier:** canary batch; the Claude reviewer prompt's construction changes.
+
 ## v3.5.2 — 2026-11-09
 
 Claude reviewers receive an exact `git diff` command for `starting_commit..commit` and
